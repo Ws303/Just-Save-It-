@@ -1,0 +1,1195 @@
+<!-- NOUS-SPEC: domain=ui | purpose=link-saver-demo | theme=minimal-warm-charcoal | viewport=390x844-responsive | layout=screen-switcher-with-api-debugger -->
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Link Saver – Android Wireframe & Backend Testbed</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-page: #f4f3ee;
+      --bg-app: #ffffff;
+      --text-main: #1f1e1d;
+      --text-muted: #666666;
+      --text-sub: #888888;
+      --border-color: #e5e5e0;
+      --accent: #111827;
+      --accent-hover: #1f2937;
+      --ai-purple: #7c3aed;
+      --ai-bg: #f5f3ff;
+      --ai-border: #ddd6fe;
+      --primary-blue: #2563eb;
+      --chip-bg: #eeeeec;
+      --chip-active: #1f1e1d;
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 20px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      background-color: var(--bg-page);
+      color: var(--text-main);
+      font-family: 'Noto Sans Thai', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px 16px 40px;
+    }
+
+    /* Top Navigation bar for switcher and API tester */
+    .top-control-bar {
+      width: 100%;
+      max-width: 900px;
+      background: #ffffff;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+
+    .project-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .project-brand h1 {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .badge-pill {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 12px;
+      background: #e0f2fe;
+      color: #0369a1;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .screen-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .screen-pill-btn {
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      padding: 6px 12px;
+      border-radius: 16px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #4b5563;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+      font-family: inherit;
+    }
+
+    .screen-pill-btn:hover {
+      background: #e5e7eb;
+      color: #111827;
+    }
+
+    .screen-pill-btn.active {
+      background: var(--text-main);
+      color: #ffffff;
+      border-color: var(--text-main);
+    }
+
+    .main-workspace {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      align-items: flex-start;
+      gap: 28px;
+      width: 100%;
+      max-width: 920px;
+    }
+
+    /* Phone Shell (Matches Android 390x844 Wireframe) */
+    .phone-container {
+      width: 100%;
+      max-width: 390px;
+      height: 844px;
+      background: var(--bg-app);
+      border-radius: 40px;
+      border: 8px solid #1f1e1d;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.12), 0 4px 12px rgba(0,0,0,0.06);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    /* Android Status Notch & Bar */
+    .phone-status-bar {
+      height: 32px;
+      background: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #374151;
+      flex-shrink: 0;
+      border-bottom: 1px solid transparent;
+      user-select: none;
+    }
+
+    .status-notch {
+      width: 80px;
+      height: 16px;
+      background: #1f1e1d;
+      border-radius: 0 0 10px 10px;
+      margin: 0 auto;
+    }
+
+    /* Screen View Container */
+    .screen-viewport {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      position: relative;
+      background: #ffffff;
+    }
+
+    .screen-page {
+      display: none;
+      flex: 1;
+      flex-direction: column;
+      padding: 12px 16px 20px;
+    }
+
+    .screen-page.active {
+      display: flex;
+    }
+
+    /* Top Bar in App */
+    .app-header {
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .app-header h2 {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .header-btn {
+      width: 38px;
+      height: 38px;
+      border-radius: 19px;
+      border: 1px solid var(--border-color);
+      background: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--text-main);
+    }
+
+    /* Search Input */
+    .search-box {
+      min-height: 48px;
+      border: 1.5px solid #d1d5db;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 14px;
+      background: #fbfbfa;
+      margin-bottom: 12px;
+    }
+
+    .search-box input {
+      flex: 1;
+      height: 36px;
+      border: none;
+      background: transparent;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      color: var(--text-main);
+    }
+
+    /* Filter Chips Row */
+    .chip-scroll-row {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 6px;
+      margin-bottom: 14px;
+    }
+
+    .chip-scroll-row::-webkit-scrollbar {
+      display: none;
+    }
+
+    .filter-chip {
+      display: inline-flex;
+      align-items: center;
+      height: 34px;
+      padding: 0 14px;
+      border-radius: 17px;
+      background: var(--chip-bg);
+      color: #374151;
+      font-size: 13px;
+      font-weight: 500;
+      border: none;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: 0.15s;
+    }
+
+    .filter-chip.active {
+      background: var(--chip-active);
+      color: #ffffff;
+      font-weight: 600;
+    }
+
+    /* Section Headers */
+    .section-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #4b5563;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin: 12px 0 8px;
+    }
+
+    /* Link Card */
+    .link-card {
+      display: flex;
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      background: #ffffff;
+      margin-bottom: 10px;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+    }
+
+    .link-card:hover {
+      border-color: #9ca3af;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.04);
+    }
+
+    .link-thumb {
+      width: 70px;
+      height: 70px;
+      border-radius: var(--radius-sm);
+      background: #f3f4f6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      flex-shrink: 0;
+    }
+
+    .link-meta {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 3px;
+      overflow: hidden;
+    }
+
+    .link-meta-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .link-meta-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .tag-badge {
+      font-size: 11px;
+      color: #374151;
+      background: #f3f4f6;
+      padding: 2px 8px;
+      border-radius: 10px;
+      display: inline-block;
+      width: fit-content;
+      font-weight: 500;
+      margin-top: 4px;
+    }
+
+    /* Action Button */
+    .btn-action {
+      height: 48px;
+      border-radius: 24px;
+      background: var(--text-main);
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      cursor: pointer;
+      width: 100%;
+      margin-top: auto;
+      transition: background 0.15s;
+    }
+
+    .btn-action:hover {
+      background: #000000;
+    }
+
+    .btn-outline {
+      background: #ffffff;
+      color: var(--text-main);
+      border: 1.5px solid var(--text-main);
+    }
+
+    .btn-outline:hover {
+      background: #f9fafb;
+    }
+
+    /* AI Box in Detail Page */
+    .ai-summary-box {
+      background: var(--ai-bg);
+      border: 1px solid var(--ai-border);
+      border-radius: var(--radius-md);
+      padding: 14px;
+      margin: 12px 0;
+    }
+
+    .ai-summary-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .ai-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--ai-purple);
+    }
+
+    .ai-summary-list {
+      list-style-type: disc;
+      padding-left: 20px;
+      font-size: 13px;
+      color: #374151;
+      line-height: 1.6;
+    }
+
+    /* Bottom Navigation Bar */
+    .app-bottom-nav {
+      height: 60px;
+      border-top: 1px solid var(--border-color);
+      display: flex;
+      background: #ffffff;
+      flex-shrink: 0;
+    }
+
+    .nav-item {
+      flex: 1;
+      border: none;
+      background: none;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .nav-item svg {
+      stroke: var(--text-muted);
+      transition: stroke 0.15s;
+    }
+
+    .nav-item.active {
+      color: var(--text-main);
+      font-weight: 700;
+    }
+
+    .nav-item.active svg {
+      stroke: var(--text-main);
+    }
+
+    /* Side Backend Inspector Console */
+    .backend-inspector {
+      flex: 1;
+      min-width: 320px;
+      max-width: 480px;
+      background: #111827;
+      color: #f3f4f6;
+      border-radius: var(--radius-md);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      height: 844px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .inspector-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #374151;
+      padding-bottom: 10px;
+      margin-bottom: 12px;
+    }
+
+    .inspector-header h3 {
+      font-size: 13px;
+      font-weight: 700;
+      color: #38bdf8;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .mode-switch-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+    }
+
+    .api-endpoint-config {
+      background: #1f2937;
+      border-radius: var(--radius-sm);
+      padding: 10px;
+      margin-bottom: 12px;
+      font-size: 11px;
+    }
+
+    .api-endpoint-config label {
+      display: block;
+      color: #9ca3af;
+      margin-bottom: 4px;
+    }
+
+    .api-endpoint-config input {
+      width: 100%;
+      height: 34px;
+      background: #111827;
+      border: 1px solid #4b5563;
+      border-radius: 4px;
+      padding: 6px 8px;
+      color: #34d399;
+      font-family: inherit;
+      font-size: 11px;
+    }
+
+    .inspector-log-stream {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding-right: 4px;
+    }
+
+    .log-item {
+      background: #1f2937;
+      border-left: 3px solid #38bdf8;
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-size: 11px;
+    }
+
+    .log-item.post {
+      border-left-color: #34d399;
+    }
+
+    .log-item.ai {
+      border-left-color: #a855f7;
+    }
+
+    .log-time {
+      color: #9ca3af;
+      font-size: 10px;
+      margin-bottom: 2px;
+    }
+
+    .log-method {
+      font-weight: 700;
+      color: #34d399;
+    }
+
+    .log-url {
+      color: #f3f4f6;
+    }
+
+    .log-body {
+      background: #111827;
+      padding: 6px;
+      border-radius: 4px;
+      margin-top: 6px;
+      color: #e5e7eb;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* Modal Sheet for Save Link */
+    .save-sheet-content {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .folder-select-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .folder-tag-chip {
+      padding: 6px 12px;
+      border-radius: 16px;
+      font-size: 12px;
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      cursor: pointer;
+    }
+
+    .folder-tag-chip.selected {
+      background: #111827;
+      color: #ffffff;
+      border-color: #111827;
+    }
+
+    /* Calendar Grid for Reminder */
+    .calendar-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 4px;
+      text-align: center;
+      margin: 12px 0;
+      font-size: 13px;
+    }
+
+    .cal-day-header {
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 12px;
+      padding-bottom: 4px;
+    }
+
+    .cal-day-btn {
+      height: 38px;
+      border-radius: 19px;
+      border: none;
+      background: transparent;
+      color: var(--text-main);
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .cal-day-btn.disabled {
+      color: #d1d5db;
+      cursor: not-allowed;
+    }
+
+    .cal-day-btn.selected {
+      background: var(--text-main);
+      color: #ffffff;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Controls: Screen Navigation & Live Testbed -->
+  <div class="top-control-bar">
+    <div class="project-brand">
+      <h1>Link Saver (Just-Save-It-)</h1>
+      <span class="badge-pill">Android UI + Backend Testbed</span>
+    </div>
+
+    <!-- Screen Switcher Tabs -->
+    <div class="screen-pills">
+      <button class="screen-pill-btn active" onclick="switchScreen('home')">1. หน้าหลัก (Home)</button>
+      <button class="screen-pill-btn" onclick="switchScreen('save-sheet')">2. เซฟลิงก์ (Save)</button>
+      <button class="screen-pill-btn" onclick="switchScreen('folders')">3. โฟลเดอร์ (Folders)</button>
+      <button class="screen-pill-btn" onclick="switchScreen('folder-detail')">4. ในโฟลเดอร์</button>
+      <button class="screen-pill-btn" onclick="switchScreen('link-detail')">5. รายละเอียด + AI</button>
+      <button class="screen-pill-btn" onclick="switchScreen('reminder')">6. ตั้งเตือน</button>
+    </div>
+  </div>
+
+  <div class="main-workspace">
+
+    <!-- ==================== PHONE CONTAINER ==================== -->
+    <div class="phone-container">
+      
+      <!-- Status Notch -->
+      <div class="phone-status-bar">
+        <span>09:41</span>
+        <div class="status-notch"></div>
+        <span>5G · 100%</span>
+      </div>
+
+      <!-- Main Screen Viewport -->
+      <div class="screen-viewport">
+
+        <!-- SCREEN 1: HOME -->
+        <div id="screen-home" class="screen-page active">
+          <div class="app-header">
+            <h2>ลิงก์ของฉัน</h2>
+            <div style="display:flex;gap:6px;">
+              <button class="header-btn" title="แชร์" onclick="alert('กดแชร์ลิงก์ด่วน')">
+                <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8m-4-6l-4-4-4 4m4-4v13"></path></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="search-box">
+            <svg width="16" height="16" fill="none" stroke="#6b7280" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>
+            <input type="text" id="home-search" placeholder="ค้นหาชื่อ แท็ก โน้ต" oninput="filterHomeLinks()">
+          </div>
+
+          <div class="chip-scroll-row">
+            <button class="filter-chip active" onclick="setHomeFilter(this, 'unread')">ยังไม่ได้ดู 12</button>
+            <button class="filter-chip" onclick="setHomeFilter(this, 'reminder')">ใกล้ถึงเวลา</button>
+            <button class="filter-chip" onclick="setHomeFilter(this, 'all')">ทั้งหมด</button>
+          </div>
+
+          <div class="section-title">⏰ เตือนวันนี้</div>
+          <div class="link-card" onclick="openLinkDetail('รีวิวคาเฟ่ย่านอารีย์', 'TikTok · เตือน 18:00', '#คาเฟ่')">
+            <div class="link-thumb">☕</div>
+            <div class="link-meta">
+              <div class="link-meta-title">รีวิวคาเฟ่ย่านอารีย์</div>
+              <div class="link-meta-sub">TikTok · เตือน 18:00</div>
+              <span class="tag-badge">#คาเฟ่</span>
+            </div>
+          </div>
+
+          <div class="section-title">📥 ยังไม่ได้ดู</div>
+          <div class="link-card" onclick="openLinkDetail('สูตรไก่ทอดไม่ใช้น้ำมันเยอะ', 'Facebook · เซฟเมื่อ 2 วันก่อน', '#สูตรอาหาร')">
+            <div class="link-thumb">🍗</div>
+            <div class="link-meta">
+              <div class="link-meta-title">สูตรไก่ทอดไม่ใช้น้ำมันเยอะ</div>
+              <div class="link-meta-sub">Facebook · เซฟเมื่อ 2 วันก่อน</div>
+              <span class="tag-badge">#สูตรอาหาร</span>
+            </div>
+          </div>
+
+          <div class="link-card" onclick="openLinkDetail('เที่ยวเกียวโต 3 วัน 2 คืน ฉบับประหยัด', 'Instagram · เซฟเมื่อ 5 วันก่อน', '#ญี่ปุ่น')">
+            <div class="link-thumb">⛩️</div>
+            <div class="link-meta">
+              <div class="link-meta-title">เที่ยวเกียวโต 3 วัน 2 คืน ฉบับประหยัด</div>
+              <div class="link-meta-sub">Instagram · เซฟเมื่อ 5 วันก่อน</div>
+              <span class="tag-badge">#ญี่ปุ่น</span>
+            </div>
+          </div>
+
+          <button class="btn-action" onclick="switchScreen('save-sheet')">
+            <span>+ วางลิงก์ใหม่</span>
+          </button>
+        </div>
+
+        <!-- SCREEN 2: SAVE SHEET -->
+        <div id="screen-save-sheet" class="screen-page">
+          <div class="app-header">
+            <h2>เซฟลิงก์</h2>
+            <button class="header-btn" onclick="switchScreen('home')">✕</button>
+          </div>
+
+          <div class="save-sheet-content">
+            <div class="link-card" style="margin-bottom:0;">
+              <div class="link-thumb">☕</div>
+              <div class="link-meta">
+                <input type="text" id="save-title-input" value="รีวิวคาเฟ่ย่านอารีย์ เปิดใหม่" style="font-size:14px;font-weight:700;border:none;background:transparent;outline:none;width:100%;">
+                <div class="link-meta-sub">tiktok.com/@cafe.hopper/video/1234</div>
+              </div>
+            </div>
+
+            <div class="section-title">เลือกโฟลเดอร์</div>
+            <div class="folder-select-grid" id="folder-chips">
+              <span class="folder-tag-chip selected" onclick="toggleChip(this)">ร้านกาแฟ</span>
+              <span class="folder-tag-chip" onclick="toggleChip(this)">ที่เที่ยวญี่ปุ่น</span>
+              <span class="folder-tag-chip" onclick="toggleChip(this)">สูตรอาหาร</span>
+              <span class="folder-tag-chip" onclick="toggleChip(this)">ไอเดียโปรเจค</span>
+              <span class="folder-tag-chip" style="border-style:dashed;" onclick="promptNewFolder()">+ ใหม่</span>
+            </div>
+
+            <div class="section-title">เพิ่มแท็ก</div>
+            <div class="folder-select-grid" id="tag-chips">
+              <span class="folder-tag-chip selected" onclick="toggleChip(this)">#คาเฟ่</span>
+              <span class="folder-tag-chip selected" onclick="toggleChip(this)">#อารีย์</span>
+              <span class="folder-tag-chip" onclick="toggleChip(this)">#ญี่ปุ่น</span>
+              <span class="folder-tag-chip" style="border-style:dashed;" onclick="promptNewTag()">+ แท็ก</span>
+            </div>
+
+            <div class="section-title">การแจ้งเตือน</div>
+            <div class="link-card" style="align-items:center;" onclick="switchScreen('reminder')">
+              <span style="font-size:20px;">📅</span>
+              <div class="link-meta">
+                <div class="link-meta-title" id="save-sheet-reminder-text">วันนี้ 18:00</div>
+                <div class="link-meta-sub">คลิกเพื่อเปลี่ยนวัน/เวลา</div>
+              </div>
+              <span>›</span>
+            </div>
+
+            <button class="btn-action" style="margin-top:20px;" onclick="triggerSaveLink()">
+              <span>บันทึกเข้าคลัง</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- SCREEN 3: FOLDERS -->
+        <div id="screen-folders" class="screen-page">
+          <div class="app-header">
+            <h2>โฟลเดอร์</h2>
+            <button class="screen-pill-btn" style="background:#111827;color:#fff;" onclick="promptNewFolder()">+ ใหม่</button>
+          </div>
+
+          <div class="link-card" onclick="switchScreen('folder-detail')">
+            <div class="link-thumb">☕</div>
+            <div class="link-meta">
+              <div class="link-meta-title">ร้านกาแฟ</div>
+              <div class="link-meta-sub">18 ลิงก์ · 👥 แชร์ 2 คน</div>
+            </div>
+            <span>›</span>
+          </div>
+
+          <div class="link-card" onclick="switchScreen('folder-detail')">
+            <div class="link-thumb">🗾</div>
+            <div class="link-meta">
+              <div class="link-meta-title">ที่เที่ยวญี่ปุ่น</div>
+              <div class="link-meta-sub">32 ลิงก์ · 🔒 ส่วนตัว</div>
+            </div>
+            <span>›</span>
+          </div>
+
+          <div class="link-card" onclick="switchScreen('folder-detail')">
+            <div class="link-thumb">🍳</div>
+            <div class="link-meta">
+              <div class="link-meta-title">สูตรอาหาร</div>
+              <div class="link-meta-sub">14 ลิงก์ · 🔒 ส่วนตัว</div>
+            </div>
+            <span>›</span>
+          </div>
+
+          <div class="link-card" onclick="switchScreen('folder-detail')">
+            <div class="link-thumb">💡</div>
+            <div class="link-meta">
+              <div class="link-meta-title">ไอเดียโปรเจค</div>
+              <div class="link-meta-sub">9 ลิงก์ · 👥 แชร์ 3 คน</div>
+            </div>
+            <span>›</span>
+          </div>
+        </div>
+
+        <!-- SCREEN 4: FOLDER DETAIL (SHARED) -->
+        <div id="screen-folder-detail" class="screen-page">
+          <div class="app-header">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <button class="header-btn" onclick="switchScreen('folders')">‹</button>
+              <h2>ร้านกาแฟ</h2>
+            </div>
+            <button class="screen-pill-btn" style="font-size:11px;" onclick="alert('สร้างลิงก์เชิญเพื่อนร่วมโฟลเดอร์เรียบร้อย!')">👥 เชิญเพื่อน</button>
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">แชร์กับ นัท, มิน (2 คน)</div>
+
+          <div class="chip-scroll-row">
+            <button class="filter-chip active">ทั้งหมด</button>
+            <button class="filter-chip">ยังไม่ดู</button>
+            <button class="filter-chip">ดูแล้ว</button>
+          </div>
+
+          <div class="link-card" onclick="openLinkDetail('รีวิวคาเฟ่ย่านอารีย์', 'TikTok · แนะนำโดย นัท', '#คาเฟ่')">
+            <div class="link-thumb">☕</div>
+            <div class="link-meta">
+              <div class="link-meta-title">รีวิวคาเฟ่ย่านอารีย์</div>
+              <div class="link-meta-sub">TikTok · แนะนำโดย นัท</div>
+              <span class="tag-badge">#คาเฟ่</span>
+            </div>
+          </div>
+
+          <div class="link-card" onclick="openLinkDetail('กาแฟดริปเปิดใหม่เอกมัย', 'Lemon8 · แนะนำโดย มิน', '#กาแฟดริป')">
+            <div class="link-thumb">🫘</div>
+            <div class="link-meta">
+              <div class="link-meta-title">กาแฟดริปเปิดใหม่เอกมัย</div>
+              <div class="link-meta-sub">Lemon8 · แนะนำโดย มิน</div>
+              <span class="tag-badge">#กาแฟดริป</span>
+            </div>
+          </div>
+
+          <button class="btn-action" onclick="switchScreen('save-sheet')">+ เพิ่มลิงก์ลงโฟลเดอร์นี้</button>
+        </div>
+
+        <!-- SCREEN 5: LINK DETAIL & AI SUMMARY -->
+        <div id="screen-link-detail" class="screen-page">
+          <div class="app-header">
+            <button class="header-btn" onclick="switchScreen('home')">‹</button>
+            <h2>รายละเอียด</h2>
+            <button class="header-btn" onclick="alert('แชร์ลิงก์ให้เพื่อน')">↗</button>
+          </div>
+
+          <h3 id="detail-title" style="font-size:18px;font-weight:700;margin:8px 0 4px;">คาเฟ่สายมินิมอลอารีย์</h3>
+          <p id="detail-sub" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">TikTok · @cafe.hopper · เซฟเมื่อวาน</p>
+
+          <!-- AI Summary Card (Simulates backend/Ai folder!) -->
+          <div class="ai-summary-box">
+            <div class="ai-summary-header">
+              <span class="ai-badge">✨ AI วิเคราะห์และสรุปเนื้อหา</span>
+              <button onclick="triggerAiSummarize()" style="font-size:11px;background:#7c3aed;color:#fff;border:none;padding:3px 8px;border-radius:10px;cursor:pointer;">⚡ เรียก AI ใหม่</button>
+            </div>
+            <ul class="ai-summary-list" id="ai-summary-text">
+              <li>ร้านเปิดทุกวัน 08:30 - 17:30 น. (หยุดทุกวันอังคาร)</li>
+              <li>เมนูแนะนำ: Dirty กาแฟคั่วกลางกลิ่นโทนช็อกโกแลต และมัทฉะชีสเค้ก</li>
+              <li>มีที่จอดรถหน้าร้าน 4 คัน ใกล้ BTS อารีย์ ทางออก 3 เดินต่อ 300 เมตร</li>
+            </ul>
+          </div>
+
+          <div class="section-title">แท็ก</div>
+          <div style="display:flex;gap:6px;margin-bottom:12px;">
+            <span class="tag-badge">#คาเฟ่</span>
+            <span class="tag-badge">#อารีย์</span>
+            <span class="tag-badge" style="border:1px dashed #bbb;cursor:pointer;" onclick="promptNewTag()">+ tag</span>
+          </div>
+
+          <div class="section-title">การแจ้งเตือน</div>
+          <div class="link-card" onclick="switchScreen('reminder')" style="align-items:center;">
+            <span>⏰</span>
+            <div class="link-meta">
+              <div class="link-meta-title">พรุ่งนี้ 18:00</div>
+              <div class="link-meta-sub">คลิกเพื่อแก้ไขเวลา</div>
+            </div>
+            <span>›</span>
+          </div>
+
+          <div style="margin-top:auto;display:flex;flex-direction:column;gap:8px;">
+            <button class="btn-action" onclick="alert('กำลังเปิดแอป TikTok หรือเว็บต้นฉบับ...')">🔗 เปิดลิงก์ต้นฉบับ</button>
+            <button class="btn-action btn-outline" onclick="markAsRead()">✓ ทำเครื่องหมายว่าดูแล้ว</button>
+          </div>
+        </div>
+
+        <!-- SCREEN 6: REMINDER PICKER -->
+        <div id="screen-reminder" class="screen-page">
+          <div class="app-header">
+            <button class="header-btn" onclick="switchScreen('home')">‹</button>
+            <h2>ตั้งเตือน</h2>
+            <div style="width:38px;"></div>
+          </div>
+
+          <div style="text-align:center;font-weight:700;margin:8px 0;font-size:15px;">พฤศจิกายน 2569</div>
+
+          <div class="calendar-grid">
+            <div class="cal-day-header">อา</div>
+            <div class="cal-day-header">จ</div>
+            <div class="cal-day-header">อ</div>
+            <div class="cal-day-header">พ</div>
+            <div class="cal-day-header">พฤ</div>
+            <div class="cal-day-header">ศ</div>
+            <div class="cal-day-header">ส</div>
+
+            <button class="cal-day-btn disabled">1</button>
+            <button class="cal-day-btn disabled">2</button>
+            <button class="cal-day-btn disabled">3</button>
+            <button class="cal-day-btn disabled">4</button>
+            <button class="cal-day-btn disabled">5</button>
+            <button class="cal-day-btn disabled">6</button>
+            <button class="cal-day-btn disabled">7</button>
+            <button class="cal-day-btn disabled">8</button>
+            <button class="cal-day-btn disabled">9</button>
+            <button class="cal-day-btn disabled">10</button>
+            <button class="cal-day-btn disabled">11</button>
+            <button class="cal-day-btn selected" onclick="selectDate(this)">12</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">13</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">14</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">15</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">16</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">17</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">18</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">19</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">20</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">21</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">22</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">23</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">24</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">25</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">26</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">27</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">28</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">29</button>
+            <button class="cal-day-btn" onclick="selectDate(this)">30</button>
+          </div>
+
+          <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:12px;margin:12px 0;display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:14px;font-weight:600;">เวลาเตือน</span>
+            <input type="time" id="reminder-time-input" value="18:00" style="font-size:16px;font-weight:700;border:1px solid #d1d5db;border-radius:6px;padding:4px 8px;font-family:inherit;">
+          </div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:20px;">* หากไม่ตั้งเวลา แอปจะบันทึกเป็นรายการที่ไม่มีแจ้งเตือน</p>
+
+          <div style="display:flex;gap:10px;margin-top:auto;">
+            <button class="btn-action btn-outline" style="flex:1;" onclick="clearReminder()">ลบเตือน</button>
+            <button class="btn-action" style="flex:1;" onclick="saveReminder()">ตั้งเตือน</button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Bottom Tab Navigation -->
+      <nav class="app-bottom-nav">
+        <button id="nav-home" class="nav-item active" onclick="switchScreen('home')">
+          <svg width="22" height="22" fill="none" stroke-width="2" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path></svg>
+          <span>หน้าหลัก</span>
+        </button>
+        <button id="nav-folders" class="nav-item" onclick="switchScreen('folders')">
+          <svg width="22" height="22" fill="none" stroke-width="2" viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"></path></svg>
+          <span>โฟลเดอร์</span>
+        </button>
+        <button id="nav-profile" class="nav-item" onclick="alert('หน้าโปรไฟล์ / ตั้งค่าระบบ')">
+          <svg width="22" height="22" fill="none" stroke-width="2" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+          <span>โปรไฟล์</span>
+        </button>
+      </nav>
+
+    </div>
+
+    <!-- ==================== BACKEND TESTBED INSPECTOR ==================== -->
+    <div class="backend-inspector">
+      <div class="inspector-header">
+        <h3>⚡ Backend Integration Log</h3>
+        <div class="mode-switch-group">
+          <label style="cursor:pointer;"><input type="radio" name="api_mode" value="mock" checked onchange="toggleApiMode('mock')"> Mock</label>
+          <label style="cursor:pointer;"><input type="radio" name="api_mode" value="live" onchange="toggleApiMode('live')"> Live API</label>
+        </div>
+      </div>
+
+      <!-- Config for Local Backend -->
+      <div class="api-endpoint-config">
+        <label>Backend API Base URL (เมื่อรัน backend ในเครื่อง):</label>
+        <input type="text" id="backend-base-url" value="http://localhost:5000/api">
+      </div>
+
+      <div style="font-size:11px;color:#9ca3af;margin-bottom:8px;display:flex;justify-content:space-between;">
+        <span>Network Activity Monitor:</span>
+        <button onclick="clearLogs()" style="background:none;border:none;color:#38bdf8;cursor:pointer;font-size:11px;">Clear Log</button>
+      </div>
+
+      <!-- Live Stream of HTTP Requests/Responses -->
+      <div class="inspector-log-stream" id="log-stream">
+        <div class="log-item">
+          <div class="log-time">09:41:00 · System Ready</div>
+          <span class="log-method">INIT</span> <span class="log-url">Mock Server Activated</span>
+          <div class="log-body">{ "status": "ready", "database": "connected (mock)", "ai_service": "active" }</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // State management
+    let currentScreen = 'home';
+    let apiMode = 'mock'; // 'mock' or 'live'
+
+    function switchScreen(screenId) {
+      currentScreen = screenId;
+      document.querySelectorAll('.screen-page').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.screen-pill-btn').forEach(el => el.classList.remove('active'));
+
+      const target = document.getElementById('screen-' + screenId);
+      if (target) target.classList.add('active');
+
+      // Update pill buttons
+      const pills = document.querySelectorAll('.screen-pill-btn');
+      const map = { 'home': 0, 'save-sheet': 1, 'folders': 2, 'folder-detail': 3, 'link-detail': 4, 'reminder': 5 };
+      if (map[screenId] !== undefined && pills[map[screenId]]) {
+        pills[map[screenId]].classList.add('active');
+      }
+
+      // Update bottom nav
+      document.getElementById('nav-home').classList.toggle('active', screenId === 'home');
+      document.getElementById('nav-folders').classList.toggle('active', screenId === 'folders' || screenId === 'folder-detail');
+    }
+
+    function toggleChip(el) {
+      el.classList.toggle('selected');
+    }
+
+    function promptNewFolder() {
+      const name = prompt('กรอกชื่อโฟลเดอร์ใหม่:');
+      if (name) {
+        logApiCall('POST', '/folders', { name: name, isShared: false, memberIds: [] });
+        const chip = document.createElement('span');
+        chip.className = 'folder-tag-chip selected';
+        chip.textContent = name;
+        chip.onclick = function() { toggleChip(this); };
+        document.getElementById('folder-chips').prepend(chip);
+      }
+    }
+
+    function promptNewTag() {
+      const tag = prompt('กรอกชื่อแท็กใหม่ (เช่น #กินเที่ยว):');
+      if (tag) {
+        const formatted = tag.startsWith('#') ? tag : '#' + tag;
+        const chip = document.createElement('span');
+        chip.className = 'folder-tag-chip selected';
+        chip.textContent = formatted;
+        chip.onclick = function() { toggleChip(this); };
+        document.getElementById('tag-chips').prepend(chip);
+      }
+    }
+
+    function openLinkDetail(title, sub, tag) {
+      document.getElementById('detail-title').textContent = title;
+      document.getElementById('detail-sub').textContent = sub;
+      logApiCall('GET', '/links/detail?title=' + encodeURIComponent(title), {
+        id: 101,
+        title: title,
+        url: "https://tiktok.com/@cafe.hopper",
+        tags: [tag.replace('#', '')],
+        reminder: "2026-11-13T18:00:00Z"
+      });
+      switchScreen('link-detail');
+    }
+
+    function triggerSaveLink() {
+      const title = document.getElementById('save-title-input').value;
+      const reminder = document.getElementById('save-sheet-reminder-text').textContent;
+      
+      const payload = {
+        title: title,
+        url: "https://tiktok.com/@cafe.hopper/video/1234",
+        folder: "ร้านกาแฟ",
+        tags: ["คาเฟ่", "อารีย์"],
+        reminderTime: reminder
+      };
+
+      logApiCall('POST', '/links', payload, 'post');
+      alert('✓ บันทึกข้อมูลสำเร็จ! ตรวจสอบ Payload ฝั่งขวามือได้เลย');
+      switchScreen('home');
+    }
+
+    function triggerAiSummarize() {
+      const logBox = document.getElementById('ai-summary-text');
+      logBox.innerHTML = '<li style="color:#7c3aed;">กำลังส่งข้อความไปหา backend/Ai/ เพื่อประมวลผล...</li>';
+
+      logApiCall('POST', '/ai/summarize', {
+        linkUrl: "https://tiktok.com/@cafe.hopper/video/1234",
+        prompt: "สรุปรายละเอียดเวลาเปิดปิด เมนูแนะนำ และที่จอดรถ"
+      }, 'ai');
+
+      setTimeout(() => {
+        logBox.innerHTML = `
+          <li>ร้านเปิดทุกวัน 08:30 - 17:30 น. (หยุดทุกวันอังคาร)</li>
+          <li>เมนูแนะนำ: Dirty กาแฟคั่วกลางกลิ่นโทนช็อกโกแลต และมัทฉะชีสเค้ก</li>
+          <li>มีที่จอดรถหน้าร้าน 4 คัน ใกล้ BTS อารีย์ ทางออก 3 เดินต่อ 300 เมตร</li>
+        `;
+      }, 700);
+    }
+
+    function selectDate(btn) {
+      document.querySelectorAll('.cal-day-btn').forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+    }
+
+    function saveReminder() {
+      const time = document.getElementById('reminder-time-input').value;
+      logApiCall('POST', '/reminders', { linkId: 101, date: "2026-11-12", time: time });
+      document.getElementById('save-sheet-reminder-text').textContent = '12 พ.ย. ' + time;
+      alert('✓ ตั้งเวลาแจ้งเตือน ' + time + ' น. เรียบร้อย');
+      switchScreen('save-sheet');
+    }
+
+    function clearReminder() {
+      logApiCall('DELETE', '/reminders/101', { linkId: 101 });
+      document.getElementById('save-sheet-reminder-text').textContent = 'ไม่มีการแจ้งเตือน';
+      switchScreen('save-sheet');
+    }
+
+    function markAsRead() {
+      logApiCall('PATCH', '/links/101/read', { isRead: true });
+      alert('ทำเครื่องหมายว่าดูแล้วเรียบร้อย');
+      switchScreen('home');
+    }
+
+    function setHomeFilter(btn, filterType) {
+      document.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      logApiCall('GET', '/links?filter=' + filterType, { count: filterType === 'unread' ? 12 : 35 });
+    }
+
+    function filterHomeLinks() {
+      const q = document.getElementById('home-search').value;
+      if (q.length > 2) {
+        logApiCall('GET', '/links/search?q=' + encodeURIComponent(q), { query: q, matched: 2 });
+      }
+    }
+
+    // Logger for Backend Inspection
+    function logApiCall(method, endpoint, data, type = 'get') {
+      const stream = document.getElementById('log-stream');
+      const timeStr = new Date().toTimeString().split(' ')[0];
+      const baseUrl = document.getElementById('backend-base-url').value;
+
+      const item = document.createElement('div');
+      item.className = 'log-item ' + (type || '');
+      item.innerHTML = `
+        <div class="log-time">${timeStr} · Mode: ${apiMode.toUpperCase()}</div>
+        <span class="log-method">${method}</span> <span class="log-url">${baseUrl + endpoint}</span>
+        <div class="log-body">${JSON.stringify(data, null, 2)}</div>
+      `;
+      stream.prepend(item);
+    }
+
+    function clearLogs() {
+      document.getElementById('log-stream').innerHTML = '<div style="color:#6b7280;font-size:11px;">Cleared.</div>';
+    }
+
+    function toggleApiMode(mode) {
+      apiMode = mode;
+      logApiCall('CONFIG', '/mode', { activeMode: mode, message: mode === 'live' ? 'ยิงไปยังเซิร์ฟเวอร์จริงเมื่อเรียก API' : 'จำลองข้อมูล (Mock Data)' });
+    }
+  </script>
+</body>
+</html>
