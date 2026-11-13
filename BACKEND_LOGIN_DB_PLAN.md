@@ -19,7 +19,78 @@
 
 ---
 
-## 2. โครงสร้างไฟล์ทั้งหมดใน `backend/`
+## 2. ลำดับขั้นตอนการทำงานและความเกี่ยวข้องกัน (System Flowcharts)
+
+เพื่อให้เห็นภาพรวมว่าแต่ละไฟล์และแต่ละโมดูลเชื่อมโยงกันอย่างไร สามารถดูตามแผนภาพ 3 ส่วนด้านล่างนี้ครับ
+
+### 2.1 ภาพรวมความเกี่ยวข้องของทุกโมดูลใน Backend
+ทุกคำขอจากหน้าบ้าน (Web / Mobile / Extension) จะวิ่งผ่าน `main.py` แล้วแยกไปตาม Router โดยใช้ `get_current_user` จาก `Login/` เป็นประตูตรวจสิทธิ์ก่อนเข้าถึง `Database/` และ `Ai/`
+
+```mermaid
+flowchart LR
+    Client["Client Apps (Web / Mobile / Extension)"] --> Main["backend/main.py (FastAPI Entrypoint)"]
+    
+    Main --> AuthR["Login/router.py (/api/auth/*)"]
+    Main --> DbR["Database/router.py (/api/links, /preview, /folders, /tags)"]
+    Main --> AiR["Ai/router.py (/api/ai/summarize)"]
+
+    DbR -->|"1. ตรวจ JWT Token"| Guard["Login/dependencies.py (get_current_user)"]
+    AiR -->|"1. ตรวจ JWT Token"| Guard
+    Guard -->|"คืน user_id"| DbR
+    Guard -->|"คืน user_id"| AiR
+
+    AuthR --> AuthS["Login/service.py"]
+    DbR --> Unfurl["Database/unfurl_service.py (ดึงรูป/ชื่อเรื่อง)"]
+    DbR --> LinkS["Database/links_service.py (เซฟ/ค้นหา/จัดหมวด)"]
+    LinkS --> Unfurl
+
+    AuthS --> SupaClient["Database/supabase_client.py"]
+    LinkS --> SupaClient
+    SupaClient -->|"Auth + SQL + RLS"| Supabase[("Supabase (Auth + PostgreSQL)")]
+```
+
+### 2.2 ลำดับขั้นตอนระบบสมาชิกและยืนยันตัวตน (Auth & JWT Flow)
+```mermaid
+flowchart TD
+    A["ผู้ใช้กรอก Email/Password หรือกด Google/Apple"] --> B["POST /api/auth/register หรือ /login"]
+    B --> C["Login/service.py เรียก Supabase Auth"]
+    C --> D{"สมัครใหม่ใช่หรือไม่?"}
+    D -->|"ใช่"| E["DB Trigger: handle_new_user() สร้างแถวในตาราง profiles อัตโนมัติ"]
+    D -->|"ไม่ใช่ (Login)"| F["ดึงข้อมูลจากตาราง profiles"]
+    E --> F
+    F --> G["ส่ง access_token (JWT) + refresh_token กลับไปที่ Client"]
+    G --> H["Client แนบ Header: Authorization Bearer JWT ในทุกคำขอถัดไป"]
+    H --> I["Login/dependencies.py (get_current_user) ตรวจ JWT"]
+    I -->|"ผ่าน"| J["ส่งต่อ user_id ให้ Database/ และ Ai/ ใช้งาน"]
+    I -->|"หมดอายุ / ไม่ถูกต้อง"| K["ตีกลับ HTTP 401 Unauthorized (ให้ Client เรียก /refresh)"]
+```
+
+### 2.3 ลำดับขั้นตอนการเซฟลิงก์ ดึงพรีวิว และแสดงรายการ (Save & List Flow)
+```mermaid
+flowchart TD
+    subgraph SaveFlow["ขาเซฟลิงก์ (POST /api/links)"]
+        S1["รับ URL + folder_id + tags จากผู้ใช้"] --> S2["normalize_url: ตัด utm_*, fbclid และสร้าง url_hash"]
+        S2 --> S3{"เช็กใน DB: มี (owner_id, url_hash) แล้วหรือยัง?"}
+        S3 -->|"มีแล้ว (ซ้ำ)"| S4["อัปเดต saved_at = now() ดึงลิงก์เดิมขึ้นมาบนสุด (ไม่สร้างซ้ำ)"]
+        S3 -->|"ยังไม่มี"| S5["unfurl_service: ตรวจ SSRF Guard (บล็อก Private IP)"]
+        S5 --> S6["ดึงพรีวิว: oEmbed (YouTube/TikTok/X) -> OpenGraph -> Fallback ชื่อเว็บ"]
+        S6 --> S7["บันทึกลงตาราง items + สร้าง/ผูกแท็กใน tags & item_tags"]
+        S4 --> S8["ส่ง LinkItemResponse กลับหน้าบ้าน"]
+        S7 --> S8
+    end
+
+    subgraph ListFlow["ขาแสดงรายการ (GET /api/links)"]
+        L1["รับ Query: folder_id, status, tag, q (คำค้น), limit, offset"] --> L2["ตรวจสิทธิ์: owner_id = user_id หรืออยู่ใน Shared Folder"]
+        L2 --> L3["กรองตาม Folder / Status (inbox, todo, done, archived) / Tag"]
+        L3 --> L4["ถ้ามีคำค้น q: ค้นหาแบบ Substring ไทย/อังกฤษ ด้วย pg_trgm + ILIKE"]
+        L4 --> L5["เรียงตาม saved_at ล่าสุด + แบ่งหน้า (Pagination)"]
+        L5 --> L6["ส่ง LinkListResponse (items + total + has_more) กลับหน้าบ้าน"]
+    end
+```
+
+---
+
+## 3. โครงสร้างไฟล์ทั้งหมดใน `backend/`
 
 ```text
 backend/
@@ -49,7 +120,7 @@ backend/
 
 ---
 
-## 3. รายละเอียดแต่ละโมดูล (Detailed Module Specification)
+## 4. รายละเอียดแต่ละโมดูล (Detailed Module Specification)
 
 ### Step 0: `Database/schema.sql` (โครงสร้างฐานข้อมูล Supabase PostgreSQL)
 
@@ -239,7 +310,7 @@ FastAPI Router สำหรับจัดการลิงก์, พรีว
 
 ---
 
-## 4. ลำดับการลงมือพัฒนา (Micro-Batch Execution Plan)
+## 5. ลำดับการลงมือพัฒนา (Micro-Batch Execution Plan)
 
 สามารถแบ่งทำทีละ Batch เพื่อความชัวร์และทดสอบได้ทันทีในแต่ละขั้น:
 
@@ -255,7 +326,7 @@ FastAPI Router สำหรับจัดการลิงก์, พรีว
 
 ---
 
-## 5. 📋 บรีฟพร้อมก๊อปปี้ไปสั่งงานต่อ (สำหรับให้ AI หรือเพื่อนร่วมทีมเขียนโค้ดตามแผน)
+## 6. 📋 บรีฟพร้อมก๊อปปี้ไปสั่งงานต่อ (สำหรับให้ AI หรือเพื่อนร่วมทีมเขียนโค้ดตามแผน)
 
 > 💡 **วิธีใช้:** หากต้องการให้ AI (หรือส่งต่อให้เพื่อนร่วมทีม) ลงมือเขียนโค้ดตามแผนนี้ สามารถก๊อปปี้ข้อความด้านล่างไปวางสั่งงานได้ทันที:
 
@@ -269,5 +340,5 @@ FastAPI Router สำหรับจัดการลิงก์, พรีว
    - `Login/dependencies.py` ต้องมี `get_current_user` ที่ verify JWT Token และส่ง `CurrentUser` ออกมาให้ทั้ง `Database/` และ `Ai/` ใช้ร่วมกันได้
    - `Database/unfurl_service.py` ต้องมี SSRF Guard ป้องกัน Private IP และทำ Graceful Fallback เมื่อเว็บปลายทางบล็อก (ห้ามทำให้การเซฟลิงก์พัง)
    - `Database/links_service.py` ต้องทำ Idempotent Save ด้วย `url_hash` (ถ้าเซฟลิงก์เดิมซ้ำ ให้อัปเดตเวลาขึ้นมาบนสุดแทนการสร้างซ้ำ) และรองรับการค้นหาภาษาไทยใน `GET /api/links`
-4. ลงมือทำทีละ Batch ตามตารางในหัวข้อที่ 4 ของ `BACKEND_LOGIN_DB_PLAN.md` จนครบ Batch 7 และรัน `pytest` ให้ผ่านทั้งหมด
+4. ลงมือทำทีละ Batch ตามตารางในหัวข้อที่ 5 ของ `BACKEND_LOGIN_DB_PLAN.md` จนครบ Batch 7 และรัน `pytest` ให้ผ่านทั้งหมด
 ```
