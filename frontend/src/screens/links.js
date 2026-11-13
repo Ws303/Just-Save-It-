@@ -201,97 +201,172 @@ export function renderSaveAndReminderSheets(state) {
   const sheet = state.ui.activeSheet;
   if (!sheet) return "";
 
-  // 1 Save link bottom sheet (4:2)
+  // 1 Save link bottom sheet (Neobrutalism Share Sheet as in screenshot)
   if (sheet.type === "saveLink") {
     const d = sheet.draft;
     const folders = state.data.folders;
-    const tagChoices = ["#คาเฟ่", "#อารีย์", "#ญี่ปุ่น", "#อาหาร"];
+    const quotaRem = state.data.freeQuotaRemaining ?? 4;
+    const quotaTot = state.data.freeQuotaTotal ?? 4;
+    const isPinned = Boolean(d.pinned);
+    const selectedFolderId = d.folderId || folders[0]?.id;
+    const isAdvancedOpen = Boolean(d.showAdvanced);
+
+    // Determine preview thumbnail letter/icon based on platform or domain
+    let thumbLetter = "V";
+    if (d.platform === "TikTok" || (d.url && d.url.includes("tiktok"))) thumbLetter = "V";
+    else if (d.platform === "Instagram") thumbLetter = "IG";
+    else if (d.platform === "YouTube") thumbLetter = "▶";
+    else if (d.platform === "X" || d.platform === "Twitter") thumbLetter = "𝕏";
+    else if (d.title) thumbLetter = d.title.trim().charAt(0).toUpperCase();
 
     return `
-      <div class="modal-backdrop" data-close-sheet="1">
-        <div class="bottom-sheet" onclick="event.stopPropagation()">
+      <div class="modal-backdrop share-sheet-backdrop" data-close-sheet="1">
+        <div class="bottom-sheet neobrutal-share-sheet">
           <div class="sheet-handle"></div>
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <h3 style="margin:0;font-size:20px;">บันทึกลิงก์</h3>
-            <button class="icon-btn" data-toggle-draft-reminder="1" title="ตั้งเตือนเวลาเปิดดู">
-              ${icons.clock(20)}
+
+          <!-- Header matching screenshot: Mascot Tuckii/Just-Save-It Logo + App Name + Subtitle + Close Button -->
+          <div class="nb-sheet-header">
+            <div class="nb-sheet-brand">
+              <div class="nb-brand-icon">
+                ${icons.shareSheetLogo(40)}
+              </div>
+              <div class="nb-brand-meta">
+                <div class="nb-brand-title">Just Save It</div>
+                <div class="nb-brand-subtitle">บันทึกลิงก์ลงในคอลเลกชันของคุณ</div>
+              </div>
+            </div>
+            <button class="nb-close-circle" data-close-sheet="1" aria-label="ปิด">
+              ${icons.close(18)}
             </button>
           </div>
 
-          <div class="field-group">
-            <div style="display:flex;gap:6px;">
-              <input
-                class="field-input"
-                style="height:40px;"
-                type="url"
-                value="${escHtml(d.url)}"
-                placeholder="วาง URL ที่นี่ เช่น https://tiktok.com/..."
-                data-bind-save-url="1"
-              />
-              <button class="btn-outline-pill" style="height:40px;padding:0 12px;font-size:12.5px;white-space:nowrap;" data-run-unfurl="1">
-                ดึงตัวอย่าง
-              </button>
+          <!-- Link Preview Card: Yellow badge with 'V' / icon + Title + Domain -->
+          <div class="nb-preview-card">
+            <div class="nb-thumb-box">
+              <span class="nb-thumb-letter">${escHtml(thumbLetter)}</span>
             </div>
-          </div>
-
-          <div class="link-card" style="padding:10px;">
-            <div class="link-thumb" style="width:62px;height:62px;">
-              <span>${escHtml(d.platform || "Link")}</span>
-            </div>
-            <div class="link-body">
+            <div class="nb-preview-info">
               <input
                 type="text"
-                value="${escHtml(d.title)}"
-                placeholder="ชื่อโพสต์"
-                style="border:none;outline:none;font-weight:700;font-size:14.5px;width:100%;color:var(--ink-strong);"
+                class="nb-title-input"
+                value="${escHtml(d.title || "TikTok - Make Your Day")}"
+                placeholder="ชื่อโพสต์หรือเนื้อหา"
                 data-bind-save-title="1"
+                title="คลิกเพื่อแก้ไขชื่อโพสต์"
               />
-              <p class="tiny-hint" style="margin:2px 0 0;">${escHtml(d.domain || "tiktok.com/...")}</p>
+              <div class="nb-domain-text">${escHtml(d.domain || "vt.tiktok.com")}</div>
             </div>
           </div>
 
-          <div>
-            <strong style="font-size:14px;display:block;margin-bottom:7px;">โฟลเดอร์</strong>
-            <div class="chip-row" style="flex-wrap:wrap;">
-              ${folders
-                .map(
-                  (f) => `
-                <button class="filter-chip ${d.folderId === f.id ? "active-dark" : ""}" data-select-save-folder="${f.id}">
-                  ${escHtml(f.name)}
-                </button>`
-                )
-                .join("")}
-              <button class="filter-chip" data-open-create-folder="1">+ ใหม่</button>
-            </div>
+          <!-- Collection Section: Title + '+ คอลเลกชันใหม่' -->
+          <div class="nb-collection-head">
+            <h4 class="nb-collection-title">บันทึกลงคอลเลกชัน</h4>
+            <button class="nb-btn-new-collection" data-open-create-folder="1">
+              + คอลเลกชันใหม่
+            </button>
           </div>
 
-          <div>
-            <strong style="font-size:14px;display:block;margin-bottom:7px;">แท็ก</strong>
-            <div class="chip-row" style="flex-wrap:wrap;">
-              ${tagChoices
-                .map((tag) => {
-                  const active = (d.tags || []).includes(tag);
-                  return `<button class="filter-chip ${active ? "active-dark" : ""}" data-toggle-save-tag="${escHtml(tag)}">${escHtml(tag)}</button>`;
-                })
-                .join("")}
-            </div>
+          <!-- Collection List: Cards with Black Border, Shadow, Folder Icon, Item Count & Custom Radio Button -->
+          <div class="nb-collection-list">
+            ${folders
+              .map((f) => {
+                const isSelected = selectedFolderId === f.id;
+                const count = state.data.links.filter((l) => l.folderId === f.id).length;
+                return `
+                  <div class="nb-folder-card ${isSelected ? "selected" : ""}" data-select-save-folder="${f.id}">
+                    <div class="nb-folder-left">
+                      <div class="nb-folder-icon-box">
+                        ${icons.folderSolid(22)}
+                      </div>
+                      <div class="nb-folder-meta">
+                        <div class="nb-folder-name">${escHtml(f.name)}</div>
+                        <div class="nb-folder-count">${count} รายการ</div>
+                      </div>
+                    </div>
+                    <div class="nb-radio-circle ${isSelected ? "checked" : ""}">
+                      ${isSelected ? `<span class="nb-radio-inner"></span>` : ""}
+                    </div>
+                  </div>
+                `;
+              })
+              .join("")}
           </div>
 
-          <input
-            class="field-input"
-            type="text"
-            value="${escHtml(d.note)}"
-            placeholder="เพิ่มโน้ต (ไม่บังคับ)"
-            data-bind-save-note="1"
-          />
+          <!-- Collapsible Optional Details (URL, Tags, Note, Reminder) -->
+          <div class="nb-collapsible-section">
+            <button class="nb-collapse-toggle" data-toggle-save-advanced="1">
+              <span>${isAdvancedOpen ? "▼ ซ่อนตัวเลือกเพิ่มเติม (URL, แท็ก, โน้ต)" : "▶ ตัวเลือกเพิ่มเติม (URL, แท็ก, โน้ต)"}</span>
+            </button>
+            ${
+              isAdvancedOpen
+                ? `
+              <div class="nb-advanced-body">
+                <div style="display:flex;gap:6px;">
+                  <input
+                    class="field-input"
+                    style="height:36px;font-size:12px;"
+                    type="url"
+                    value="${escHtml(d.url)}"
+                    placeholder="URL ลิงก์"
+                    data-bind-save-url="1"
+                  />
+                  <button class="btn-outline-pill" style="height:36px;padding:0 10px;font-size:12px;white-space:nowrap;" data-run-unfurl="1">
+                    ดึงตัวอย่าง
+                  </button>
+                </div>
 
-          ${
-            d.reminder
-              ? `<div class="tiny-hint">เตือนความจำ: <strong>${escHtml(d.reminder)}</strong></div>`
-              : ""
-          }
+                <div style="margin-top:8px;">
+                  <span class="tiny-hint" style="display:block;margin-bottom:4px;">แท็ก</span>
+                  <div class="chip-row" style="flex-wrap:wrap;">
+                    ${["#คาเฟ่", "#เที่ยว", "#อาหาร", "#สาระ", "#วิดีโอสั้น"]
+                      .map((tag) => {
+                        const active = (d.tags || []).includes(tag);
+                        return `<button class="filter-chip ${active ? "active-dark" : ""}" style="font-size:11.5px;height:28px;" data-toggle-save-tag="${escHtml(tag)}">${escHtml(tag)}</button>`;
+                      })
+                      .join("")}
+                  </div>
+                </div>
 
-          <button class="btn-dark-pill" data-submit-save-link="1">บันทึก</button>
+                <input
+                  class="field-input"
+                  style="height:36px;margin-top:8px;font-size:12.5px;"
+                  type="text"
+                  value="${escHtml(d.note || "")}"
+                  placeholder="เพิ่มโน้ตสั้นๆ (ไม่บังคับ)..."
+                  data-bind-save-note="1"
+                />
+              </div>`
+                : ""
+            }
+          </div>
+
+          <!-- Quota Notice matching screenshot -->
+          <div class="nb-quota-notice">
+            วันนี้เหลือลิงก์ฟรี ${quotaRem} จาก ${quotaTot} ลิงก์
+          </div>
+
+          <!-- Bottom Action Row matching screenshot: Pin Switch + Yellow Save Button -->
+          <div class="nb-bottom-action-row">
+            <div class="nb-pin-switch-group">
+              <div class="nb-pin-labels">
+                <div class="nb-pin-title">ปักหมุดลิงก์นี้</div>
+                <div class="nb-pin-subtitle">เพิ่มไว้บนสุดของคอลเลกชัน</div>
+              </div>
+              <label class="nb-ios-switch" title="เปิด/ปิด การปักหมุด" data-toggle-pin-link="1">
+                <input
+                  type="checkbox"
+                  ${isPinned ? "checked" : ""}
+                  data-toggle-pin-link="1"
+                />
+                <span class="nb-switch-slider"></span>
+              </label>
+            </div>
+
+            <button class="nb-btn-save-yellow" data-submit-save-link="1">
+              ${icons.bookmarkSolid(18)}
+              <span>บันทึกลิงก์</span>
+            </button>
+          </div>
         </div>
       </div>
     `;

@@ -72,12 +72,169 @@ function renderControlsTab(state, selectedLink, headers, preset) {
       }
     </div>
 
-    <!-- Flow Triggers -->
+    <!-- Phase 1: Backend Login & Auth Test Runner -->
+    <div class="tb-card" style="border: 2px solid var(--theme-accent); background: #faf5ff;">
+      <h3 class="tb-card-title">
+        <span style="display:inline-flex;align-items:center;gap:6px;">
+          <span style="background:var(--theme-accent);color:#fff;border-radius:6px;padding:1px 6px;font-size:11px;font-weight:900;">PHASE 1</span>
+          <span>ทดสอบระบบ Login หลังบ้าน (Backend Auth Runner)</span>
+        </span>
+      </h3>
+      <p class="tiny-hint" style="margin:0 0 6px;">
+        ทดสอบยิง API Auth หลังบ้านจริง (Email/Password, Magic Link, Profile, Google OAuth, MCP Personal Access Tokens)
+      </p>
+
+      <div style="font-size:11.5px;color:var(--ink-secondary);margin-bottom:8px;padding:6px;background:#fff;border-radius:6px;border:1px solid var(--tb-border);word-break:break-all;">
+        <strong>Bearer Token:</strong> ${api.bearerToken ? `<span style="color:#059669;font-weight:600;">${escHtml(api.bearerToken.slice(0, 24))}...</span>` : `<span style="color:#dc2626;">(ยังไม่มี Token - กรุณาล็อกอิน)</span>`}
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="loginPassword" title="POST /api/auth/login">
+          🔑 Login (may/pass)
+        </button>
+        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="magicLink" title="POST /api/auth/magic-link">
+          ✉️ Magic Link
+        </button>
+        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="getMe" title="GET /api/auth/me">
+          👤 Get /api/auth/me
+        </button>
+        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="googleOauth" title="GET /api/auth/oauth/google">
+          🌐 Google OAuth URL
+        </button>
+        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="createToken" title="POST /api/auth/tokens">
+          🎟️ Create MCP Token
+        </button>
+        <button class="tb-btn" style="justify-content:center;background:#fff;color:#dc2626;" data-tb-test-auth="logout" title="POST /api/auth/logout">
+          🚪 Logout
+        </button>
+      </div>
+    </div>
+
+    <!-- Share Sheet Intent Simulator (Primary Focus) -->
+    <div class="tb-card" style="border: 2px solid #fed053; background: #fffdf5;">
+      <h3 class="tb-card-title">
+        <span style="display:inline-flex;align-items:center;gap:6px;">
+          <span style="background:#fed053;border:1.5px solid #000;border-radius:6px;padding:1px 5px;font-size:11px;font-weight:900;">NEW</span>
+          <span>จำลองการแชร์จากแอปอื่น (Share Sheet Test)</span>
+        </span>
+      </h3>
+      <p class="tiny-hint" style="margin:0 0 6px;">
+        ทดสอบว่าเมื่อผู้ใช้กด Share จาก TikTok, IG หรือแอปอื่นเข้ามา หน้าตา Share Sheet สไตล์ Neobrutalism จะขึ้นอย่างไร และข้อมูลถูกส่งเข้าแอปจริงหรือไม่
+      </p>
+
+      <!-- Preset Quick Triggers -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+        <button
+          class="tb-btn"
+          style="background:#fed053;color:#000;font-weight:800;border:1.5px solid #000;box-shadow:2px 2px 0 #000;justify-content:center;"
+          data-sim-share-preset="tiktok"
+          title="จำลองแชร์จาก TikTok ตรงตามรูปตัวอย่าง"
+        >
+          🎵 TikTok (ตามรูปตัวอย่าง)
+        </button>
+        <button
+          class="tb-btn"
+          style="justify-content:center;"
+          data-sim-share-preset="instagram"
+          title="จำลองแชร์คลิป Reels จาก Instagram"
+        >
+          📸 Instagram Reels
+        </button>
+        <button
+          class="tb-btn"
+          style="justify-content:center;"
+          data-sim-share-preset="youtube"
+          title="จำลองแชร์จาก YouTube"
+        >
+          ▶️ YouTube
+        </button>
+        <button
+          class="tb-btn"
+          style="justify-content:center;"
+          data-sim-share-preset="twitter"
+          title="จำลองแชร์จาก X (Twitter)"
+        >
+          𝕏 X (Twitter)
+        </button>
+      </div>
+
+      <!-- Backdrop Simulator Toggle -->
+      <div style="margin-top:6px;display:flex;align-items:center;justify-content:space-between;background:#fff;padding:6px 10px;border-radius:8px;border:1px solid var(--tb-border);">
+        <span style="font-size:12px;font-weight:600;color:#1e293b;">จำลองฉากหลังแอปต้นทาง (Simulate Host App)</span>
+        <label style="display:inline-flex;align-items:center;cursor:pointer;">
+          <input type="checkbox" id="tbToggleHostBackdrop" ${state.ui.simulatedSourceApp ? "checked" : ""} data-toggle-host-backdrop="1" />
+        </label>
+      </div>
+
+      <!-- Custom Share Form -->
+      <details style="font-size:12px;margin-top:4px;">
+        <summary style="cursor:pointer;color:var(--ink-secondary);font-weight:600;">กำหนดข้อความและ URL เพื่อทดสอบเอง (Custom Intent)</summary>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;background:#fff;padding:8px;border-radius:8px;border:1px solid var(--tb-border);">
+          <input class="tb-mini-input" type="text" id="customShareTitle" placeholder="ชื่อโพสต์ เช่น คาเฟ่เปิดใหม่ชวนไปลอง" value="TikTok - Make Your Day" />
+          <input class="tb-mini-input" type="url" id="customShareUrl" placeholder="URL เช่น https://vt.tiktok.com/ZSjXample/" value="https://vt.tiktok.com/ZSjXample/" />
+          <button class="tb-btn primary" data-sim-custom-share="1">⚡ ส่งแชร์เข้าแอป Just Save It</button>
+        </div>
+      </details>
+    </div>
+
+    <!-- Incoming Share Verification Inspector -->
+    <div class="tb-card" style="border: 2px solid ${data.lastSharedEvent ? "#10b981" : "var(--tb-border)"};">
+      <h3 class="tb-card-title">
+        <span style="display:inline-flex;align-items:center;gap:6px;">
+          <span>📥 ตรวจสอบข้อมูลที่ถูกส่งเข้าแอป</span>
+          ${
+            data.lastSharedEvent
+              ? `<span class="tag-badge live" style="background:#10b981;">DATA RECEIVED</span>`
+              : `<span class="tag-badge mock">WAITING</span>`
+          }
+        </span>
+      </h3>
+
+      ${
+        data.lastSharedEvent
+          ? `
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.5;">
+            <div style="color:#065f46;font-weight:700;display:flex;align-items:center;gap:4px;">
+              <span>✓ ข้อมูลถูกส่งเข้าแอปและบันทึกเรียบร้อย</span>
+              <span class="tiny-hint" style="color:#047857;">(${escHtml(data.lastSharedEvent.at)})</span>
+            </div>
+            <div style="margin-top:4px;">
+              <strong>ชื่อโพสต์:</strong> ${escHtml(data.lastSharedEvent.title)}<br/>
+              <strong>URL:</strong> <a href="${escHtml(data.lastSharedEvent.url)}" target="_blank" style="text-decoration:underline;">${escHtml(data.lastSharedEvent.url)}</a><br/>
+              <strong>แพลตฟอร์ม:</strong> ${escHtml(data.lastSharedEvent.platform)} (${escHtml(data.lastSharedEvent.domain)})<br/>
+              <strong>คอลเลกชัน:</strong> 📁 ${escHtml(data.lastSharedEvent.folderName)}<br/>
+              <strong>สถานะการปักหมุด:</strong> ${data.lastSharedEvent.pinned ? "📌 ปักหมุดไว้บนสุด" : "ธรรมดา"}<br/>
+              <strong>แท็ก:</strong> ${(data.lastSharedEvent.tags || []).join(", ") || "-"}
+            </div>
+          </div>
+
+          <div style="display:flex;gap:6px;">
+            <button class="tb-btn primary" style="flex:1;" data-open-link="${data.lastSharedEvent.id}">
+              👀 เปิดดูการ์ดที่แชร์เข้ามาในแอป
+            </button>
+            <button class="tb-btn" style="flex:1;" data-open-folder="${data.lastSharedEvent.folderId}">
+              📁 ไปที่คอลเลกชัน ${escHtml(data.lastSharedEvent.folderName)}
+            </button>
+          </div>
+
+          <details style="font-size:11.5px;">
+            <summary style="cursor:pointer;color:var(--ink-secondary);font-weight:600;">ดู Raw JSON Payload ที่ส่งเข้า API</summary>
+            <pre class="tb-pre">${escHtml(JSON.stringify(data.lastSharedEvent, null, 2))}</pre>
+          </details>
+        </div>`
+          : `
+        <div style="padding:10px;text-align:center;color:var(--ink-secondary);font-size:12.5px;">
+          ยังไม่มีข้อมูลที่เพิ่งแชร์เข้ามา<br/>
+          <span class="tiny-hint">ลองกดปุ่ม <strong>"🎵 TikTok (ตามรูปตัวอย่าง)"</strong> ด้านบน แล้วกด <strong>"บันทึกลิงก์"</strong> ในแชร์ชีต</span>
+        </div>`
+      }
+    </div>
+
+    <!-- Other Figma Flows -->
     <div class="tb-card">
-      <h3 class="tb-card-title"><span>จำลอง User Flows จาก Figma</span></h3>
+      <h3 class="tb-card-title"><span>หน้าจออื่นๆ จาก Figma</span></h3>
       <div style="display:flex;flex-wrap:wrap;gap:6px;">
-        <button class="tb-btn" data-sim-share-intent="tiktok">Share จาก TikTok → 1 Save Link</button>
-        <button class="tb-btn" data-sim-share-intent="youtube">Share จาก YouTube</button>
         <button class="tb-btn" data-sim-open-invite="1">เปิดคำเชิญเพื่อน → 23 Invite</button>
         <button class="tb-btn" data-open-preview="1">โหมดปัดดูรายการ → 7 Preview</button>
         <button class="tb-btn" data-go-screen="login">Logout Preview → 10 Login</button>
@@ -212,9 +369,9 @@ function renderMcpTab(state) {
 function renderMatrixTab(api) {
   const rows = [
     { area: "backend/main.py", route: "GET /health", status: "Implemented", mode: "Live + Mock" },
+    { area: "backend/Login/", route: "POST /api/auth/* (Email/OAuth/Native/Tokens)", status: "Implemented (Phase 1)", mode: "Live + Mock" },
     { area: "backend/Ai/router.py", route: "POST /api/ai/summarize", status: "Implemented (3-Tier)", mode: "Live + Mock" },
     { area: "backend/Ai/mcp_server.py", route: "SSE /mcp (13 Tools)", status: "Implemented", mode: "Sim + Probe" },
-    { area: "backend/Login/", route: "POST /api/auth/* (Email/OAuth)", status: "Planned (.gitkeep)", mode: "Mock Simulated" },
     { area: "backend/Database/", route: "POST /api/preview, /links, /folders", status: "Planned (.gitkeep)", mode: "Mock Simulated" },
     { area: "backend/Database/", route: "/reminders & /invites & CSV Export", status: "Planned (.gitkeep)", mode: "Mock Simulated" },
   ];

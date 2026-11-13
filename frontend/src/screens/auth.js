@@ -77,12 +77,23 @@ export function renderEmailLoginScreen(state) {
         <div class="field-group">
           <label class="field-label" for="emailLoginInput">อีเมล</label>
           <input id="emailLoginInput" class="field-input" type="email" value="${escHtml(emailVal)}" placeholder="may@example.com" data-bind-email-login="1" />
-          <span class="tiny-hint">เราจะส่ง Magic Link ให้กดยืนยันเข้าสู่ระบบ</span>
+          <span class="tiny-hint">เลือกเข้าด้วย Magic Link หรือใส่รหัสผ่าน</span>
         </div>
 
-        <button class="btn-accent-pill full48" data-submit-email-login="1">
-          ส่งลิงก์เข้าสู่ระบบ
-        </button>
+        <div class="field-group">
+          <label class="field-label" for="passwordLoginInput">รหัสผ่าน (กรณีเข้าสู่ระบบด้วยรหัสผ่าน)</label>
+          <input id="passwordLoginInput" class="field-input" type="password" placeholder="••••••••" data-bind-password-login="1" />
+          <span class="tiny-hint">บัญชีทดสอบ May: password123</span>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <button class="btn-accent-pill full48" data-submit-password-login="1">
+            เข้าสู่ระบบด้วยรหัสผ่าน
+          </button>
+          <button class="btn-outline-pill full48" data-submit-email-login="1" style="background:#fff;">
+            ขอรับ Magic Link ทางอีเมล
+          </button>
+        </div>
       </div>
     </div>
   `;

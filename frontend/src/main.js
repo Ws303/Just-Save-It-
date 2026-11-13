@@ -63,6 +63,47 @@ function renderActiveMobileScreen(state) {
   }
 }
 
+function renderSimulatedHostApp(appName) {
+  const isTikTok = appName === "tiktok";
+  const isIG = appName === "instagram";
+  const isYT = appName === "youtube";
+  const isTwitter = appName === "twitter";
+
+  return `
+    <div class="simulated-host-app">
+      <div class="sim-host-topbar">
+        <button style="background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:20px;padding:5px 12px;font-size:11.5px;cursor:pointer;" data-close-host-app="1">
+          ✕ ปิดโหมดจำลองแอป
+        </button>
+        <span style="font-weight:700;">${isTikTok ? "🎵 TikTok (กำลังเล่นคลิป)" : isIG ? "📸 Instagram Reels" : isYT ? "▶️ YouTube" : "𝕏 X"}</span>
+        <span style="font-size:11px;opacity:0.85;">Host App</span>
+      </div>
+      <div class="sim-host-content" style="background-image:url('./assets/covers/coffee.png');">
+        <div class="sim-host-sidebar">
+          <div class="sim-host-action-btn">
+            <div class="sim-host-action-icon">${icons.profile(20)}</div>
+            <span>+</span>
+          </div>
+          <div class="sim-host-action-btn">
+            <div class="sim-host-action-icon" style="color:#ef4444;">${icons.cherry(18)}</div>
+            <span>89.2K</span>
+          </div>
+          <div class="sim-host-action-btn">
+            <div class="sim-host-action-icon" style="background:#fed053;color:#000;border:1.5px solid #000;">${icons.share(18)}</div>
+            <span style="font-weight:800;color:#fed053;">แชร์</span>
+          </div>
+        </div>
+        <div class="sim-host-meta">
+          <strong style="font-size:15px;">${isTikTok ? "@minimal.lifestyle" : isIG ? "@cafe.hopping" : "@traveler.bkk"}</strong>
+          <p style="margin:0;font-size:13px;line-height:1.4;opacity:0.95;">
+            ${isTikTok ? "TikTok - Make Your Day ✨ แนะนำคลิปไวรัลยอดนิยม" : "รีวิวคาเฟ่มินิมอลย่านอารีย์ 2026"}
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderViewportContent(state) {
   if (state.ui.viewportMode === "web") {
     return renderWebView(state);
@@ -78,9 +119,12 @@ function renderViewportContent(state) {
     renderProfileSheets(state),
   ].join("");
 
+  const hostAppBackdrop = state.ui.simulatedSourceApp ? renderSimulatedHostApp(state.ui.simulatedSourceApp) : "";
+
   return `
     <div class="phone-bezel">
-      <main class="phone-frame" aria-label="Sharely App Preview">
+      <main class="phone-frame" aria-label="Just Save It App Preview">
+        ${hostAppBackdrop}
         ${renderActiveMobileScreen(state)}
         ${sheetsHtml}
         ${state.ui.toast ? `<div class="toast-banner">${escHtml(state.ui.toast)}</div>` : ""}
@@ -222,10 +266,13 @@ function renderApp() {
 function openSaveSheet(prefill = {}) {
   const state = store.state;
   const folderId = prefill.folderId || state.ui.activeFolderId || state.data.folders[0]?.id;
-  const url = prefill.url || "https://www.tiktok.com/@minimal.ari/video/74009911";
+  const url = prefill.url || "https://vt.tiktok.com/ZSjXample/";
   const { platform, domain } = inferPlatform(url);
 
   store.state.ui.viewportMode = "mobile";
+  if (typeof prefill.simulatedSourceApp !== "undefined") {
+    store.state.ui.simulatedSourceApp = prefill.simulatedSourceApp;
+  }
   if (!["home", "folders", "folderDetail", "linkDetail"].includes(state.ui.screen)) {
     state.ui.screen = "home";
   }
@@ -233,15 +280,18 @@ function openSaveSheet(prefill = {}) {
     type: "saveLink",
     draft: {
       url,
-      platform,
-      domain,
-      title: prefill.title || "คาเฟ่สายมินิมอลอารีย์",
+      platform: prefill.platform || platform,
+      domain: prefill.domain || domain,
+      title: prefill.title || (platform === "TikTok" ? "TikTok - Make Your Day" : "โพสต์ที่แชร์เข้ามา"),
       folderId,
-      tags: prefill.tags || ["#คาเฟ่"],
+      pinned: Boolean(prefill.pinned),
+      showAdvanced: false,
+      tags: prefill.tags || (platform === "TikTok" ? ["#วิดีโอสั้น"] : ["#แชร์มา"]),
       note: prefill.note || "",
       reminder: "",
       reminderDate: null,
       reminderTime: "18:00",
+      sourceApp: prefill.sourceApp || platform,
     },
   });
 }
@@ -293,6 +343,8 @@ appEl.addEventListener("input", (e) => {
     store.emit();
   } else if (el.dataset.bindEmailLogin) {
     ui.authEmail = el.value;
+  } else if (el.dataset.bindPasswordLogin) {
+    ui.authPassword = el.value;
   } else if (el.dataset.editNote) {
     const item = getLinkById(el.dataset.editNote);
     if (item) {
@@ -358,7 +410,7 @@ appEl.addEventListener("change", (e) => {
 // DELEGATED CLICK HANDLERS
 // =========================================================
 appEl.addEventListener("click", async (e) => {
-  const target = e.target.closest("[data-viewport-switch],[data-toggle-inspector],[data-ins-tab],[data-quick-jump],[data-nav],[data-go-screen],[data-open-folder],[data-open-edit-folder],[data-open-link],[data-open-preview],[data-toggle-auth-mode],[data-oauth-google],[data-submit-email-login],[data-simulate-magic-link],[data-accept-invite],[data-toggle-notifs],[data-mark-notifs-read],[data-filter-chip],[data-toggle-fav],[data-open-post-menu],[data-close-sheet],[data-toggle-status-sheet],[data-trigger-ai-sheet],[data-confirm-delete-post],[data-execute-delete-post],[data-open-save-sheet],[data-run-unfurl],[data-select-save-folder],[data-toggle-save-tag],[data-toggle-draft-reminder],[data-submit-save-link],[data-toggle-video-play],[data-toggle-seen],[data-run-ai-summarize],[data-remove-tag],[data-open-add-tag],[data-save-new-tag],[data-open-reminder],[data-cal-month],[data-select-cal-day],[data-clear-reminder],[data-save-reminder],[data-preview-mark-read],[data-preview-step],[data-open-create-folder],[data-suggest-folder-name],[data-open-pick-cover],[data-select-cover],[data-back-to-folder-edit],[data-save-folder-sheet],[data-open-invite-sheet],[data-copy-invite],[data-open-invite-apps],[data-open-invite-preview],[data-preview-recipient-invite],[data-toggle-ai-dropdown],[data-select-ai-provider],[data-select-ai-model],[data-toggle-ai-keyless],[data-save-ai-config],[data-open-edit-nickname],[data-save-nickname],[data-toggle-notif-setting],[data-set-text-size],[data-set-theme],[data-update-account-email],[data-send-password-reset],[data-submit-support],[data-open-export-csv],[data-download-csv],[data-open-logout-dialog],[data-confirm-logout],[data-web-scope],[data-web-folder],[data-select-web-link],[data-ext-unfurl],[data-ext-folder],[data-ext-tag],[data-ext-toggle-reminder],[data-ext-submit],[data-set-api-mode],[data-ping-health],[data-sim-share-intent],[data-sim-open-invite],[data-export-json-state],[data-reset-seed],[data-clear-logs],[data-run-mcp-tool]");
+  const target = e.target.closest("[data-viewport-switch],[data-toggle-inspector],[data-ins-tab],[data-quick-jump],[data-nav],[data-go-screen],[data-open-folder],[data-open-edit-folder],[data-open-link],[data-open-preview],[data-toggle-auth-mode],[data-oauth-google],[data-submit-email-login],[data-submit-password-login],[data-simulate-magic-link],[data-accept-invite],[data-toggle-notifs],[data-mark-notifs-read],[data-filter-chip],[data-toggle-fav],[data-open-post-menu],[data-close-sheet],[data-close-host-app],[data-toggle-pin-link],[data-toggle-save-advanced],[data-sim-share-preset],[data-sim-custom-share],[data-toggle-host-backdrop],[data-toggle-status-sheet],[data-trigger-ai-sheet],[data-confirm-delete-post],[data-execute-delete-post],[data-open-save-sheet],[data-run-unfurl],[data-select-save-folder],[data-toggle-save-tag],[data-toggle-draft-reminder],[data-submit-save-link],[data-toggle-video-play],[data-toggle-seen],[data-run-ai-summarize],[data-remove-tag],[data-open-add-tag],[data-save-new-tag],[data-open-reminder],[data-cal-month],[data-select-cal-day],[data-clear-reminder],[data-save-reminder],[data-preview-mark-read],[data-preview-step],[data-open-create-folder],[data-suggest-folder-name],[data-open-pick-cover],[data-select-cover],[data-back-to-folder-edit],[data-save-folder-sheet],[data-open-invite-sheet],[data-copy-invite],[data-open-invite-apps],[data-open-invite-preview],[data-preview-recipient-invite],[data-toggle-ai-dropdown],[data-select-ai-provider],[data-select-ai-model],[data-toggle-ai-keyless],[data-save-ai-config],[data-open-edit-nickname],[data-save-nickname],[data-toggle-notif-setting],[data-set-text-size],[data-set-theme],[data-update-account-email],[data-send-password-reset],[data-submit-support],[data-open-export-csv],[data-download-csv],[data-open-logout-dialog],[data-confirm-logout],[data-web-scope],[data-web-folder],[data-select-web-link],[data-ext-unfurl],[data-ext-folder],[data-ext-tag],[data-ext-toggle-reminder],[data-ext-submit],[data-set-api-mode],[data-ping-health],[data-tb-test-auth],[data-sim-share-intent],[data-sim-open-invite],[data-export-json-state],[data-reset-seed],[data-clear-logs],[data-run-mcp-tool]");
   if (!target) return;
 
   const d = target.dataset;
@@ -460,10 +512,26 @@ appEl.addEventListener("click", async (e) => {
     store.navigate("checkEmail");
     return;
   }
+  if (d.submitPasswordLogin) {
+    const email = ui.authEmail || data.user.email || "may@example.com";
+    const password = ui.authPassword || "password123";
+    const res = await apiClient.signInPassword(email, password);
+    if (res.ok) {
+      store.navigate("home");
+      store.showToast("เข้าสู่ระบบด้วยรหัสผ่านสำเร็จ");
+    } else {
+      store.showToast(res.error || "รหัสผ่านไม่ถูกต้อง");
+    }
+    return;
+  }
   if (d.simulateMagicLink) {
-    await apiClient.signInEmail(ui.authEmail);
-    store.navigate(d.simulateMagicLink === "invite" ? "inviteLanding" : "home");
-    store.showToast("ยืนยัน Magic Link สำเร็จ");
+    const res = await apiClient.signInEmail(ui.authEmail);
+    if (res.ok) {
+      store.navigate(d.simulateMagicLink === "invite" ? "inviteLanding" : "home");
+      store.showToast("ยืนยัน Magic Link สำเร็จ");
+    } else {
+      store.showToast(res.error || "ยืนยันไม่สำเร็จ");
+    }
     return;
   }
   if (d.acceptInvite) {
@@ -510,7 +578,26 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.closeSheet) {
+    if (target.classList.contains("modal-backdrop") && e.target !== target) {
+      return;
+    }
+    ui.simulatedSourceApp = null;
     store.closeSheet();
+    return;
+  }
+  if (d.closeHostApp) {
+    ui.simulatedSourceApp = null;
+    store.emit();
+    return;
+  }
+  if (d.togglePinLink && ui.activeSheet?.type === "saveLink") {
+    ui.activeSheet.draft.pinned = !ui.activeSheet.draft.pinned;
+    store.emit();
+    return;
+  }
+  if (d.toggleSaveAdvanced && ui.activeSheet?.type === "saveLink") {
+    ui.activeSheet.draft.showAdvanced = !ui.activeSheet.draft.showAdvanced;
+    store.emit();
     return;
   }
   if (d.toggleStatusSheet) {
@@ -581,10 +668,14 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.submitSaveLink && ui.activeSheet?.type === "saveLink") {
-    const created = await apiClient.createLink(ui.activeSheet.draft);
+    const draft = ui.activeSheet.draft;
+    const created = await apiClient.createLink(draft);
     ui.activeLinkId = created.id;
+    window.__lastSharedHighlightId = created.id;
+    ui.simulatedSourceApp = null;
     store.closeSheet();
-    store.showToast("บันทึกลิงก์เข้าคลังแล้ว");
+    store.navigate("home");
+    store.showToast(`บันทึกลิงก์เข้าคอลเลกชันสำเร็จ! (${created.platform})`);
     return;
   }
 
@@ -942,6 +1033,103 @@ appEl.addEventListener("click", async (e) => {
     await apiClient.checkHealth();
     return;
   }
+  if (d.tbTestAuth) {
+    const act = d.tbTestAuth;
+    if (act === "loginPassword") {
+      const res = await apiClient.signInPassword("may@example.com", "password123");
+      store.showToast(res.ok ? "🔑 Login รหัสผ่านสำเร็จ (HTTP 200)" : `❌ ${res.error}`);
+    } else if (act === "magicLink") {
+      const res = await apiClient.signInEmail("may@example.com");
+      store.showToast(res.ok ? "✉️ ส่ง Magic Link สำเร็จ (HTTP 200)" : `❌ ${res.error}`);
+    } else if (act === "getMe") {
+      const res = await apiClient.getMe();
+      store.showToast(res.ok ? `👤 ${res.data.display_name} (${res.data.email})` : `❌ ${res.error}`);
+    } else if (act === "googleOauth") {
+      const res = await apiClient.signInGoogle();
+      store.showToast(res.ok ? "🌐 ขอ Google OAuth URL สำเร็จ" : `❌ ${res.error}`);
+    } else if (act === "createToken") {
+      const res = await apiClient.createMcpToken("Claude Desktop Test");
+      store.showToast(res.ok ? `🎟️ MCP Token: ${res.data.token_prefix}` : `❌ ${res.error}`);
+    } else if (act === "logout") {
+      await apiClient.signOut();
+      store.showToast("🚪 ออกจากระบบสำเร็จ");
+    }
+    return;
+  }
+  if (d.toggleHostBackdrop) {
+    const isChecked = target.checked;
+    if (isChecked) {
+      ui.simulatedSourceApp = "tiktok";
+    } else {
+      ui.simulatedSourceApp = null;
+    }
+    store.emit();
+    return;
+  }
+  if (d.simSharePreset) {
+    const withBackdrop = document.getElementById("tbToggleHostBackdrop")?.checked ?? true;
+    const folderId = data.folders[0]?.id; // 'ยังไม่จัดหมวด'
+
+    if (d.simSharePreset === "tiktok") {
+      openSaveSheet({
+        url: "https://vt.tiktok.com/ZSjXample/",
+        title: "TikTok - Make Your Day",
+        domain: "vt.tiktok.com",
+        platform: "TikTok",
+        folderId,
+        pinned: false,
+        simulatedSourceApp: withBackdrop ? "tiktok" : null,
+      });
+    } else if (d.simSharePreset === "instagram") {
+      openSaveSheet({
+        url: "https://www.instagram.com/reel/C8cafeAri99",
+        title: "คาเฟ่น่านั่งย่านอารีย์ 2026",
+        domain: "instagram.com",
+        platform: "Instagram",
+        folderId: data.folders[1]?.id || folderId,
+        pinned: true,
+        simulatedSourceApp: withBackdrop ? "instagram" : null,
+      });
+    } else if (d.simSharePreset === "youtube") {
+      openSaveSheet({
+        url: "https://www.youtube.com/watch?v=japanGuide2026",
+        title: "เที่ยวญี่ปุ่น 7 วัน โตเกียว-เกียวโต",
+        domain: "youtube.com",
+        platform: "YouTube",
+        folderId: data.folders[2]?.id || folderId,
+        pinned: false,
+        simulatedSourceApp: withBackdrop ? "youtube" : null,
+      });
+    } else if (d.simSharePreset === "twitter") {
+      openSaveSheet({
+        url: "https://x.com/tech_trends/status/178000",
+        title: "สรุปข่าวเทคโนโลยี & Generative AI",
+        domain: "x.com",
+        platform: "X",
+        folderId,
+        pinned: false,
+        simulatedSourceApp: withBackdrop ? "twitter" : null,
+      });
+    }
+    return;
+  }
+  if (d.simCustomShare) {
+    const titleVal = document.getElementById("customShareTitle")?.value?.trim() || "โพสต์ที่แชร์เข้ามา";
+    const urlVal = document.getElementById("customShareUrl")?.value?.trim() || "https://vt.tiktok.com/ZSjXample/";
+    const withBackdrop = document.getElementById("tbToggleHostBackdrop")?.checked ?? false;
+    const { platform, domain } = inferPlatform(urlVal);
+
+    openSaveSheet({
+      url: urlVal,
+      title: titleVal,
+      domain,
+      platform,
+      folderId: data.folders[0]?.id,
+      pinned: false,
+      simulatedSourceApp: withBackdrop ? (platform.toLowerCase() === "tiktok" ? "tiktok" : "instagram") : null,
+    });
+    return;
+  }
   if (d.simShareIntent) {
     if (d.simShareIntent === "youtube") {
       openSaveSheet({
@@ -951,9 +1139,10 @@ appEl.addEventListener("click", async (e) => {
       });
     } else {
       openSaveSheet({
-        url: "https://www.tiktok.com/@cafe.bkk/video/74100233",
-        title: "คาเฟ่เปิดใหม่ย่านบรรทัดทอง",
-        tags: ["#คาเฟ่"],
+        url: "https://vt.tiktok.com/ZSjXample/",
+        title: "TikTok - Make Your Day",
+        domain: "vt.tiktok.com",
+        tags: ["#วิดีโอสั้น"],
       });
     }
     return;

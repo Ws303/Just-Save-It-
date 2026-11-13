@@ -53,6 +53,21 @@ export function inferPlatform(urlStr) {
 }
 
 const seed = loadPersistedData();
+if (!seed.folders.some(f => f.name === "ยังไม่จัดหมวด")) {
+  seed.folders.unshift({
+    id: "f1a10000-0000-4000-8000-000000000000",
+    name: "ยังไม่จัดหมวด",
+    cover: "./assets/covers/project.png",
+    sharedCount: 0,
+    sharedUsers: [],
+    inviteSlug: "uncategorized",
+    baseExternalCount: 0,
+  });
+}
+if (typeof seed.freeQuotaRemaining === "undefined") {
+  seed.freeQuotaRemaining = 4;
+  seed.freeQuotaTotal = 4;
+}
 
 export const store = {
   state: {
@@ -65,6 +80,8 @@ export const store = {
       prevScreen: "home",
       activeFolderId: seed.folders[0]?.id || null,
       activeLinkId: seed.links[2]?.id || seed.links[0]?.id || null,
+      highlightLinkId: null,
+      simulatedSourceApp: null, // null | "tiktok" | "instagram" | "youtube"
       previewIndex: 0,
       homeSearch: "",
       homeFilter: "all", // all | unread | read | favorite

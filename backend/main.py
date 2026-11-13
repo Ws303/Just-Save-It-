@@ -1,9 +1,10 @@
 """Just-Save-It FastAPI Backend & Remote MCP Server.
 
 Integrates:
-1. AI Summarization Router (/api/ai/summarize)
-2. Remote MCP Server (/mcp) for external AI assistants (Claude Desktop, Cursor, etc.)
-3. Health check & CORS middleware
+1. Authentication & API Tokens Router (/api/auth/*)
+2. AI Summarization Router (/api/ai/summarize)
+3. Remote MCP Server (/mcp) for external AI assistants (Claude Desktop, Cursor, etc.)
+4. Health check & CORS middleware
 """
 
 import os
@@ -12,10 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from Ai.mcp_server import MCPAuthMiddleware, mcp
 from Ai.router import router as ai_router
+from Login.router import router as auth_router
 
 app = FastAPI(
     title="Just-Save-It Backend API & Remote MCP Server",
-    description="Backend services for saving links, On-Demand AI summarization, and external AI MCP access.",
+    description="Backend services for user authentication, saving links, On-Demand AI summarization, and external AI MCP access.",
     version="1.0.0",
 )
 
@@ -28,6 +30,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Register Module Routers
+app.include_router(auth_router)
 app.include_router(ai_router)
 
 if mcp is not None:
@@ -47,6 +51,7 @@ def health_check():
         "status": "healthy",
         "service": "Just-Save-It Backend",
         "mcp_enabled": mcp is not None,
+        "auth_enabled": True,
     }
 
 

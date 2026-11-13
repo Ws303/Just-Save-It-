@@ -296,6 +296,12 @@ export const apiClient = {
 
   async createLink(payload) {
     const { platform, domain } = inferPlatform(payload.url);
+    const isPinned = Boolean(payload.pinned);
+    const tags = payload.tags?.length ? [...payload.tags] : ["#บันทึกใหม่"];
+    if (isPinned && !tags.includes("#ปักหมุด")) {
+      tags.unshift("#ปักหมุด");
+    }
+
     const newItem = {
       id: generateUuid(),
       folderId: payload.folderId || store.state.data.folders[0]?.id,
@@ -305,14 +311,16 @@ export const apiClient = {
       title: payload.title || `โพสต์ใหม่จาก ${platform}`,
       savedAgo: "เมื่อสักครู่",
       status: "unread",
-      favorite: false,
-      tags: payload.tags?.length ? [...payload.tags] : ["#บันทึกใหม่"],
+      favorite: isPinned,
+      pinned: isPinned,
+      tags,
       note: payload.note || "",
       aiSummary: "",
       aiCached: false,
       reminder: payload.reminder || null,
       reminderDate: payload.reminderDate || null,
       reminderTime: payload.reminderTime || "18:00",
+      sourceApp: payload.sourceApp || platform,
     };
 
     await dispatchRequest({
@@ -324,14 +332,43 @@ export const apiClient = {
         folder_id: newItem.folderId,
         tags: newItem.tags,
         note: newItem.note,
+        pinned: isPinned,
         remind_at: newItem.reminderDate ? `${newItem.reminderDate}T${newItem.reminderTime}:00` : null,
       },
       mockHandler: () => ({ status: 201, data: newItem }),
     });
 
-    store.state.data.links.unshift(newItem);
+    // If pinned, insert at very top; otherwise insert after pinned items
+    if (isPinned) {
+      store.state.data.links.unshift(newItem);
+    } else {
+      const firstUnpinnedIdx = store.state.data.links.findIndex((l) => !l.pinned);
+      if (firstUnpinnedIdx === -1) store.state.data.links.unshift(newItem);
+      else store.state.data.links.splice(firstUnpinnedIdx, 0, newItem);
+    }
+
     const folder = getFolderById(newItem.folderId);
     if (folder) folder.baseExternalCount = (folder.baseExternalCount || 0) + 1;
+
+    // Track last shared event for QA & UI verification
+    store.state.data.lastSharedEvent = {
+      id: newItem.id,
+      title: newItem.title,
+      url: newItem.url,
+      platform: newItem.platform,
+      domain: newItem.domain,
+      folderId: newItem.folderId,
+      folderName: folder?.name || "ยังไม่จัดหมวด",
+      pinned: isPinned,
+      tags: newItem.tags,
+      at: new Date().toLocaleTimeString("th-TH", { hour12: false }),
+      iso: new Date().toISOString(),
+    };
+    store.state.ui.highlightLinkId = newItem.id;
+    if (typeof store.state.data.freeQuotaRemaining === "number" && store.state.data.freeQuotaRemaining > 0) {
+      store.state.data.freeQuotaRemaining -= 1;
+    }
+
     store.emit();
     return newItem;
   },
@@ -422,11 +459,7 @@ export const apiClient = {
 
   async signInEmail(email) {
     const clean = (email || "").trim() || "may@example.com";
-    store.state.data.user.email = clean;
-    if (!store.state.data.user.displayName) store.state.data.user.displayName = clean.split("@")[0];
-    store.state.data.user.isAuthenticated = true;
-    store.emit();
-    return dispatchRequest({
+    const res = await dispatchRequest({
       method: "POST",
       path: "/api/auth/magic-link",
       body: { email: clean },
@@ -435,12 +468,143 @@ export const apiClient = {
         data: { sent: true, email: clean, user_id: store.state.data.user.id },
       }),
     });
+    if (res.ok && res.data) {
+      if (res.data.access_token) {
+        store.state.api.bearerToken = res.data.access_token;
+      }
+      if (res.data.user) {
+        store.state.data.user.id = res.data.user.id || store.state.data.user.id;
+        store.state.data.user.email = res.data.user.email || clean;
+        store.state.data.user.displayName = res.data.user.display_name || clean.split("@")[0];
+        store.state.api.userId = res.data.user.id || store.state.api.userId;
+      }
+      store.state.data.user.isAuthenticated = true;
+      store.emit();
+    }
+    return res;
+  },
+
+  async signInPassword(email, password) {
+    const clean = (email || "").trim() || "may@example.com";
+    const res = await dispatchRequest({
+      method: "POST",
+      path: "/api/auth/login",
+      body: { email: clean, password },
+      mockHandler: () => ({
+        status: 200,
+        data: {
+          access_token: `mock_jwt_${Date.now()}`,
+          refresh_token: `mock_ref_${Date.now()}`,
+          token_type: "bearer",
+          user: { ...store.state.data.user, email: clean },
+        },
+      }),
+    });
+    if (res.ok && res.data) {
+      if (res.data.access_token) {
+        store.state.api.bearerToken = res.data.access_token;
+      }
+      if (res.data.user) {
+        store.state.data.user.id = res.data.user.id || store.state.data.user.id;
+        store.state.data.user.email = res.data.user.email || clean;
+        store.state.data.user.displayName = res.data.user.display_name || clean.split("@")[0];
+        store.state.api.userId = res.data.user.id || store.state.api.userId;
+      }
+      store.state.data.user.isAuthenticated = true;
+      store.emit();
+    }
+    return res;
+  },
+
+  async registerUser(email, password, displayName) {
+    const clean = (email || "").trim();
+    const res = await dispatchRequest({
+      method: "POST",
+      path: "/api/auth/register",
+      body: { email: clean, password, display_name: displayName || clean.split("@")[0] },
+      mockHandler: () => ({
+        status: 201,
+        data: {
+          access_token: `mock_jwt_${Date.now()}`,
+          refresh_token: `mock_ref_${Date.now()}`,
+          token_type: "bearer",
+          user: { id: generateUuid(), email: clean, display_name: displayName || clean.split("@")[0], tier: "free" },
+        },
+      }),
+    });
+    if (res.ok && res.data) {
+      if (res.data.access_token) {
+        store.state.api.bearerToken = res.data.access_token;
+      }
+      if (res.data.user) {
+        store.state.data.user.id = res.data.user.id || store.state.data.user.id;
+        store.state.data.user.email = res.data.user.email || clean;
+        store.state.data.user.displayName = res.data.user.display_name || displayName;
+        store.state.api.userId = res.data.user.id || store.state.api.userId;
+      }
+      store.state.data.user.isAuthenticated = true;
+      store.emit();
+    }
+    return res;
+  },
+
+  async getMe() {
+    return dispatchRequest({
+      method: "GET",
+      path: "/api/auth/me",
+      body: null,
+      mockHandler: () => ({
+        status: 200,
+        data: store.state.data.user,
+      }),
+    });
+  },
+
+  async createMcpToken(name) {
+    const res = await dispatchRequest({
+      method: "POST",
+      path: "/api/auth/tokens",
+      body: { name: name || "Testbed Client" },
+      mockHandler: () => ({
+        status: 201,
+        data: {
+          id: generateUuid(),
+          name: name || "Testbed Client",
+          token: `jsi_live_mock_${generateUuid().replace(/-/g, "")}`,
+          token_prefix: "jsi_live_mock...",
+          created_at: new Date().toISOString(),
+        },
+      }),
+    });
+    if (res.ok && res.data?.token) {
+      store.state.api.mcpApiToken = res.data.token;
+      store.emit();
+    }
+    return res;
+  },
+
+  async listMcpTokens() {
+    return dispatchRequest({
+      method: "GET",
+      path: "/api/auth/tokens",
+      body: null,
+      mockHandler: () => ({
+        status: 200,
+        data: [
+          {
+            id: generateUuid(),
+            name: "Claude Desktop",
+            token_prefix: "jsi_live_abcd...",
+            created_at: new Date().toISOString(),
+            is_active: true,
+          },
+        ],
+      }),
+    });
   },
 
   async signInGoogle() {
-    store.state.data.user.isAuthenticated = true;
-    store.emit();
-    return dispatchRequest({
+    const res = await dispatchRequest({
       method: "GET",
       path: "/api/auth/oauth/google",
       body: null,
@@ -449,17 +613,22 @@ export const apiClient = {
         data: { provider: "google", user: store.state.data.user },
       }),
     });
+    store.state.data.user.isAuthenticated = true;
+    store.emit();
+    return res;
   },
 
   async signOut() {
-    store.state.data.user.isAuthenticated = false;
-    store.emit();
-    return dispatchRequest({
+    const res = await dispatchRequest({
       method: "POST",
       path: "/api/auth/logout",
       body: null,
       mockHandler: () => ({ status: 200, data: { logged_out: true } }),
     });
+    store.state.data.user.isAuthenticated = false;
+    store.state.api.bearerToken = "";
+    store.emit();
+    return res;
   },
 
   async submitSupportReport({ topic, detail }) {

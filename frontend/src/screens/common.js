@@ -64,9 +64,11 @@ export function renderLinkCard(item, { folderContextId = null, selected = false 
   const folder = getFolderById(item.folderId);
   const statusLabel = item.status === "read" ? "ดูแล้ว" : "ยังไม่ได้ดู";
   const folderLabel = folder ? folder.name : "ทั่วไป";
+  const isRecentlyShared = window.__lastSharedHighlightId === item.id || item.savedAgo === "เมื่อสักครู่";
+  const isPinned = Boolean(item.pinned);
 
   return `
-    <div class="link-card ${selected ? "selected" : ""}" data-link-card="${item.id}">
+    <div class="link-card ${selected ? "selected" : ""} ${isRecentlyShared ? "recently-shared" : ""}" data-link-card="${item.id}">
       <div class="link-thumb" data-open-link="${item.id}">
         ${
           folder?.cover
@@ -78,7 +80,11 @@ export function renderLinkCard(item, { folderContextId = null, selected = false 
         </span>
       </div>
       <div class="link-body" data-open-link="${item.id}">
-        <p class="link-platform">${escHtml(item.platform)}</p>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          <p class="link-platform" style="margin:0;">${escHtml(item.platform)}</p>
+          ${isPinned ? `<span style="font-size:10px;font-weight:700;background:#111;color:#fff;padding:1px 6px;border-radius:4px;">📌 ปักหมุด</span>` : ""}
+          ${isRecentlyShared ? `<span class="new-incoming-pill">✨ เพิ่งแชร์เข้ามา</span>` : ""}
+        </div>
         <p class="link-title">${escHtml(item.title)}</p>
         <p class="link-sub">
           <span>${escHtml(folderLabel)} · ${statusLabel}</span>

@@ -205,4 +205,50 @@ export const icons = {
       <path d="M4 7L12 13L20 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
     </svg>
   `,
+
+  bookmarkSolid: (size = 18) => `
+    <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M6 3C5.44772 3 5 3.44772 5 4V21.5L12 17.5L19 21.5V4C19 3.44772 18.5523 3 18 3H6Z"/>
+    </svg>
+  `,
+
+  folderSolid: (size = 22) => `
+    <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M3 5.5C3 4.67157 3.67157 4 4.5 4H9.08579C9.48362 4 9.86514 4.15804 10.1464 4.43934L12.7071 7H19.5C20.3284 7 21 7.67157 21 8.5V18.5C21 19.3284 20.3284 20 19.5 20H4.5C3.67157 20 3 19.3284 3 18.5V5.5Z"/>
+    </svg>
+  `,
+
+  shareSheetLogo: (size = 38) => `
+    <svg width="${size}" height="${size}" viewBox="0 0 44 44" fill="none" aria-hidden="true">
+      <!-- Container border -->
+      <rect x="2" y="2" width="40" height="40" rx="10" fill="#ffffff" stroke="#111111" stroke-width="2.5"/>
+      <!-- Mascot Bookmark Yellow body -->
+      <path d="M12 9C12 7.89543 12.8954 7 14 7H30C31.1046 7 32 7.89543 32 9V35L22 29L12 35V9Z" fill="#FACC15" stroke="#111111" stroke-width="2.2" stroke-linejoin="round"/>
+      <!-- Mascot Eyes -->
+      <circle cx="18" cy="18" r="1.8" fill="#111111"/>
+      <circle cx="26" cy="18" r="1.8" fill="#111111"/>
+      <!-- Paper Clip Pink/Red Accent on Top Left -->
+      <path d="M10 13.5C8.89543 13.5 8 12.6046 8 11.5C8 10.3954 8.89543 9.5 10 9.5H16C17.6569 9.5 19 10.8431 19 12.5C19 14.1569 17.6569 15.5 16 15.5H11.5" stroke="#F43F5E" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+  `,
+
+  tiktok: (size = 20) => `
+    <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64c.298-.002.595.042.88.13V9.4a6.33 6.33 0 0 0-.88-.06 6.34 6.34 0 1 0 6.34 6.33V8.87a8.28 8.28 0 0 0 4.82 1.54V6.97a4.85 4.85 0 0 1-1.05-.28z"/>
+    </svg>
+  `,
+
+  instagram: (size = 20) => `
+    <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="2" y="2" width="20" height="20" rx="5" ry="5"/>
+      <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/>
+      <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/>
+    </svg>
+  `,
+
+  youtube: (size = 20) => `
+    <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+    </svg>
+  `,
 };
