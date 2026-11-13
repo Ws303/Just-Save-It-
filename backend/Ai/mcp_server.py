@@ -18,6 +18,8 @@ import os
 import secrets
 from typing import Any, Dict, List, Literal, Optional
 
+dt_tz_utc = timezone.utc
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -30,6 +32,19 @@ except ImportError:
     except ImportError:
         FastMCP = Any  # type: ignore
 
+from Database.repository import (
+    _get_accessible_folder_ids,
+    can_access_item,
+    get_folder_role,
+    upsert_item_reminder,
+)
+from Database.schemas import ReminderConfig
+from Database.text_hygiene import (
+    canonicalize_url,
+    clean_text_field,
+    compute_url_hash,
+    normalize_unicode_text,
+)
 from .schemas import SummarizeRequest
 from .summarizer_service import (
     check_item_access_permission,
@@ -135,46 +150,62 @@ def search_and_list_items(
     status: Optional[str] = None,
     limit: int = 20,
 ) -> List[Dict[str, Any]]:
-    """Search and list saved items filtered by search keyword, folder, tag, or status."""
+    """Search and list saved items (owned + shared folders) filtered by keyword, folder, tag, or status."""
     user_id = get_authenticated_user_id()
     db = get_active_db()
 
-    query_builder = db.table("items").select("*").eq("owner_id", user_id)
+    owned_res = db.table("items").select("*").eq("owner_id", user_id).execute()
+    seen_ids = set()
+    items: List[Dict[str, Any]] = []
+    for row in owned_res.data or []:
+        if row.get("id") not in seen_ids:
+            seen_ids.add(row.get("id"))
+            items.append(row)
+
+    try:
+        accessible_fids = _get_accessible_folder_ids(db, user_id)
+        if accessible_fids:
+            shared_items_res = db.table("items").select("*").in_("folder_id", accessible_fids).execute()
+            for row in shared_items_res.data or []:
+                if row.get("id") not in seen_ids:
+                    seen_ids.add(row.get("id"))
+                    items.append(row)
+    except Exception as exc:
+        logger.debug("Shared folder lookup skipped: %s", exc)
 
     if status:
-        query_builder = query_builder.eq("status", status)
+        items = [item for item in items if item.get("status") == status]
     if folder_id:
-        query_builder = query_builder.eq("folder_id", folder_id)
+        items = [item for item in items if item.get("folder_id") == folder_id]
 
-    res = query_builder.limit(limit).execute()
-    items: List[Dict[str, Any]] = res.data or []
-
-    # Filter by search query if provided
     if query and query.strip():
-        q_lower = query.strip().lower()
+        q_lower = normalize_unicode_text(query.strip()).lower()
         items = [
             item
             for item in items
-            if q_lower in (item.get("title") or "").lower()
-            or q_lower in (item.get("description") or "").lower()
-            or q_lower in (item.get("note") or "").lower()
-            or q_lower in (item.get("ai_summary") or "").lower()
+            if q_lower in normalize_unicode_text(item.get("title") or "").lower()
+            or q_lower in normalize_unicode_text(item.get("description") or "").lower()
+            or q_lower in normalize_unicode_text(item.get("note") or "").lower()
+            or q_lower in normalize_unicode_text(item.get("ai_summary") or "").lower()
             or q_lower in (item.get("url") or "").lower()
         ]
 
-    # Filter by tag_name if provided
     if tag_name and tag_name.strip():
-        tag_lower = tag_name.strip().lower()
-        tag_res = db.table("tags").select("id").eq("owner_id", user_id).ilike("name", tag_lower).execute()
-        if tag_res.data:
-            tag_id = tag_res.data[0]["id"]
-            link_res = db.table("item_tags").select("item_id").eq("tag_id", tag_id).execute()
+        tag_lower = normalize_unicode_text(tag_name.strip()).lower()
+        tag_res = db.table("tags").select("id, name").eq("owner_id", user_id).execute()
+        matching_ids = [
+            r["id"]
+            for r in (tag_res.data or [])
+            if normalize_unicode_text(r.get("name", "")).lower() == tag_lower
+        ]
+        if matching_ids:
+            link_res = db.table("item_tags").select("item_id").in_("tag_id", matching_ids).execute()
             valid_item_ids = {r["item_id"] for r in (link_res.data or [])}
             items = [item for item in items if item.get("id") in valid_item_ids]
         else:
             return []
 
-    return items
+    return items[:limit]
 
 
 def get_item_detail(item_id: str) -> Dict[str, Any]:
@@ -201,10 +232,10 @@ def get_item_detail(item_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.debug("Failed to fetch tags for item %s: %s", item_id, e)
 
-    # Fetch reminders
+    # Fetch reminders strictly scoped to current user
     reminders: List[Dict[str, Any]] = []
     try:
-        rem_res = db.table("reminders").select("*").eq("item_id", item_id).execute()
+        rem_res = db.table("reminders").select("*").eq("item_id", item_id).eq("user_id", user_id).execute()
         reminders = rem_res.data or []
     except Exception as e:
         logger.debug("Failed to fetch reminders for item %s: %s", item_id, e)
@@ -222,36 +253,64 @@ def create_item(
     tags: Optional[List[str]] = None,
     status: str = "inbox",
 ) -> Dict[str, Any]:
-    """Create and save a new item into the library with optional note, folder, tags, and status."""
+    """Create and save a new item into the library with canonical URL dedup, note, folder, tags, and status."""
     user_id = get_authenticated_user_id()
     db = get_active_db()
 
-    clean_url = url.strip()
-    url_hash = hashlib.md5(clean_url.lower().encode("utf-8")).hexdigest()
+    raw_url = (url or "").strip()
+    if not raw_url or not (raw_url.lower().startswith("http://") or raw_url.lower().startswith("https://")):
+        raise ValueError("URL must start with http:// or https://")
+    if status not in ("inbox", "todo", "done", "archived"):
+        raise ValueError(f"Invalid status '{status}'. Must be one of inbox, todo, done, archived.")
+    if folder_id is not None and folder_id.strip():
+        role = get_folder_role(db, user_id, folder_id.strip())
+        if role not in ("owner", "editor"):
+            raise PermissionError("Access denied: You need owner or editor permission in the target folder.")
+        folder_id = folder_id.strip()
+    else:
+        folder_id = None
 
-    item_payload = {
-        "owner_id": user_id,
-        "url": clean_url,
-        "url_hash": url_hash,
-        "title": title or clean_url,
-        "note": note,
-        "folder_id": folder_id,
-        "status": status,
-        "enrich_status": "pending",
-        "saved_at": datetime.now(timezone.utc).isoformat(),
-    }
+    canon_url = canonicalize_url(raw_url)
+    url_hash = compute_url_hash(raw_url)
+    clean_title = clean_text_field(title, unescape_html=True)
+    clean_note = clean_text_field(note, unescape_html=False)
+    now_iso = datetime.now(timezone.utc).isoformat()
 
-    res = db.table("items").insert(item_payload).execute()
-    created_item = res.data[0] if res.data else item_payload
-    item_id = created_item.get("id")
+    existing = db.table("items").select("*").eq("owner_id", user_id).eq("url_hash", url_hash).execute()
+    if existing.data:
+        created_item = dict(existing.data[0])
+        item_id = created_item.get("id")
+        bump_updates: Dict[str, Any] = {"saved_at": now_iso, "updated_at": now_iso}
+        if clean_title:
+            bump_updates["title"] = clean_title
+        if clean_note is not None:
+            bump_updates["note"] = clean_note
+        upd_res = db.table("items").update(bump_updates).eq("id", item_id).execute()
+        if upd_res.data:
+            created_item = upd_res.data[0]
+    else:
+        item_payload = {
+            "owner_id": user_id,
+            "url": raw_url,
+            "canonical_url": canon_url,
+            "url_hash": url_hash,
+            "title": clean_title or canon_url,
+            "note": clean_note,
+            "folder_id": folder_id,
+            "status": status,
+            "enrich_status": "pending",
+            "saved_at": now_iso,
+            "updated_at": now_iso,
+        }
+        res = db.table("items").insert(item_payload).execute()
+        created_item = res.data[0] if res.data else item_payload
+        item_id = created_item.get("id")
 
-    # Handle tags if provided
     if tags and item_id:
         for t_name in tags:
-            tag_str = t_name.strip()
+            tag_str = clean_text_field(t_name, unescape_html=False)
             if not tag_str:
                 continue
-            # Find or create tag
             existing_t = db.table("tags").select("id").eq("owner_id", user_id).eq("name", tag_str).execute()
             if existing_t.data:
                 tag_id = existing_t.data[0]["id"]
@@ -284,20 +343,34 @@ def update_item(
         raise ValueError(f"Item not found: {item_id}")
 
     item = item_res.data[0]
-    if not check_item_access_permission(db, user_id, item):
+    if not can_access_item(db, user_id, item, require_editor=True):
         raise PermissionError("Access denied: You do not have permission to edit this item.")
 
     updates: Dict[str, Any] = {}
     if title is not None:
-        updates["title"] = title
+        updates["title"] = clean_text_field(title, unescape_html=True)
     if note is not None:
-        updates["note"] = note
+        updates["note"] = clean_text_field(note, unescape_html=False)
     if folder_id is not None:
-        updates["folder_id"] = folder_id if folder_id.strip() else None
+        target_fid = folder_id.strip() if folder_id.strip() else None
+        if target_fid != item.get("folder_id"):
+            if item.get("owner_id") != user_id:
+                raise PermissionError("Access denied: Only the item owner can move an item across folders.")
+            if target_fid is not None:
+                role = get_folder_role(db, user_id, target_fid)
+                if role not in ("owner", "editor"):
+                    raise PermissionError("Access denied: You need owner or editor permission in the target folder.")
+        updates["folder_id"] = target_fid
     if status is not None:
+        if status not in ("inbox", "todo", "done", "archived"):
+            raise ValueError(f"Invalid status '{status}'. Must be one of inbox, todo, done, archived.")
         updates["status"] = status
         if status == "done":
             updates["done_at"] = datetime.now(timezone.utc).isoformat()
+        if status in ("done", "archived") and item.get("status") != status:
+            db.table("reminders").update(
+                {"status": "cancelled", "updated_at": datetime.now(timezone.utc).isoformat()}
+            ).eq("item_id", item_id).eq("status", "pending").execute()
 
     if updates:
         res = db.table("items").update(updates).eq("id", item_id).execute()
@@ -368,13 +441,13 @@ def manage_item_tags(
         raise ValueError(f"Item not found: {item_id}")
 
     item = item_res.data[0]
-    if not check_item_access_permission(db, user_id, item):
+    if not can_access_item(db, user_id, item, require_editor=True):
         raise PermissionError("Access denied: You do not have permission to manage tags on this item.")
 
     # Handle additions
     if add_tags:
         for t_name in add_tags:
-            tag_str = t_name.strip()
+            tag_str = (clean_text_field(t_name, unescape_html=False) or "")[:60].strip()
             if not tag_str:
                 continue
             existing = db.table("tags").select("id").eq("owner_id", user_id).eq("name", tag_str).execute()
@@ -393,7 +466,9 @@ def manage_item_tags(
     # Handle removals
     if remove_tags:
         for t_name in remove_tags:
-            tag_str = t_name.strip()
+            tag_str = (clean_text_field(t_name, unescape_html=False) or "")[:60].strip()
+            if not tag_str:
+                continue
             existing = db.table("tags").select("id").eq("owner_id", user_id).eq("name", tag_str).execute()
             if existing.data:
                 tag_id = existing.data[0]["id"]
@@ -411,7 +486,11 @@ def rename_or_delete_tag(
     user_id = get_authenticated_user_id()
     db = get_active_db()
 
-    tag_res = db.table("tags").select("id").eq("owner_id", user_id).eq("name", tag_name.strip()).execute()
+    clean_tag_name = (clean_text_field(tag_name, unescape_html=False) or "")[:60].strip()
+    if not clean_tag_name:
+        raise ValueError("Tag name cannot be empty.")
+
+    tag_res = db.table("tags").select("id").eq("owner_id", user_id).eq("name", clean_tag_name).execute()
     if not tag_res.data:
         raise ValueError(f"Tag not found: {tag_name}")
 
@@ -419,13 +498,14 @@ def rename_or_delete_tag(
 
     if delete:
         db.table("tags").delete().eq("id", tag_id).execute()
-        return {"success": True, "action": "deleted", "tag_name": tag_name}
+        return {"success": True, "action": "deleted", "tag_name": clean_tag_name}
 
-    if not new_name or not new_name.strip():
+    clean_new_name = (clean_text_field(new_name, unescape_html=False) or "")[:60].strip() if new_name else ""
+    if not clean_new_name:
         raise ValueError("new_name is required when renaming a tag.")
 
-    db.table("tags").update({"name": new_name.strip()}).eq("id", tag_id).execute()
-    return {"success": True, "action": "renamed", "old_name": tag_name, "new_name": new_name.strip()}
+    db.table("tags").update({"name": clean_new_name}).eq("id", tag_id).execute()
+    return {"success": True, "action": "renamed", "old_name": clean_tag_name, "new_name": clean_new_name}
 
 
 # =====================================================================
@@ -470,11 +550,12 @@ def manage_folder(
     db = get_active_db()
 
     if action == "create":
-        if not name or not name.strip():
-            raise ValueError("name is required to create a folder.")
+        clean_name = clean_text_field(name, unescape_html=False)
+        if not clean_name or len(clean_name) > 80:
+            raise ValueError("Folder name must be between 1 and 80 characters.")
         payload = {
             "owner_id": user_id,
-            "name": name.strip(),
+            "name": clean_name,
             "emoji": emoji,
             "is_shared": False,
         }
@@ -493,10 +574,15 @@ def manage_folder(
 
     if action == "rename":
         updates: Dict[str, Any] = {}
-        if name and name.strip():
-            updates["name"] = name.strip()
+        if name is not None:
+            clean_name = clean_text_field(name, unescape_html=False)
+            if not clean_name or len(clean_name) > 80:
+                raise ValueError("Folder name must be between 1 and 80 characters.")
+            updates["name"] = clean_name
         if emoji is not None:
             updates["emoji"] = emoji
+        if not updates:
+            raise ValueError("At least one of name or emoji is required for rename.")
         res = db.table("folders").update(updates).eq("id", folder_id).execute()
         return res.data[0] if res.data else updates
 
@@ -533,8 +619,20 @@ def share_folder_link(
         raise PermissionError("Access denied: Only the folder owner can create or revoke share links.")
 
     if revoke_all:
-        db.table("folder_invites").delete().eq("folder_id", folder_id).execute()
-        db.table("folders").update({"is_shared": False}).eq("id", folder_id).execute()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        invites_res = db.table("folder_invites").select("token, revoked_at").eq("folder_id", folder_id).execute()
+        for inv in (invites_res.data or []):
+            if inv.get("revoked_at") is None:
+                tok = inv.get("token")
+                if tok:
+                    db.table("folder_invites").update({"revoked_at": now_iso}).eq("token", tok).execute()
+                else:
+                    db.table("folder_invites").update({"revoked_at": now_iso}).eq("folder_id", folder_id).execute()
+
+        members_res = db.table("folder_members").select("user_id").eq("folder_id", folder_id).execute()
+        remaining_members = [m for m in (members_res.data or []) if m.get("user_id") != user_id]
+        if not remaining_members:
+            db.table("folders").update({"is_shared": False}).eq("id", folder_id).execute()
         return {"success": True, "message": f"All invite links revoked for folder {folder_id}."}
 
     # Generate secure token
@@ -573,8 +671,12 @@ def set_or_cancel_reminder(
     item_id: str,
     remind_at_iso: Optional[str] = None,
     cancel: bool = False,
+    schedule_type: Optional[Literal["once", "every_n_days"]] = None,
+    repeat_every_days: Optional[int] = None,
+    remind_time: Optional[str] = None,
+    timezone: str = "UTC",
 ) -> Dict[str, Any]:
-    """Set or cancel a reminder for a saved item."""
+    """Set (one-time or recurring every_n_days) or cancel a reminder for a saved item."""
     user_id = get_authenticated_user_id()
     db = get_active_db()
 
@@ -587,23 +689,45 @@ def set_or_cancel_reminder(
         raise PermissionError("Access denied: You do not have permission to set reminders for this item.")
 
     if cancel:
-        db.table("reminders").delete().eq("item_id", item_id).eq("user_id", user_id).execute()
+        db.table("reminders").update(
+            {"status": "cancelled", "updated_at": datetime.now(dt_tz_utc).isoformat()}
+        ).eq("item_id", item_id).eq("user_id", user_id).execute()
         return {"success": True, "action": "cancelled", "item_id": item_id}
 
-    if not remind_at_iso or not remind_at_iso.strip():
-        raise ValueError("remind_at_iso is required when setting a reminder.")
+    resolved_schedule: Literal["once", "every_n_days"] = (
+        schedule_type
+        if schedule_type is not None
+        else ("every_n_days" if repeat_every_days is not None else "once")
+    )
 
-    # Remove existing reminder and insert updated one
-    db.table("reminders").delete().eq("item_id", item_id).eq("user_id", user_id).execute()
-    payload = {
+    parsed_dt: Optional[datetime] = None
+    if remind_at_iso and remind_at_iso.strip():
+        raw_iso = remind_at_iso.strip()
+        if raw_iso.endswith("Z"):
+            raw_iso = raw_iso[:-1] + "+00:00"
+        parsed_dt = datetime.fromisoformat(raw_iso)
+    elif resolved_schedule == "once":
+        raise ValueError("remind_at_iso is required when setting a one-time reminder.")
+
+    cfg = ReminderConfig(
+        schedule_type=resolved_schedule,
+        remind_at=parsed_dt,
+        repeat_every_days=repeat_every_days,
+        remind_time=remind_time,
+        timezone=timezone,
+        title_snapshot=item.get("title"),
+    )
+    saved = upsert_item_reminder(db, user_id, item_id, item.get("title"), cfg)
+    return {
+        "success": True,
+        "action": "set",
         "item_id": item_id,
-        "user_id": user_id,
-        "remind_at": remind_at_iso.strip(),
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "remind_at": saved.get("remind_at"),
+        "schedule_type": saved.get("schedule_type"),
+        "repeat_every_days": saved.get("repeat_every_days"),
+        "remind_time": saved.get("remind_time"),
+        "timezone": saved.get("timezone"),
     }
-    db.table("reminders").insert(payload).execute()
-
-    return {"success": True, "action": "set", "item_id": item_id, "remind_at": remind_at_iso.strip()}
 
 
 # Register all 13 tools with FastMCP if available
@@ -632,15 +756,15 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
         token_param = request.query_params.get("token")
         raw_token = auth_header or token_param
 
-        if raw_token:
-            try:
-                user_id = resolve_user_id_from_token(raw_token)
-                token_reset = _current_user_id_ctx.set(user_id)
-                try:
-                    return await call_next(request)
-                finally:
-                    _current_user_id_ctx.reset(token_reset)
-            except PermissionError as pe:
-                return Response(content=str(pe), status_code=401)
+        if not raw_token:
+            return Response(content="Unauthorized: Missing API token.", status_code=401)
 
-        return await call_next(request)
+        try:
+            user_id = resolve_user_id_from_token(raw_token)
+            token_reset = _current_user_id_ctx.set(user_id)
+            try:
+                return await call_next(request)
+            finally:
+                _current_user_id_ctx.reset(token_reset)
+        except PermissionError as pe:
+            return Response(content=str(pe), status_code=401)

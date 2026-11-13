@@ -1,0 +1,31 @@
+{
+  "type": "workflow",
+  "product_name": "Just-Save-It",
+  "target_platform": "Fast stack: Web (Next.js) + Extension (WXT) + Mobile (Expo Android/iOS) over FastAPI modular monolith and Supabase.",
+  "workflow": {
+    "title": "Pitch flow",
+    "steps": [
+      {
+        "id": "problem",
+        "label": "Problem",
+        "text": "Unified cross-platform link hub with clean multi-language retrieval, preview, AI summary, and cross-OS reminders; Freemium + BYOK model"
+      },
+      {
+        "id": "trigger",
+        "label": "Trigger",
+        "text": "Missing a deadline on a saved post or wasting time hunting for a Thai/English link across apps."
+      },
+      {
+        "id": "loop",
+        "label": "Core loop",
+        "text": "Core loop & <=5 v1 MVP pillars locked; Part 1 Full Integrity Package scoped cleanly ahead of Part 2 Unfurl and Part 3 Reminders"
+      },
+      {
+        "id": "value",
+        "label": "Value",
+        "text": "Model: Freemium + Unlimited BYOK."
+      }
+    ]
+  },
+  "purpose": "Pitch flow for the overview"
+}

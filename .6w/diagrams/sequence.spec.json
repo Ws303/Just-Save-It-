@@ -1,0 +1,52 @@
+{
+  "type": "sequence",
+  "product_name": "Just-Save-It",
+  "target_platform": "Fast stack: Web (Next.js) + Extension (WXT) + Mobile (Expo Android/iOS) over FastAPI modular monolith and Supabase.",
+  "sequence": {
+    "title": "Core loop with edge-case branches",
+    "actors": [
+      "Thai Knowledge & Tech Prosumer Switching Mobile <-> Desktop",
+      "Just-Save-It"
+    ],
+    "steps": [
+      {
+        "from": 0,
+        "to": 1,
+        "label": "Trigger: Missing a deadline on a saved post or wasting t..."
+      },
+      {
+        "from": 1,
+        "to": 1,
+        "label": "Core loop & <=5 v1 MVP pillars locked; Part 1 Full Integr..."
+      },
+      {
+        "from": 1,
+        "to": 1,
+        "label": "Result"
+      },
+      {
+        "from": 1,
+        "to": 0,
+        "label": "Value delivered"
+      }
+    ],
+    "branches": [
+      {
+        "id": "EDGE-001",
+        "label": "Non-UTF-8 / legacy charset & multi-language text mojibake or truncation",
+        "response": "Detect encoding via HTTP Content-Type -> HTML <meta charset> -> charset-normalizer, une..."
+      },
+      {
+        "id": "EDGE-002",
+        "label": "iOS Pre-APNs 64-slot local notification cap and cross-OS schedule drift",
+        "response": "Persist canonical once/every_n_days schedule with IANA timezone in Supabase reminders t..."
+      },
+      {
+        "id": "EDGE-003",
+        "label": "Unfurl failure or tracking-parameter duplicate URLs risking data loss",
+        "response": "Persist user item, folder, tags, and note to DB immediately with enrich_status='pending..."
+      }
+    ]
+  },
+  "purpose": "Core loop including edge-case fallback branches"
+}

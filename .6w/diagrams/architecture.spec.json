@@ -1,0 +1,23 @@
+{
+  "type": "architecture",
+  "product_name": "Just-Save-It",
+  "target_platform": "Fast stack: Web (Next.js) + Extension (WXT) + Mobile (Expo Android/iOS) over FastAPI modular monolith and Supabase.",
+  "architecture": {
+    "title": "System boundary",
+    "actors": [
+      {
+        "id": "PERSONA-001",
+        "label": "Thai Knowledge & Tech Prosumer Switching Mobile <-> Desktop"
+      }
+    ],
+    "system": [
+      {
+        "id": "product",
+        "label": "Just-Save-It",
+        "text": "Fast stack: Web (Next.js) + Extension (WXT) + Mobile (Expo Android/iOS) over FastAPI modular monolith and Supabase."
+      }
+    ],
+    "externals": []
+  },
+  "purpose": "System blocks matching the chosen form factor and integrations"
+}

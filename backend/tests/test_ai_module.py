@@ -5,18 +5,22 @@ Validates all 22 checkpoints from AI_IMPLEMENTATION_PLAN.md:
 - Remote MCP Server (B0 - B13)
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
+import jwt
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from Ai.content_extractor import (
     MAX_EXTRACTED_CHARS,
+    MAX_HTML_BYTES,
+    _detect_oembed_endpoint,
+    _fetch_url_safely,
     extract_text_for_ai,
     validate_safe_url,
 )
@@ -27,6 +31,7 @@ from Ai.llm_client import (
     generate_structured_summary,
 )
 from Ai.mcp_server import (
+    MCPAuthMiddleware,
     create_item,
     delete_item,
     get_item_detail,
@@ -73,6 +78,8 @@ class InMemoryDB:
             "folder_invites": [],
             "reminders": [],
             "daily_ai_usage": [],
+            "profiles": [],
+            "devices": [],
         }
 
     def table(self, name: str):
@@ -83,7 +90,9 @@ class TableProxy:
     def __init__(self, data_list: List[Dict[str, Any]]):
         self._data = data_list
         self._filters: Dict[str, Any] = {}
-        self._not_filters: Dict[str, Any] = {}
+        self._in_filters: Dict[str, set] = {}
+        self._not_null_filters: set = set()
+        self._limit: Optional[int] = None
         self._action = "select"
 
     def select(self, cols="*"):
@@ -98,7 +107,7 @@ class TableProxy:
         return self
 
     def in_(self, col, val_list):
-        self._filters[f"{col}__in"] = set(val_list)
+        self._in_filters[col] = set(val_list)
         return self
 
     @property
@@ -107,32 +116,46 @@ class TableProxy:
 
     def is_(self, col, val):
         if val == "null":
-            self._not_filters[col] = None
+            self._not_null_filters.add(col)
         return self
 
     def limit(self, n):
+        self._limit = n
         return self
 
     def insert(self, payload):
         if isinstance(payload, dict):
             new_item = dict(payload)
-            if "id" not in new_item:
+            if "id" not in new_item and "token" not in new_item and not ("item_id" in new_item and "tag_id" in new_item) and not ("folder_id" in new_item and "user_id" in new_item):
                 new_item["id"] = str(uuid.uuid4())
             self._data.append(new_item)
             self._last_inserted = new_item
         return self
 
     def update(self, updates):
-        self._pending_updates = updates
+        self._pending_updates = dict(updates)
         return self
 
     def delete(self):
         self._action = "delete"
         return self
 
+    def _matches(self, item: Dict[str, Any]) -> bool:
+        for k, v in self._filters.items():
+            if item.get(k) != v:
+                return False
+        for k, v_set in self._in_filters.items():
+            if item.get(k) not in v_set:
+                return False
+        for k in self._not_null_filters:
+            v = item.get(k)
+            if v is None or v == "":
+                return False
+        return True
+
     def execute(self):
         if hasattr(self, "_last_inserted"):
-            res = MagicMock(data=[self._last_inserted])
+            res = MagicMock(data=[dict(self._last_inserted)])
             del self._last_inserted
             return res
 
@@ -141,14 +164,9 @@ class TableProxy:
             del self._pending_updates
             updated = []
             for item in self._data:
-                match = True
-                for k, v in self._filters.items():
-                    if item.get(k) != v:
-                        match = False
-                        break
-                if match:
+                if self._matches(item):
                     item.update(updates)
-                    updated.append(item)
+                    updated.append(dict(item))
             return MagicMock(data=updated)
 
         if getattr(self, "_action", None) == "delete":
@@ -156,39 +174,17 @@ class TableProxy:
             remaining = []
             deleted = []
             for item in self._data:
-                match = True
-                for k, v in self._filters.items():
-                    if item.get(k) != v:
-                        match = False
-                        break
-                if match:
-                    deleted.append(item)
+                if self._matches(item):
+                    deleted.append(dict(item))
                 else:
                     remaining.append(item)
             self._data.clear()
             self._data.extend(remaining)
             return MagicMock(data=deleted)
 
-        filtered = []
-        for item in self._data:
-            match = True
-            for k, v in self._filters.items():
-                if k.endswith("__in"):
-                    col = k.split("__in")[0]
-                    if item.get(col) not in v:
-                        match = False
-                        break
-                elif item.get(k) != v:
-                    match = False
-                    break
-
-            for not_col, not_val in self._not_filters.items():
-                if not_val is None and (item.get(not_col) is None or item.get(not_col) == ""):
-                    match = False
-                    break
-
-            if match:
-                filtered.append(item)
+        filtered = [dict(item) for item in self._data if self._matches(item)]
+        if self._limit is not None:
+            filtered = filtered[:self._limit]
         return MagicMock(data=filtered)
 
 
@@ -246,7 +242,8 @@ def test_a2_validate_safe_url_ssrf_guard():
     with pytest.raises(ValueError, match="Invalid URL scheme"):
         validate_safe_url("file:///etc/passwd")
 
-    safe = validate_safe_url("https://example.com/safe-article")
+    with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 0))]):
+        safe = validate_safe_url("https://example.com/safe-article")
     assert safe == "https://example.com/safe-article"
 
 
@@ -377,14 +374,23 @@ async def test_a7_summarize_item_once_cache_and_quota_rules():
 
 
 def test_a8_router_summarize_endpoint_headers_and_auth():
-    """A8: Endpoint POST /api/ai/summarize accepts headers and enforces auth."""
+    """A8: Endpoint POST /api/ai/summarize accepts headers and enforces auth (Blast Radius fix)."""
     client = TestClient(app)
 
-    # 401 without token
+    # 1. 401 without token
     resp_unauth = client.post("/api/ai/summarize", json={"item_id": "test-uuid"})
     assert resp_unauth.status_code == 401
 
-    # Dev/Test header authentication passes to service
+    # 2. Assert X-User-Id WITHOUT dev bypass (ENV=production / default) returns 401
+    with patch.dict("os.environ", {"ENV": "production", "ALLOW_DEV_AUTH_BYPASS": "false"}):
+        resp_dev_blocked = client.post(
+            "/api/ai/summarize",
+            json={"item_id": "it-test"},
+            headers={"X-User-Id": "usr-dev"},
+        )
+        assert resp_dev_blocked.status_code == 401
+
+    # 3. Assert X-User-Id WITH ENV=development and ALLOW_DEV_AUTH_BYPASS=true returns 200 and passes AIConfig headers cleanly
     mock_resp = SummarizeResponse(
         item_id="it-test",
         url="https://example.com",
@@ -393,19 +399,161 @@ def test_a8_router_summarize_endpoint_headers_and_auth():
         cached_from_db=True,
         engine_used="cache",
     )
-    with patch("Ai.router.summarize_item_once", new=AsyncMock(return_value=mock_resp)):
-        resp = client.post(
-            "/api/ai/summarize",
-            json={"item_id": "it-test"},
-            headers={
-                "X-User-Id": "usr-dev",
-                "X-AI-Provider": "custom",
-                "X-AI-Base-Url": "http://localhost:11434/v1",
-                "X-AI-Model": "llama3.2",
-            },
-        )
-        assert resp.status_code == 200
-        assert resp.json()["engine_used"] == "cache"
+    with patch.dict("os.environ", {"ENV": "development", "ALLOW_DEV_AUTH_BYPASS": "true"}):
+        with patch("Ai.router.summarize_item_once", new=AsyncMock(return_value=mock_resp)) as mock_svc:
+            resp = client.post(
+                "/api/ai/summarize",
+                json={"item_id": "it-test"},
+                headers={
+                    "X-User-Id": "usr-dev",
+                    "X-AI-Provider": "custom",
+                    "X-AI-Base-Url": "http://localhost:11434/v1",
+                    "X-AI-Model": "llama3.2",
+                },
+            )
+            assert resp.status_code == 200
+            assert resp.json()["engine_used"] == "cache"
+            # Verify AIConfig passed cleanly
+            call_kwargs = mock_svc.call_args[1]
+            cfg = call_kwargs.get("ai_config")
+            assert cfg is not None
+            assert cfg.provider == "custom"
+            assert cfg.base_url == "http://localhost:11434/v1"
+            assert cfg.model == "llama3.2"
+            assert call_kwargs.get("user_id") == "usr-dev"
+
+    # 4. Assert valid signed HS256 JWT (aud="authenticated", future exp) returns 200 even in production mode
+    jwt_secret = "test-secret-summarize-endpoint-key-987654321"
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    valid_jwt = jwt.encode(
+        {"sub": "usr-prod-jwt", "aud": "authenticated", "exp": now_ts + 3600, "iat": now_ts},
+        jwt_secret,
+        algorithm="HS256",
+    )
+    with patch.dict(
+        "os.environ",
+        {
+            "SUPABASE_JWT_SECRET": jwt_secret,
+            "ENV": "production",
+            "ALLOW_DEV_AUTH_BYPASS": "false",
+        },
+    ):
+        with patch("Ai.router.summarize_item_once", new=AsyncMock(return_value=mock_resp)) as mock_jwt_svc:
+            resp_jwt = client.post(
+                "/api/ai/summarize",
+                json={"item_id": "it-test"},
+                headers={"Authorization": f"Bearer {valid_jwt}"},
+            )
+            assert resp_jwt.status_code == 200
+            assert resp_jwt.json()["engine_used"] == "cache"
+            assert mock_jwt_svc.call_args[1].get("user_id") == "usr-prod-jwt"
+
+
+@pytest.mark.asyncio
+async def test_a9_summary_language_options_and_backward_compatibility():
+    """A9: Verify summary_language ('en', 'auto', profile fallback) preserves summary_th compat (C6)."""
+    db = InMemoryDB()
+
+    # 1. Profile fallback: user profile has preferred_summary_language="en"
+    db.tables["profiles"].append({
+        "id": "usr-lang-1",
+        "preferred_summary_language": "en",
+    })
+    db.tables["items"].append({
+        "id": "it-lang-1",
+        "owner_id": "usr-lang-1",
+        "url": "https://example.com/lang1",
+        "title": "Title 1",
+        "description": "Desc 1",
+        "ai_summary": None,
+        "note": "",
+    })
+
+    mock_out_en = AISummaryOutput(
+        summary_th="• Point 1 in English\n• Point 2 in English\n• Point 3 in English",
+        suggested_tags=["AI", "English"],
+        content_type="article",
+    )
+
+    with patch("Ai.summarizer_service.extract_text_for_ai", new=AsyncMock(return_value="Extracted text")):
+        with patch("Ai.summarizer_service.generate_structured_summary", new=AsyncMock(return_value=(mock_out_en, "built-in:gemini-flash"))) as mock_gen:
+            req_fallback = SummarizeRequest(item_id="it-lang-1", summary_language=None)
+            resp = await summarize_item_once(db=db, user_id="usr-lang-1", req=req_fallback)
+            assert resp.summary_language == "en"
+            assert resp.summary_th == mock_out_en.summary_th  # backward compatibility alias
+            assert resp.tier_used == "built-in:gemini-flash"
+            assert mock_gen.call_args[1].get("summary_language") == "en"
+            saved_item = [it for it in db.tables["items"] if it["id"] == "it-lang-1"][0]
+            assert saved_item["ai_summary"] == mock_out_en.summary_th
+            assert saved_item["ai_summary_language"] == "en"
+
+    # 2. Explicit summary_language="auto"
+    db.tables["items"].append({
+        "id": "it-lang-2",
+        "owner_id": "usr-lang-1",
+        "url": "https://example.com/lang2",
+        "ai_summary": None,
+        "note": "",
+    })
+    mock_out_auto = AISummaryOutput(
+        summary_th="• Auto bullet 1\n• Auto bullet 2\n• Auto bullet 3",
+        suggested_tags=["Auto"],
+        content_type="article",
+    )
+    with patch("Ai.summarizer_service.extract_text_for_ai", new=AsyncMock(return_value="Extracted text")):
+        with patch("Ai.summarizer_service.generate_structured_summary", new=AsyncMock(return_value=(mock_out_auto, "built-in:gemini-flash"))) as mock_gen_auto:
+            req_auto = SummarizeRequest(item_id="it-lang-2", summary_language="auto")
+            resp_auto = await summarize_item_once(db=db, user_id="usr-lang-1", req=req_auto)
+            assert resp_auto.summary_language == "auto"
+            assert resp_auto.summary_th == mock_out_auto.summary_th
+            assert mock_gen_auto.call_args[1].get("summary_language") == "auto"
+            saved_auto = [it for it in db.tables["items"] if it["id"] == "it-lang-2"][0]
+            assert saved_auto["ai_summary_language"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_a10_extract_text_for_ai_charset_decoding_without_mojibake():
+    """A10: extract_text_for_ai decodes raw .content bytes in TIS-620 and Shift_JIS without mojibake (C4)."""
+    # 1. TIS-620 with Thai tone marks and smart quotes
+    thai_text = "การทดสอบภาษาไทย มอก.620 พร้อมวรรณยุกต์ ่ ้ ๊ ๋ ั ิ และเครื่องหมาย “คำพูด”"
+    thai_html = f"<html><head><title>หน้าหลัก</title></head><body><article><p>{thai_text}</p></article></body></html>"
+    thai_bytes = thai_html.encode("cp874")
+
+    mock_resp_thai = MagicMock()
+    mock_resp_thai.status_code = 200
+    mock_resp_thai.content = thai_bytes
+    mock_resp_thai.headers = {"Content-Type": "text/html; charset=tis-620"}
+
+    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=mock_resp_thai)):
+        result = await extract_text_for_ai(url="https://example.com/thai")
+        assert "การทดสอบภาษาไทย" in result
+        assert "พร้อมวรรณยุกต์" in result
+
+    # 2. Shift_JIS Japanese bytes
+    jp_text = "日本語のコンテンツです。文字化けなしテスト。"
+    jp_html = f"<html><head><title>Japanese</title></head><body><article><p>{jp_text}</p></article></body></html>"
+    jp_bytes = jp_html.encode("shift_jis")
+
+    mock_resp_jp = MagicMock()
+    mock_resp_jp.status_code = 200
+    mock_resp_jp.content = jp_bytes
+    mock_resp_jp.headers = {"Content-Type": "text/html; charset=shift_jis"}
+
+    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=mock_resp_jp)):
+        result_jp = await extract_text_for_ai(url="https://example.com/japan")
+        assert "日本語のコンテンツ" in result_jp
+
+    # 3. Apache generic ISO-8859-1 override: header has latin1 but HTML body has <meta charset="tis-620">
+    apache_html = f'<html><head><meta charset="tis-620"><title>Apache Override</title></head><body><p>{thai_text}</p></body></html>'
+    apache_bytes = apache_html.encode("cp874")
+    mock_resp_apache = MagicMock()
+    mock_resp_apache.status_code = 200
+    mock_resp_apache.content = apache_bytes
+    mock_resp_apache.headers = {"Content-Type": "text/html; charset=iso-8859-1"}
+
+    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=mock_resp_apache)):
+        result_apache = await extract_text_for_ai(url="https://example.com/apache")
+        assert "การทดสอบภาษาไทย" in result_apache
 
 
 # =====================================================================
@@ -521,3 +669,367 @@ def test_b1_b13_mcp_tools_suite():
     # Final item deletion
     del_res = delete_item(item_id=item_id)
     assert del_res["success"] is True
+
+
+def test_b14_mcp_create_item_canonical_dedup_and_hash():
+    """B14: MCP create_item normalizes canonical URL, strips tracking, computes url_hash, and dedups (C1, C5)."""
+    db = InMemoryDB()
+    set_override_db(db)
+    set_authenticated_user_id("usr-mcp-1")
+
+    raw_url = "https://Example.COM:443/article/?utm_source=twitter&fbclid=xyz123&topic=ai#top"
+    created = create_item(url=raw_url, title="Original Title", note="Original Note")
+
+    assert created["owner_id"] == "usr-mcp-1"
+    assert created["canonical_url"] == "https://example.com/article?topic=ai"
+    assert created["url_hash"] == hashlib.md5(b"https://example.com/article?topic=ai").hexdigest()
+    assert len(db.tables["items"]) == 1
+
+    # Bump dedup with another URL having same canonical form
+    bump_url = "https://example.com/article?topic=ai&utm_campaign=winter"
+    bumped = create_item(url=bump_url, title="Updated Title", note="Updated Note")
+
+    assert len(db.tables["items"]) == 1
+    assert bumped["id"] == created["id"]
+    assert bumped["title"] == "Updated Title"
+    assert bumped["note"] == "Updated Note"
+
+
+def test_b15_mcp_search_shared_folders_4fields_and_nfc():
+    """B15: MCP search_and_list_items searches across shared folders, 4 fields, and Unicode NFC (C5)."""
+    import unicodedata
+
+    db = InMemoryDB()
+    set_override_db(db)
+    set_authenticated_user_id("usr-mcp-search")
+
+    # Item 1: Owned by current user
+    item_owned = {
+        "id": "it-search-1",
+        "owner_id": "usr-mcp-search",
+        "folder_id": None,
+        "url": "https://example.com/owned",
+        "title": "Docker Containerization Guide",
+        "description": "DevOps workflows",
+        "note": "Important note on deployment",
+        "ai_summary": "สรุปสั้นๆ เกี่ยวกับ Docker",
+        "status": "inbox",
+    }
+    db.tables["items"].append(item_owned)
+
+    # Item 2: In a shared folder owned by another user
+    item_shared = {
+        "id": "it-search-2",
+        "owner_id": "usr-other",
+        "folder_id": "folder-shared-abc",
+        "url": "https://example.com/k8s",
+        "title": "Kubernetes Architecture",
+        "description": "Deep dive into cluster orchestration",
+        "note": "Shared cluster notes",
+        "ai_summary": "สรุปความรู้เกี่ยวกับคลัสเตอร์ระบบ K8s",
+        "status": "todo",
+    }
+    db.tables["items"].append(item_shared)
+    db.tables["folder_members"].append({
+        "folder_id": "folder-shared-abc",
+        "user_id": "usr-mcp-search",
+        "role": "viewer",
+    })
+
+    # 1. Search shared folder item
+    res_shared = search_and_list_items(query="Kubernetes")
+    assert len(res_shared) == 1
+    assert res_shared[0]["id"] == "it-search-2"
+
+    # 2. Search across each of the 4 fields
+    assert len(search_and_list_items(query="Containerization")) == 1   # title
+    assert len(search_and_list_items(query="orchestration")) == 1      # description
+    assert len(search_and_list_items(query="deployment")) == 1         # note
+    assert len(search_and_list_items(query="คลัสเตอร์")) == 1          # ai_summary
+
+    # 3. Unicode NFC: query with NFD decomposed Thai characters matches NFC stored
+    nfd_query = unicodedata.normalize("NFD", "คลัสเตอร์")
+    res_nfc = search_and_list_items(query=nfd_query)
+    assert len(res_nfc) == 1
+    assert res_nfc[0]["id"] == "it-search-2"
+
+
+def test_b16_mcp_set_or_cancel_reminder_every_n_days():
+    """B16: MCP set_or_cancel_reminder with recurring every_n_days and cancel (C7)."""
+    db = InMemoryDB()
+    set_override_db(db)
+    set_authenticated_user_id("usr-mcp-rem")
+
+    item = {
+        "id": "it-rem-1",
+        "owner_id": "usr-mcp-rem",
+        "title": "Read Architecture Paper",
+    }
+    db.tables["items"].append(item)
+
+    # 1. Set every_n_days reminder
+    res_set = set_or_cancel_reminder(
+        item_id="it-rem-1",
+        schedule_type="every_n_days",
+        repeat_every_days=3,
+        remind_time="20:00:00",
+        timezone="Asia/Bangkok",
+    )
+    assert res_set["success"] is True
+    assert res_set["action"] == "set"
+    assert res_set["schedule_type"] == "every_n_days"
+    assert res_set["repeat_every_days"] == 3
+    assert res_set["remind_time"] == "20:00:00"
+    assert res_set["timezone"] == "Asia/Bangkok"
+
+    assert len(db.tables["reminders"]) == 1
+    rem_row = db.tables["reminders"][0]
+    assert rem_row["status"] == "pending"
+    assert rem_row["title_snapshot"] == "Read Architecture Paper"
+
+    # Verify cancellation transitions pending reminder to cancelled
+    res_cancel = set_or_cancel_reminder(item_id="it-rem-1", cancel=True)
+    assert res_cancel["success"] is True
+    assert res_cancel["action"] == "cancelled"
+    assert rem_row["status"] == "cancelled"
+
+
+# =====================================================================
+# Part 1 CHRIS Security & Contract Regressions (Ai / Extractor / MCP)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_a11_oembed_hostname_and_redirect_ssrf_guard():
+    """Verify exact hostname matching for oEmbed and per-hop SSRF validation on HTTP redirects."""
+    assert _detect_oembed_endpoint("https://dropbox.com/s/file") is None
+    assert _detect_oembed_endpoint("https://netflix.com/watch/123") is None
+    assert _detect_oembed_endpoint("https://x.com/user/status/123").startswith("https://publish.twitter.com/oembed")
+
+    redirect_resp = MagicMock()
+    redirect_resp.status_code = 302
+    redirect_resp.headers = {"location": "http://127.0.0.1/internal"}
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=redirect_resp)
+
+    with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 0))]):
+        with pytest.raises(ValueError, match="SSRF Alert"):
+            await _fetch_url_safely(mock_client, "https://example.com/start")
+
+
+@pytest.mark.asyncio
+async def test_a12_quota_fail_closed_and_language_cache_mismatch():
+    """Verify quota fails closed (503) on DB errors and cached summary language respects profile preference."""
+    broken_db = MagicMock()
+    broken_db.table.side_effect = RuntimeError("DB connection dropped")
+    with pytest.raises(HTTPException) as exc:
+        check_and_increment_quota(broken_db, "usr-1")
+    assert exc.value.status_code == 503
+
+    db = InMemoryDB()
+    db.tables["profiles"].append({"id": "usr-lang", "preferred_summary_language": "en"})
+    db.tables["items"].append({
+        "id": "it-lang",
+        "owner_id": "usr-lang",
+        "url": "https://example.com/bilingual",
+        "url_hash": "hash-bilingual",
+        "title": "Bilingual Article",
+        "ai_summary": "• สรุปภาษาไทย",
+        "ai_summary_language": "th",
+        "ai_tags": ["tech"],
+    })
+    with patch(
+        "Ai.summarizer_service.extract_text_for_ai",
+        AsyncMock(return_value="English article content for summarization."),
+    ), patch(
+        "Ai.summarizer_service.generate_structured_summary",
+        AsyncMock(
+            return_value=(
+                AISummaryOutput(
+                    summary_th="• Bullet 1\n• Bullet 2\n• Bullet 3",
+                    suggested_tags=["ai", "python"],
+                    content_type="article",
+                ),
+                "built-in:gemini-flash",
+            )
+        ),
+    ) as mock_gen:
+        resp = await summarize_item_once(
+            db=db,
+            user_id="usr-lang",
+            req=SummarizeRequest(item_id="it-lang", ai_config=AIConfig(provider="built-in")),
+        )
+    assert resp.cached_from_db is False
+    assert resp.summary_language == "en"
+    assert mock_gen.await_args.kwargs["summary_language"] == "en"
+
+
+def test_b14_mcp_auth_middleware_and_tenant_scoping():
+    """Verify MCPAuthMiddleware rejects missing token (401) and MCP tools enforce folder/reminder isolation."""
+    from fastapi import FastAPI
+
+    mini = FastAPI()
+    mini.add_middleware(MCPAuthMiddleware)
+
+    @mini.get("/mcp/ping")
+    def _ping():
+        return {"ok": True}
+
+    mini_client = TestClient(mini)
+    assert mini_client.get("/mcp/ping").status_code == 401
+
+    db = InMemoryDB()
+    raw_tok = "jsi_live_test_mcp_middleware_123"
+    tok_hash = hashlib.sha256(raw_tok.encode("utf-8")).hexdigest()
+    db.tables["api_tokens"].append({"id": "t-mw", "user_id": "usr-owner", "token_hash": tok_hash})
+    set_override_db(db)
+    try:
+        ok_res = mini_client.get("/mcp/ping", headers={"Authorization": f"Bearer {raw_tok}"})
+        assert ok_res.status_code == 200
+    finally:
+        set_override_db(None)
+
+    # Setup folder owned by usr-owner, collaborator usr-collab creates an item in it, and private reminder for usr-owner
+    db.tables["folders"].append({"id": "f-shared", "owner_id": "usr-owner", "name": "Shared"})
+    db.tables["folders"].append({"id": "f-other", "owner_id": "usr-other", "name": "Other"})
+    db.tables["folder_members"].append({"folder_id": "f-shared", "user_id": "usr-editor", "role": "editor"})
+    db.tables["items"].append({
+        "id": "it-collab",
+        "owner_id": "usr-collab",
+        "folder_id": "f-shared",
+        "url": "https://example.com/collab",
+        "title": "Collab Link",
+        "status": "inbox",
+    })
+    db.tables["reminders"].append({
+        "id": "r-secret",
+        "item_id": "it-collab",
+        "user_id": "usr-owner",
+        "status": "pending",
+        "title_snapshot": "Owner Secret Reminder",
+    })
+
+    set_override_db(db)
+    set_authenticated_user_id("usr-owner")
+    try:
+        found = search_and_list_items()
+        assert any(i["id"] == "it-collab" for i in found)
+
+        with pytest.raises(ValueError, match="http:// or https://"):
+            create_item(url="javascript:alert(1)")
+        with pytest.raises(ValueError, match="Invalid status"):
+            create_item(url="https://example.com/ok", status="bogus")
+        with pytest.raises(PermissionError, match="folder"):
+            create_item(url="https://example.com/ok", folder_id="f-other")
+
+        # Editor can access item detail but does NOT see usr-owner's reminder, nor move folder
+        set_authenticated_user_id("usr-editor")
+        detail = get_item_detail("it-collab")
+        assert detail["reminders"] == []
+        with pytest.raises(PermissionError, match="owner"):
+            update_item(item_id="it-collab", folder_id="f-other")
+        with pytest.raises(ValueError, match="Invalid status"):
+            update_item(item_id="it-collab", status="invalid_status")
+
+        # Owner rename with whitespace-only / empty update fails cleanly
+        set_authenticated_user_id("usr-owner")
+        with pytest.raises(ValueError, match="1 and 80"):
+            manage_folder(action="rename", folder_id="f-shared", name="   ")
+    finally:
+        set_authenticated_user_id(None)
+        set_override_db(None)
+
+
+@pytest.mark.asyncio
+async def test_c1_html_3mb_cap_and_quota_not_burned_on_llm_failure():
+    """C1: Oversized HTML >3MB is bounded to MAX_HTML_BYTES and built-in quota is NOT burned if LLM fails."""
+    assert MAX_HTML_BYTES == 3 * 1024 * 1024
+
+    oversized = MagicMock(status_code=200, content=b"A" * (MAX_HTML_BYTES + 250_000), headers={"content-type": "text/html"})
+    mock_client = MagicMock()
+    mock_client.get = AsyncMock(return_value=oversized)
+    with patch("Ai.content_extractor.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]):
+        capped_resp = await _fetch_url_safely(mock_client, "https://example.com/giant")
+    assert len(capped_resp.content) == MAX_HTML_BYTES
+
+    db = InMemoryDB()
+    db.tables["items"].append({
+        "id": "it-fail-llm",
+        "owner_id": "usr-q1",
+        "url": "https://example.com/article",
+        "title": "Test Fail",
+        "status": "inbox",
+    })
+    req = SummarizeRequest(item_id="it-fail-llm")
+    with (
+        patch("Ai.summarizer_service.extract_text_for_ai", new=AsyncMock(return_value="Body text")),
+        patch("Ai.summarizer_service.generate_structured_summary", new=AsyncMock(side_effect=HTTPException(status_code=504, detail="LLM timeout"))),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await summarize_item_once(db=db, user_id="usr-q1", req=req)
+        assert exc_info.value.status_code == 504
+    assert db.tables["daily_ai_usage"] == []
+
+
+def test_c1_mcp_tag_sanitization_non_destructive_revoke_and_dual_transport():
+    """C1: MCP tags sanitize control chars, revoke_all soft-revokes invites, and /mcp serves SSE + Streamable HTTP."""
+    from main import app as main_app
+
+    db = InMemoryDB()
+    raw_tok = "jsi_live_c1_dual_transport_tok"
+    tok_hash = hashlib.sha256(raw_tok.encode("utf-8")).hexdigest()
+    db.tables["api_tokens"].append({"id": "t-c1", "user_id": "usr-c1", "token_hash": tok_hash})
+    db.tables["folders"].append({"id": "f-c1", "owner_id": "usr-c1", "name": "Team", "is_shared": True})
+    db.tables["folder_members"].append({"folder_id": "f-c1", "user_id": "usr-collab-c1", "role": "editor"})
+    db.tables["items"].append({"id": "it-c1", "owner_id": "usr-c1", "url": "https://example.com/1", "title": "One", "status": "inbox"})
+
+    set_override_db(db)
+    set_authenticated_user_id("usr-c1")
+    try:
+        manage_item_tags("it-c1", add_tags=["  \x00AI\x07-News  ", "   "])
+        tag_names = [t["name"] for t in db.tables["tags"]]
+        assert tag_names == ["AI-News"]
+
+        renamed = rename_or_delete_tag("\x00AI-News", new_name="  AI\x0bSummary  ")
+        assert renamed["new_name"] == "AISummary"
+
+        inv = share_folder_link("f-c1", role="viewer")
+        assert len(db.tables["folder_invites"]) == 1
+
+        revoked = share_folder_link("f-c1", revoke_all=True)
+        assert revoked["success"] is True
+        assert len(db.tables["folder_invites"]) == 1
+        assert db.tables["folder_invites"][0].get("revoked_at") is not None
+        # Existing collaborator remains -> folder stays is_shared=True
+        assert db.tables["folders"][0]["is_shared"] is True
+
+        db.tables["folder_members"].clear()
+        share_folder_link("f-c1", revoke_all=True)
+        assert db.tables["folders"][0]["is_shared"] is False
+
+        with TestClient(main_app) as client:
+            unauth = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+            assert unauth.status_code == 401
+            init_resp = client.post(
+                "/mcp",
+                headers={
+                    "Authorization": f"Bearer {raw_tok}",
+                    "Accept": "application/json, text/event-stream",
+                },
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "pytest", "version": "1.0"},
+                    },
+                },
+            )
+            assert init_resp.status_code == 200
+            assert "just-save-it" in init_resp.text.lower() or "serverinfo" in init_resp.text.lower()
+    finally:
+        set_authenticated_user_id(None)
+        set_override_db(None)
+

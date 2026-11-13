@@ -94,6 +94,10 @@ class SummarizeRequest(BaseModel):
         default=True,
         description="Whether to also append the AI summary into the item's note field.",
     )
+    summary_language: Optional[Literal["th", "en", "auto"]] = Field(
+        default=None,
+        description="Target summary language ('th', 'en', or 'auto'). Falls back to user profile preference or 'th'.",
+    )
     ai_config: Optional[AIConfig] = Field(
         default=None,
         description="Optional explicit AI configuration (Tier 1/2/3). If omitted, request headers or server defaults apply.",
@@ -123,7 +127,11 @@ class SummarizeResponse(BaseModel):
 
     item_id: str = Field(..., description="UUID of the item")
     url: str = Field(..., description="Target URL that was summarized")
-    summary_th: str = Field(..., description="Thai summary text")
+    summary_th: str = Field(..., description="Canonical summary text (Thai by default, or requested language)")
+    summary_language: str = Field(
+        default="th",
+        description="Resolved summary language used ('th', 'en', or 'auto')",
+    )
     suggested_tags: List[str] = Field(
         default_factory=list,
         description="List of suggested tags",
