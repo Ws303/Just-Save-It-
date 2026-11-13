@@ -37,3 +37,9 @@ __pycache__/
 .venv/
 venv/
 .coverage
+
+# Local Development Database & Cached Thumbnails
+.local_dev_db.json
+backend/.local_dev_db.json
+.local_thumbnails/
+backend/.local_thumbnails/

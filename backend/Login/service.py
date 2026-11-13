@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 import jwt
 from fastapi import HTTPException, status
 
+from Database.client import get_supabase_client
 from Database.supabase_client import (
     get_supabase_anon_client,
     get_supabase_service_client,
@@ -70,6 +71,43 @@ class AuthService:
 
     def _get_jwt_secret(self) -> str:
         return os.getenv("SUPABASE_JWT_SECRET", "").strip() or DEFAULT_LOCAL_JWT_SECRET
+
+    def _get_local_dev_client(self) -> Optional[Any]:
+        try:
+            client = get_supabase_client()
+            if getattr(client, "is_local_dev", False):
+                return client
+        except Exception:
+            pass
+        return None
+
+    def _find_local_user(self, email: str) -> Optional[Dict[str, Any]]:
+        clean = email.lower().strip()
+        local_db = self._get_local_dev_client()
+        if local_db is not None:
+            found = local_db.get_local_user_by_email(clean)
+            if found:
+                return found
+        return self._local_users.get(clean)
+
+    def _find_local_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        local_db = self._get_local_dev_client()
+        if local_db is not None:
+            found = local_db.get_local_user_by_id(user_id)
+            if found:
+                return found
+        for user in self._local_users.values():
+            if user.get("id") == user_id:
+                return user
+        return None
+
+    def _save_local_user(self, user_record: Dict[str, Any]) -> Dict[str, Any]:
+        clean = str(user_record["email"]).lower().strip()
+        self._local_users[clean] = user_record
+        local_db = self._get_local_dev_client()
+        if local_db is not None:
+            return local_db.upsert_local_user(user_record)
+        return user_record
 
     def _hash_password(self, password: str) -> str:
         salt = "jsi_salt_987"
@@ -135,7 +173,7 @@ class AuthService:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
         # Local fallback store
-        if email_clean in self._local_users:
+        if self._find_local_user(email_clean):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="User with this email already exists.",
@@ -154,7 +192,7 @@ class AuthService:
             "timezone": "Asia/Bangkok",
             "created_at": created_at,
         }
-        self._local_users[email_clean] = user_record
+        self._save_local_user(user_record)
 
         access_token = self._generate_jwt_token(new_id, email_clean, display_name)
         refresh_token = self._generate_refresh_token()
@@ -196,7 +234,7 @@ class AuthService:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
 
         # Local fallback store
-        user_record = self._local_users.get(email_clean)
+        user_record = self._find_local_user(email_clean)
         if not user_record or user_record.get("password_hash") != self._hash_password(req.password):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -236,7 +274,7 @@ class AuthService:
 
         # For dev/test mode & simulated app:
         # Create or find existing user record and issue token directly for instant testing
-        user_record = self._local_users.get(email_clean)
+        user_record = self._find_local_user(email_clean)
         if not user_record:
             user_id = str(uuid.uuid4())
             display_name = email_clean.split("@")[0]
@@ -251,7 +289,7 @@ class AuthService:
                 "timezone": "Asia/Bangkok",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
-            self._local_users[email_clean] = user_record
+            self._save_local_user(user_record)
 
         access_token = self._generate_jwt_token(
             user_record["id"],
@@ -318,7 +356,7 @@ class AuthService:
             "timezone": "Asia/Bangkok",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
-        self._local_users[email] = user_record
+        self._save_local_user(user_record)
 
         access_token = self._generate_jwt_token(user_id, email, display_name)
         refresh_token = self._generate_refresh_token()
@@ -418,7 +456,7 @@ class AuthService:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token.")
 
         # Local fallback renewal
-        demo_user = self._local_users.get("may@example.com")
+        demo_user = self._find_local_user("may@example.com")
         user_id = demo_user["id"] if demo_user else str(uuid.uuid4())
         email = demo_user["email"] if demo_user else "user@example.com"
         name = demo_user.get("display_name") if demo_user else "User"
@@ -470,9 +508,9 @@ class AuthService:
                 logger.warning("Supabase fetch profile error: %s", e)
 
         # Search local users
-        for u in self._local_users.values():
-            if u["id"] == user_id:
-                return UserProfileResponse(**{k: v for k, v in u.items() if k != "password_hash"})
+        local_user = self._find_local_user_by_id(user_id)
+        if local_user:
+            return UserProfileResponse(**{k: v for k, v in local_user.items() if k != "password_hash"})
 
         return UserProfileResponse(
             id=user_id,
@@ -511,10 +549,11 @@ class AuthService:
                 logger.error("Supabase update profile error: %s", e)
 
         # Update in local store
-        for u in self._local_users.values():
-            if u["id"] == user_id:
-                u.update(updates)
-                return UserProfileResponse(**{k: v for k, v in u.items() if k != "password_hash"})
+        local_user = self._find_local_user_by_id(user_id)
+        if local_user:
+            local_user.update(updates)
+            saved = self._save_local_user(local_user)
+            return UserProfileResponse(**{k: v for k, v in saved.items() if k != "password_hash"})
 
         return UserProfileResponse(
             id=user_id,
@@ -545,18 +584,22 @@ class AuthService:
             except Exception as e:
                 logger.error("Supabase insert api_token error: %s", e)
 
-        # Also store locally
-        if user_id not in self._local_tokens:
-            self._local_tokens[user_id] = []
-        self._local_tokens[user_id].append({
+        # Also store in LocalDevDB or in-memory fallback
+        token_record = {
             "id": token_id,
+            "user_id": user_id,
             "name": name,
             "token_prefix": token_prefix,
             "token_hash": token_hash,
             "last_used_at": None,
             "revoked_at": None,
             "created_at": created_at,
-        })
+        }
+        local_db = self._get_local_dev_client()
+        if local_db is not None and not is_supabase_configured():
+            local_db.table("api_tokens").insert(token_record).execute()
+        else:
+            self._local_tokens.setdefault(user_id, []).append(token_record)
 
         return CreateApiTokenResponse(
             id=token_id,
@@ -587,8 +630,21 @@ class AuthService:
             except Exception as e:
                 logger.warning("Supabase list api_tokens error: %s", e)
 
-        # Local tokens
-        tokens = self._local_tokens.get(user_id, [])
+        # Local tokens (LocalDevDB or in-memory)
+        local_db = self._get_local_dev_client()
+        if local_db is not None:
+            resp = (
+                local_db.table("api_tokens")
+                .select("*")
+                .eq("user_id", user_id)
+                .is_("revoked_at", "null")
+                .order("created_at", desc=True)
+                .execute()
+            )
+            tokens = resp.data or []
+        else:
+            tokens = self._local_tokens.get(user_id, [])
+
         return [
             ApiTokenSummary(
                 id=t["id"],
@@ -612,6 +668,11 @@ class AuthService:
                 service_client.table("api_tokens").update({"revoked_at": revoked_at}).eq("id", token_id).eq("user_id", user_id).execute()
             except Exception as e:
                 logger.warning("Supabase revoke api_token error: %s", e)
+
+        local_db = self._get_local_dev_client()
+        if local_db is not None:
+            local_db.table("api_tokens").update({"revoked_at": revoked_at}).eq("id", token_id).eq("user_id", user_id).execute()
+            return {"revoked": True}
 
         tokens = self._local_tokens.get(user_id, [])
         for t in tokens:

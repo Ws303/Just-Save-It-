@@ -1,8 +1,12 @@
 """FastAPI router for Just-Save-It Database CRUD, Sharing, Devices, and JSON Export."""
 
+import logging
+import os
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
+
+_logger = logging.getLogger("just_save_it.database.router")
 
 from Login.auth_dep import get_current_user_id
 from .client import get_db
@@ -47,14 +51,33 @@ from .schemas import (
 router = APIRouter(prefix="/api", tags=["Database CRUD & Export"])
 
 
+async def _run_local_enrichment(db: Any, item_id: str) -> None:
+    """Trigger Unfurl enrichment asynchronously in local dev mode (where pg_net is absent)."""
+    try:
+        from Unfurl.service import enrich_item
+
+        await enrich_item(db, item_id)
+    except Exception as exc:
+        _logger.warning("Local background enrichment failed for %s: %s", item_id, exc)
+
+
 @router.post("/items", status_code=status.HTTP_201_CREATED)
 def create_item_endpoint(
     req: ItemCreateRequest,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
     """Save or deduplicate a link immediately with enrich_status='pending'."""
-    return create_or_bump_item(db, user_id, req)
+    item = create_or_bump_item(db, user_id, req)
+    if (
+        getattr(db, "is_local_dev", False)
+        and item.get("enrich_status") == "pending"
+        and item.get("id")
+        and os.getenv("DISABLE_LOCAL_BG_ENRICH", "").strip().lower() != "true"
+    ):
+        background_tasks.add_task(_run_local_enrichment, db, str(item["id"]))
+    return item
 
 
 @router.get("/items")

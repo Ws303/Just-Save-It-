@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Just-Save-It — Quick Link Saver</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Header -->
+    <header class="topbar">
+      <div class="brand">
+        <img src="icons/icon32.png" alt="Just-Save-It" class="brand-logo" />
+        <div>
+          <h1 class="brand-title">Just-Save-It</h1>
+          <span id="healthBadge" class="status-pill status-checking">Checking...</span>
+        </div>
+      </div>
+      <button id="toggleSettingsBtn" type="button" class="icon-btn" title="ตั้งค่า Backend URL">
+        ⚙️
+      </button>
+    </header>
+
+    <!-- Settings Panel -->
+    <section id="settingsPanel" class="card settings-card hidden">
+      <label for="backendUrlInput" class="field-label">Backend API URL</label>
+      <div class="inline-row">
+        <input
+          id="backendUrlInput"
+          type="url"
+          class="input"
+          placeholder="http://localhost:8000"
+        />
+        <button id="saveSettingsBtn" type="button" class="btn btn-secondary btn-sm">บันทึก</button>
+      </div>
+      <p class="hint">รัน Backend ด้วย <code>uvicorn main:app --reload</code> แล้วกดบันทึกเพื่อทดสอบ</p>
+    </section>
+
+    <!-- Global Banner Feedback -->
+    <div id="feedbackBanner" class="banner hidden" role="alert"></div>
+
+    <!-- Auth View -->
+    <main id="authView" class="view hidden">
+      <div class="card hero-card">
+        <p class="hero-title">เข้าสู่ระบบเพื่อเริ่มบันทึกลิงก์</p>
+        <p class="hero-sub">เชื่อมต่อกับบัญชี Just-Save-It ของคุณบน Localhost หรือ Supabase Cloud</p>
+      </div>
+
+      <div class="tab-group" role="tablist">
+        <button id="tabLoginBtn" type="button" class="tab-btn active">เข้าสู่ระบบ</button>
+        <button id="tabRegisterBtn" type="button" class="tab-btn">สมัครสมาชิก</button>
+      </div>
+
+      <form id="authForm" class="card stack-sm">
+        <div id="displayNameGroup" class="hidden">
+          <label for="displayNameInput" class="field-label">ชื่อที่แสดง</label>
+          <input id="displayNameInput" type="text" class="input" placeholder="เช่น เมย์" />
+        </div>
+
+        <div>
+          <label for="emailInput" class="field-label">อีเมล</label>
+          <input id="emailInput" type="email" class="input" required placeholder="you@example.com" />
+        </div>
+
+        <div>
+          <label for="passwordInput" class="field-label">รหัสผ่าน</label>
+          <input id="passwordInput" type="password" class="input" required minlength="6" placeholder="••••••••" />
+        </div>
+
+        <button id="authSubmitBtn" type="submit" class="btn btn-primary btn-full">เข้าสู่ระบบ</button>
+      </form>
+
+      <div class="divider"><span>หรือทดสอบทันที (Local Dev)</span></div>
+
+      <button id="demoLoginBtn" type="button" class="btn btn-cream btn-full">
+        ⚡ ใช้บัญชีทดสอบ May (may@example.com)
+      </button>
+    </main>
+
+    <!-- Main Link Saver View -->
+    <main id="saverView" class="view hidden">
+      <!-- User Strip -->
+      <div class="user-strip">
+        <span id="userLabel" class="user-label">กำลังโหลดผู้ใช้...</span>
+        <button id="logoutBtn" type="button" class="link-btn">ออกจากระบบ</button>
+      </div>
+
+      <!-- Captured Tab Preview Card -->
+      <section class="card preview-card">
+        <div class="preview-media-row">
+          <div id="previewThumbWrap" class="thumb-wrap">
+            <img id="previewImage" class="thumb-img hidden" alt="Preview thumbnail" />
+            <span id="previewPlaceholder" class="thumb-placeholder">🔖</span>
+          </div>
+          <div class="preview-meta">
+            <div class="meta-pills">
+              <span id="platformBadge" class="mini-pill">web</span>
+              <span id="contentTypeBadge" class="mini-pill mini-pill-soft">link</span>
+              <span id="previewSourceBadge" class="mini-pill mini-pill-mint">พร้อมบันทึก</span>
+            </div>
+            <p id="siteNameLabel" class="site-name">จับลิงก์จากแท็บปัจจุบัน</p>
+          </div>
+        </div>
+
+        <label for="urlInput" class="field-label">URL</label>
+        <div class="inline-row">
+          <input id="urlInput" type="url" class="input input-mono" placeholder="https://..." required />
+          <button id="refreshPreviewBtn" type="button" class="btn btn-secondary btn-sm" title="ดึงภาพปกและหัวข้อใหม่">
+            ↻
+          </button>
+        </div>
+
+        <label for="titleInput" class="field-label">หัวข้อ</label>
+        <input id="titleInput" type="text" class="input" placeholder="หัวข้อของหน้าเว็บ..." />
+      </section>
+
+      <!-- Organization & Save Form -->
+      <form id="saveForm" class="card stack-sm">
+        <div>
+          <div class="label-row">
+            <label for="folderSelect" class="field-label">โฟลเดอร์</label>
+            <button id="toggleNewFolderBtn" type="button" class="link-btn">+ สร้างโฟลเดอร์</button>
+          </div>
+          <select id="folderSelect" class="input">
+            <option value="">-- กล่องขาเข้า (Inbox) --</option>
+          </select>
+
+          <div id="newFolderBox" class="inline-folder-box hidden">
+            <input id="newFolderEmoji" type="text" class="input input-emoji" value="📁" maxlength="4" />
+            <input id="newFolderName" type="text" class="input" placeholder="ชื่อโฟลเดอร์ใหม่..." />
+            <button id="createFolderBtn" type="button" class="btn btn-secondary btn-sm">เพิ่ม</button>
+          </div>
+        </div>
+
+        <div>
+          <label for="tagsInput" class="field-label">แท็ก (คั่นด้วยจุลภาค ,)</label>
+          <input id="tagsInput" type="text" class="input" placeholder="เช่น ai, tutorial, work" />
+          <div id="tagSuggestions" class="chip-wrap"></div>
+        </div>
+
+        <div>
+          <label for="noteInput" class="field-label">โน้ตสั้น / ไฮไลต์ที่เลือกไว้</label>
+          <textarea id="noteInput" rows="2" class="input textarea" placeholder="ทำไมถึงเซฟลิงก์นี้?"></textarea>
+        </div>
+
+        <div class="grid-2">
+          <div>
+            <label for="statusSelect" class="field-label">สถานะ</label>
+            <select id="statusSelect" class="input">
+              <option value="inbox">Inbox (ยังไม่อ่าน)</option>
+              <option value="reading">Reading (กำลังอ่าน)</option>
+              <option value="done">Done (อ่านแล้ว)</option>
+            </select>
+          </div>
+          <div>
+            <label for="reminderPreset" class="field-label">เตือนอ่านซ้ำ</label>
+            <select id="reminderPreset" class="input">
+              <option value="">ไม่ตั้งเตือน</option>
+              <option value="tomorrow_9am">พรุ่งนี้ 09:00</option>
+              <option value="in_3_days">อีก 3 วัน 20:00</option>
+              <option value="custom">กำหนดวันเวลาเอง</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="customReminderGroup" class="hidden">
+          <label for="customReminderInput" class="field-label">วันเวลาที่ต้องการแจ้งเตือน</label>
+          <input id="customReminderInput" type="datetime-local" class="input" />
+        </div>
+
+        <button id="saveItemBtn" type="submit" class="btn btn-primary btn-full">
+          💾 บันทึกลิงก์ลง Backend
+        </button>
+      </form>
+
+      <!-- Post-Save Quick Actions & AI Summary -->
+      <section id="savedResultCard" class="card success-card hidden">
+        <div class="label-row">
+          <strong class="success-title">✓ บันทึกลิงก์เรียบร้อย!</strong>
+          <button id="aiSummarizeBtn" type="button" class="btn btn-lavender btn-sm">✨ สรุปด้วย AI</button>
+        </div>
+        <p id="savedMetaText" class="hint"></p>
+        <div id="aiResultBox" class="ai-box hidden"></div>
+      </section>
+
+      <!-- Recent Saved Items Drawer -->
+      <section class="recent-section">
+        <button id="toggleRecentBtn" type="button" class="recent-toggle">
+          <span>รายการที่บันทึกล่าสุด (<span id="recentCount">0</span>)</span>
+          <span id="recentArrow">▼</span>
+        </button>
+        <div id="recentList" class="recent-list hidden"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="api.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

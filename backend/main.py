@@ -10,13 +10,21 @@ Integrates:
 from contextlib import asynccontextmanager
 import logging
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from starlette.applications import Starlette
+
+_BACKEND_DIR = Path(__file__).resolve().parent
+load_dotenv(dotenv_path=_BACKEND_DIR / ".env", override=False)
 
 from Ai.mcp_server import MCPAuthMiddleware, mcp
 from Ai.router import router as ai_router
 from Database.router import router as database_router
+from Database.supabase_client import is_supabase_configured
 from Login.router import router as login_router
 from Reminders.router import router as reminders_router
 from Unfurl.router import router as unfurl_router
@@ -127,6 +135,14 @@ app.include_router(reminders_router)
 if _mcp_mount_app is not None:
     app.mount("/mcp", _mcp_mount_app)
 
+if not is_supabase_configured():
+    _local_media_dir = _BACKEND_DIR / ".local_thumbnails"
+    app.mount(
+        "/local-media",
+        StaticFiles(directory=str(_local_media_dir), check_dir=False),
+        name="local-media",
+    )
+
 
 @app.get("/health", tags=["Health"])
 def health_check():
@@ -136,6 +152,7 @@ def health_check():
         "service": "Just-Save-It Backend",
         "auth_enabled": True,
         "mcp_enabled": mcp is not None,
+        "storage_mode": "supabase" if is_supabase_configured() else "local_dev",
     }
 
 
