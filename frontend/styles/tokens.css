@@ -1,0 +1,85 @@
+/* Sharely Design System Tokens — extracted from Figma (iK9nRBTc2LWYahDIyEU8TK) */
+:root {
+  --font-sans: "Noto Sans Thai", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-brand: "Nunito", "Noto Sans Thai", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --font-scale: 1;
+
+  /* Core Ink & Surfaces */
+  --bg-app: #ffffff;
+  --bg-muted: #f6f6f6;
+  --bg-chip: #eee;
+  --bg-thumb: #e3e3e3;
+  --bg-login: linear-gradient(180deg, #fff8ee 0%, #f8eedf 100%);
+
+  --ink-primary: #233642;
+  --ink-strong: #222222;
+  --ink-navy: #07112f;
+  --ink-secondary: #61666b;
+  --ink-subtle: #666666;
+  --ink-nav: #4f4f4f;
+  --ink-muted-icon: #b3b3b3;
+
+  --border-light: #e6e6e6;
+  --border-card: #dddddd;
+  --border-input: #bbbbbb;
+  --border-divider: #e8ebed;
+
+  /* Active Theme: Sharely (Default) */
+  --theme-accent: #c72d2d;
+  --theme-accent-strong: #b80e23;
+  --theme-accent-text: #a81c1c;
+  --theme-swatch: #c52732;
+  --theme-soft: #fcf0f0;
+  --theme-preview-bg: #fdf0f1;
+  --theme-lavender-pill: #cfc4f3;
+
+  /* Radii */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 15px;
+  --radius-pill: 999px;
+  --radius-sheet: 24px;
+  --radius-nav: 32px;
+  --radius-device: 42px;
+
+  /* Shadows */
+  --shadow-nav: 0 8px 24px rgba(26, 26, 26, 0.14), 0 2px 6px rgba(26, 26, 26, 0.08);
+  --shadow-dropdown: 0 10px 28px rgba(15, 23, 42, 0.14);
+  --shadow-dialog: 0 18px 42px rgba(7, 17, 47, 0.22);
+  --shadow-device: 0 28px 70px rgba(7, 17, 47, 0.24), 0 4px 16px rgba(7, 17, 47, 0.08);
+
+  /* Testbed Chrome */
+  --tb-bg: #f4f5f7;
+  --tb-panel: #ffffff;
+  --tb-border: #e2e5ea;
+  --tb-code-bg: #0f172a;
+  --tb-code-fg: #e2e8f0;
+}
+
+/* Theme 2: คริสมาสต์ (Christmas sample theme from Figma 20 Profile · การแสดงผล) */
+[data-sharely-theme="christmas"] {
+  --theme-accent: #9b3976;
+  --theme-accent-strong: #822b61;
+  --theme-accent-text: #822b61;
+  --theme-swatch: #9b3976;
+  --theme-soft: #fceef7;
+  --theme-preview-bg: #fceef7;
+  --theme-lavender-pill: #eed2e5;
+}
+
+/* Theme 3: คอลแลบแบรนด์ (Brand Collab sample theme from Figma 20 Profile · การแสดงผล) */
+[data-sharely-theme="collab"] {
+  --theme-accent: #16756a;
+  --theme-accent-strong: #0f5c53;
+  --theme-accent-text: #0f5c53;
+  --theme-swatch: #16756a;
+  --theme-soft: #eaf7f4;
+  --theme-preview-bg: #eaf7f4;
+  --theme-lavender-pill: #ccebe5;
+}
+
+[data-text-size="large"] {
+  --font-scale: 1.12;
+}
