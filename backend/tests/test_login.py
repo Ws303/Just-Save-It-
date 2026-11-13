@@ -17,8 +17,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from main import app
+from tests.test_db_and_auth import InMemoryDB
+from Database.client import set_override_supabase_client
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def setup_mock_db():
+    db = InMemoryDB()
+    set_override_supabase_client(db)
+    yield db
+    set_override_supabase_client(None)
 
 
 def test_health_check_includes_auth():
@@ -202,7 +212,8 @@ def test_mcp_personal_access_tokens():
     # 2. List Tokens
     list_resp = client.get("/api/auth/tokens", headers=headers)
     assert list_resp.status_code == 200
-    tokens = list_resp.json()
+    res_data = list_resp.json()
+    tokens = res_data.get("tokens", res_data) if isinstance(res_data, dict) else res_data
     assert any(t["id"] == token_id for t in tokens)
 
     # 3. Revoke Token
@@ -210,9 +221,11 @@ def test_mcp_personal_access_tokens():
     assert del_resp.status_code == 200
     assert del_resp.json()["revoked"] is True
 
-    # 4. Confirm it's no longer listed as active
+    # 4. Confirm it's marked as revoked
     list_resp_2 = client.get("/api/auth/tokens", headers=headers)
-    assert not any(t["id"] == token_id for t in list_resp_2.json())
+    res_data_2 = list_resp_2.json()
+    tokens_2 = res_data_2.get("tokens", res_data_2) if isinstance(res_data_2, dict) else res_data_2
+    assert any(t["id"] == token_id and t.get("revoked_at") is not None for t in tokens_2)
 
 
 def test_logout():

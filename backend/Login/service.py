@@ -80,6 +80,7 @@ class AuthService:
         now = int(time.time())
         payload = {
             "sub": user_id,
+            "aud": "authenticated",
             "email": email,
             "iat": now,
             "exp": now + 86400,  # 24 hours

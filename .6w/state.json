@@ -1,0 +1,942 @@
+{
+  "schemaVersion": "0.1",
+  "rubricVersion": "0.2",
+  "metadata": {
+    "projectId": "just-save-it",
+    "title": "Just-Save-It",
+    "language": "th",
+    "createdAt": "2026-11-13T08:45:00Z",
+    "updatedAt": "2026-11-13T08:56:00Z",
+    "maturity": "prototype",
+    "revision": 2
+  },
+  "session": {
+    "mode": "deep",
+    "tone": "standard",
+    "stage": "build-mvp",
+    "gate": 90,
+    "phase": 4,
+    "focus": "why",
+    "turns": 2
+  },
+  "capabilities": {
+    "fileWrite": true,
+    "scripts": true,
+    "browsing": false,
+    "attachments": true,
+    "archify": false
+  },
+  "ws": {
+    "why": {
+      "summary": "Unified cross-platform link hub with clean multi-language retrieval, preview, AI summary, and cross-OS reminders; Freemium + BYOK model",
+      "ratings": [
+        {
+          "criterion": "pain-severity",
+          "rating": 3,
+          "rationale": "Users save articles, tutorials, reels, and posts daily across phone and desktop but forget them or fail to search across fragmented bookmark tools.",
+          "evidence": "user",
+          "sources": [
+            "SRC-001",
+            "SRC-002"
+          ]
+        },
+        {
+          "criterion": "broken-workaround",
+          "rating": 3,
+          "rationale": "Workarounds (browser bookmarks, chat Keep, generic notes, social Saved tabs) lack cross-device search in mixed charsets, rich preview, AI summary, and recurring reminders.",
+          "evidence": "user",
+          "sources": [
+            "SRC-001",
+            "SRC-002"
+          ]
+        },
+        {
+          "criterion": "value-capture",
+          "rating": 3,
+          "rationale": "Model: Freemium + Unlimited BYOK. Value metric: built-in AI summaries/month and media storage capacity. Free tier: 50 built-in AI calls/mo + unlimited BYOK/custom. Pro hypothesis: 99-149 THB/mo (~$3/mo provisional) for expanded quota/storage. Clears provisional cost per active user cleanly when AI ceiling holds (EXP-002 to falsify).",
+          "evidence": "assumption",
+          "sources": [
+            "SRC-001",
+            "SRC-002"
+          ],
+          "links": [
+            "DEC-005",
+            "ASM-001",
+            "EXP-002"
+          ]
+        },
+        {
+          "criterion": "success-metric",
+          "rating": 2,
+          "rationale": "Provisional 30-day gate proposed: >=30% Week-4 active save/retrieve/reminder retention among first 50 Thai tech prosumer beta testers (ASM-003, EXP-001); awaiting live beta confirmation.",
+          "evidence": "assumption",
+          "sources": [
+            "SRC-002"
+          ],
+          "links": [
+            "ASM-003",
+            "EXP-001"
+          ]
+        }
+      ],
+      "caps": [
+        {
+          "id": "why-no-workaround",
+          "active": false
+        }
+      ],
+      "openQuestions": [
+        "Confirm final 30-day retention stop-or-continue threshold (>=30% W4 active reuse) before public beta launch."
+      ],
+      "score": 70
+    },
+    "who": {
+      "summary": "Beachhead locked: Thai Knowledge & Tech Prosumers switching between mobile and desktop; anti-persona excludes bulk video downloaders",
+      "ratings": [
+        {
+          "criterion": "beachhead-persona",
+          "rating": 3,
+          "rationale": "Locked beachhead: Thai knowledge workers, software devs, and technical students saving cross-language articles/tutorials/clips across mobile & desktop.",
+          "evidence": "user",
+          "sources": [
+            "SRC-002"
+          ],
+          "links": [
+            "PERSONA-001"
+          ]
+        },
+        {
+          "criterion": "switching-trigger-and-objections",
+          "rating": 3,
+          "rationale": "Triggers: forgetting critical saved links/deadlines and losing context across languages. Objections: trusting data persistence (answered by REQ-001/REQ-004), privacy/BYOK (REQ-002), cost (DEC-005).",
+          "evidence": "user",
+          "sources": [
+            "SRC-001",
+            "SRC-002"
+          ],
+          "links": [
+            "PERSONA-001",
+            "REQ-001",
+            "REQ-002",
+            "REQ-004"
+          ]
+        },
+        {
+          "criterion": "distribution",
+          "rating": 2,
+          "rationale": "Rented channels identified (Thai Dev/Productivity Facebook groups, Discord servers, X/Twitter threads); owned beta waitlist/onboarding channel (REQ-005) and borrowed creator outreach planned in EXP-001.",
+          "evidence": "user",
+          "sources": [
+            "SRC-002"
+          ],
+          "links": [
+            "PERSONA-001",
+            "REQ-005",
+            "EXP-001"
+          ]
+        },
+        {
+          "criterion": "buyer-user-anti-persona",
+          "rating": 3,
+          "rationale": "Same individual prosumer buys and uses. Anti-persona (PERSONA-002): bulk video downloaders/piracy archivers and enterprise legal-discovery teams.",
+          "evidence": "user",
+          "sources": [
+            "SRC-001",
+            "SRC-002"
+          ],
+          "links": [
+            "PERSONA-002"
+          ]
+        }
+      ],
+      "caps": [
+        {
+          "id": "who-everyone",
+          "active": false
+        }
+      ],
+      "score": 69
+    },
+    "what": {
+      "summary": "Core loop & <=5 v1 MVP pillars locked; Part 1 Full Integrity Package scoped cleanly ahead of Part 2 Unfurl and Part 3 Reminders",
+      "ratings": [
+        {
+          "criterion": "core-loop",
+          "rating": 3,
+          "rationale": "Save URL (+ folder/tags/note/schedule) -> immediately persist in Postgres without waiting on unfurl -> decode clean multi-language metadata + configurable AI summary -> fast FTS+trigram search or cross-OS reminder trigger.",
+          "evidence": "user",
+          "sources": [
+            "SRC-001",
+            "SRC-002"
+          ],
+          "links": [
+            "REQ-001",
+            "REQ-003",
+            "REQ-004"
+          ]
+        },
+        {
+          "criterion": "v1-must-haves",
+          "rating": 3,
+          "rationale": "Bounded to <=5 v1 MVP pillars: (1) Lossless Save & Multi-language Data Capture, (2) Fast 4-field Search, (3) Cover-only Rich Preview <=5 imgs, (4) 3-Tier Configurable AI Summary, (5) Cross-OS Hybrid Reminders.",
+          "evidence": "user",
+          "sources": [
+            "SRC-002"
+          ],
+          "links": [
+            "DEC-006",
+            "REQ-001",
+            "REQ-003"
+          ]
+        },
+        {
+          "criterion": "explicit-anti-scope",
+          "rating": 3,
+          "rationale": "In Part 1: only DB+Auth+Encoding/Search/Ai-alignment (no Part 2 Unfurl Worker or Part 3 Push/Cron yet). In v1 overall: no video re-hosting, no Public Share discovery feeds, no Semantic pgvector, no Team workspaces (deferred v1.1).",
+          "evidence": "user",
+          "sources": [
+            "SRC-001",
+            "SRC-002"
+          ],
+          "links": [
+            "DEC-002",
+            "DEC-004"
+          ]
+        },
+        {
+          "criterion": "day-one-inputs",
+          "rating": 3,
+          "rationale": "Only a URL (plus optional note, folder, or reminder rule) is required; user notes save even if remote website metadata fetch fails.",
+          "evidence": "user",
+          "sources": [
+            "SRC-002"
+          ],
+          "links": [
+            "EDGE-003",
+            "REQ-004"
+          ]
+        }
+      ],
+      "caps": [
+        {
+          "id": "what-unbounded-scope",
+          "active": false
+        }
+      ],
+      "score": 75
+    },
+    "which": {
+      "summary": "Fast stack (Supabase + FastAPI + Next.js/Expo/WXT) with 3-tier AI and Day-2 Web-first UI cut line",
+      "ratings": [
+        {
+          "criterion": "primary-form-factor",
+          "rating": 3,
+          "rationale": "Fast stack: Web (Next.js) + Extension (WXT) + Mobile (Expo Android/iOS) over FastAPI modular monolith and Supabase. Mobile justified by OS Share Sheet & scheduled reminder notifications; Day-2 UI integration prioritizes Primary Web UI first.",
+          "evidence": "user",
+          "sources": [
+            "SRC-001",
+            "SRC-002"
+          ],
+          "links": [
+            "DEC-001",
+            "DEC-003",
+            "DEC-004"
+          ]
+        },
+        {
+          "criterion": "workflow-fit",
+          "rating": 3,
+          "rationale": "Captures at point of discovery (Share Sheet / Extension / MCP) and delivers actionable reminders & multi-language search when returning to desk.",
+          "evidence": "user",
+          "sources": [
+            "SRC-001",
+            "SRC-003"
+          ]
+        },
+        {
+          "criterion": "device-and-environment-constraints",
+          "rating": 3,
+          "rationale": "Handles iOS Pre-APNs 64-slot local notification sync constraint cleanly in DB, non-UTF-8 web pages (TIS-620/Windows-874/Shift_JIS), and zero-downtime DB fallback on offline/unfurl fail.",
+          "evidence": "user",
+          "sources": [
+            "SRC-001",
+            "SRC-002"
+          ],
+          "links": [
+            "EDGE-001",
+            "EDGE-002",
+            "EDGE-003"
+          ]
+        },
+        {
+          "criterion": "integration-boundary",
+          "rating": 3,
+          "rationale": "Clean module boundaries: Supabase (Auth/Postgres/Storage/pg_cron) <-> FastAPI (Database, Login, Ai, Unfurl, Reminders) <-> 3-Tier LLM (Gemini/Groq built-in, BYOK, Ollama/vLLM).",
+          "evidence": "observed",
+          "sources": [
+            "SRC-001",
+            "SRC-003",
+            "SRC-004"
+          ],
+          "links": [
+            "DEC-001",
+            "DEC-006"
+          ]
+        }
+      ],
+      "caps": [
+        {
+          "id": "which-native-without-reason",
+          "active": false
+        }
+      ],
+      "score": 75
+    },
+    "whether": {
+      "summary": "Provisional unit economics modeled at 100/1K/10K MAU ($0 beta start); critical JWT fix, multi-charset safety, and PDPA tasks mapped",
+      "ratings": [
+        {
+          "criterion": "unit-economics",
+          "rating": 3,
+          "rationale": "Provisional Unit Economics Table (USD/mo, verify live billing pages in TASK-002; paying conversion 5% @ ~$3.00/mo avg from ~99-149 THB Pro tier):\n| Monthly active users | 100 (Beta) | 1,000 | 10,000 |\n| Fixed infra (Supabase Free->$25 Pro) | $0 (Free) | $25 (Pro) | $50 (Pro+compute prov.) |\n| Variable AI (50% use within 50/mo cap) | $0 (Free tier) | ~$15 (prov.) | ~$150 (prov.) |\n| Variable Storage/Push (Cover <=120KB WebP) | $0 (Free) | ~$2 (prov.) | ~$25 (prov. / R2 switch) |\n| Support hrs x cost (solo founder) | $0 | $0 | $50 (prov.) |\n| Total cost | $0 | ~$42 | ~$275 |\n| Revenue (5% paying x ~$3/mo) | $0-$15 | ~$150 | ~$1,500 |\n| Provisional margin | $0 to +$15 | +$108 | +$1,225 |\nNote: Free tier 50/mo cap prevents runaway LLM burn; BYOK drives variable AI cost to $0.",
+          "evidence": "assumption",
+          "sources": [
+            "SRC-001",
+            "SRC-002",
+            "SRC-003"
+          ],
+          "links": [
+            "DEC-005",
+            "ASM-001",
+            "ASM-002",
+            "RISK-002",
+            "TASK-002"
+          ]
+        },
+        {
+          "criterion": "technical-bottlenecks",
+          "rating": 3,
+          "rationale": "Identified & mapped: (1) unverified JWT & X-User-Id bypass in Ai/router.py, (2) legacy HTML charset mojibake via raw resp.text, (3) pg_trgm gap on description/note/ai_summary, (4) MCP create_item canonical/reminder schema drift.",
+          "evidence": "observed",
+          "sources": [
+            "SRC-003"
+          ],
+          "links": [
+            "RISK-001",
+            "REQ-001",
+            "REQ-002",
+            "REQ-003"
+          ]
+        },
+        {
+          "criterion": "legal-privacy-security",
+          "rating": 3,
+          "rationale": "Jurisdiction: Thailand PDPA primary; EU/UK/California not yet targeted in beachhead (note explicitly). Data: email/auth, saved URLs, private notes, API token hashes, push tokens, optional BYOK headers (stateless). Security REQ-002 enforces JWT sig + dev-only bypass. Investigation tasks (TASK-001) + scraping/LLM risks (RISK-003) tracked with owner & launch gate.",
+          "evidence": "assumption",
+          "sources": [
+            "SRC-001",
+            "SRC-003"
+          ],
+          "links": [
+            "REQ-002",
+            "RISK-001",
+            "RISK-003",
+            "TASK-001"
+          ]
+        },
+        {
+          "criterion": "persona-ux-edge-cases",
+          "rating": 3,
+          "rationale": "Explicitly covers EDGE-001 (multi-charset/NFC/full text), EDGE-002 (iOS 64-slot local notification sync), EDGE-003 (canonical URL dedup & non-loss DB save on unfurl fail), EDGE-004 (quota/auth expiry).",
+          "evidence": "user",
+          "sources": [
+            "SRC-002"
+          ],
+          "links": [
+            "EDGE-001",
+            "EDGE-002",
+            "EDGE-003",
+            "EDGE-004"
+          ]
+        }
+      ],
+      "caps": [
+        {
+          "id": "whether-no-unit-cost",
+          "active": false
+        }
+      ],
+      "score": 75
+    },
+    "when": {
+      "summary": "AI-accelerated sprint targeting Backend Part 1-3 today & UI live test tomorrow, protected by per-part gates & Primary Web UI cut line",
+      "ratings": [
+        {
+          "criterion": "builder-bandwidth",
+          "rating": 3,
+          "rationale": "Human operator directing full-cycle AI engineering (Claudy + deterministic test gates) in a dedicated sprint today (backend) and tomorrow (UI integration).",
+          "evidence": "user",
+          "sources": [
+            "SRC-002"
+          ],
+          "links": [
+            "ASM-004",
+            "TASK-003"
+          ]
+        },
+        {
+          "criterion": "proof-of-concept",
+          "rating": 3,
+          "rationale": "backend/Ai/ and backend/tests/test_ai_module.py exist and pass 10/10 tests (verified baseline), providing proven template for Parts 1-3.",
+          "evidence": "observed",
+          "sources": [
+            "SRC-003",
+            "SRC-004"
+          ]
+        },
+        {
+          "criterion": "mvp-date",
+          "rating": 2,
+          "rationale": "Aggressive 2-day sprint (Day 1 = Backend Part 1 -> Part 2 -> Part 3 with offline SQL + Pytest gates; Day 2 = Live UI & Cloud integration). Tight schedule carries multi-client UI compression risk (RISK-004) without buffer.",
+          "evidence": "user",
+          "sources": [
+            "SRC-002"
+          ],
+          "links": [
+            "DEC-004",
+            "RISK-004",
+            "TASK-003"
+          ]
+        },
+        {
+          "criterion": "cut-line",
+          "rating": 3,
+          "rationale": "Clear sequential cut line: Part 1 DB+Auth -> Part 2 Unfurl -> Part 3 Reminders must pass tests independently before next part starts; Day-2 real test verifies Primary Web UI + API end-to-end first, then Mobile Expo reminder sync, deferring Browser Extension polish if Day-2 runs late.",
+          "evidence": "user",
+          "sources": [
+            "SRC-002"
+          ],
+          "links": [
+            "DEC-004",
+            "RISK-004"
+          ]
+        }
+      ],
+      "caps": [
+        {
+          "id": "when-scope-exceeds-capacity",
+          "active": false
+        }
+      ],
+      "score": 69
+    }
+  },
+  "records": {
+    "sources": [
+      {
+        "id": "SRC-001",
+        "title": "PRODUCT_SPEC.md v1.2",
+        "origin": "repository",
+        "locator": "C:/Projects/Just-Save-It-/PRODUCT_SPEC.md",
+        "coverage": "fully-read"
+      },
+      {
+        "id": "SRC-002",
+        "title": "User Requirements + Focus Mode Round 1 & Round 2 Decisions",
+        "origin": "user",
+        "locator": "conversation/focus-mode-6of6",
+        "coverage": "fully-read"
+      },
+      {
+        "id": "SRC-003",
+        "title": "Existing FastAPI backend/Ai and pytest suite",
+        "origin": "repository",
+        "locator": "C:/Projects/Just-Save-It-/backend/Ai/",
+        "coverage": "fully-read"
+      },
+      {
+        "id": "SRC-004",
+        "title": "AI_IMPLEMENTATION_PLAN.md",
+        "origin": "repository",
+        "locator": "C:/Projects/Just-Save-It-/AI_IMPLEMENTATION_PLAN.md",
+        "coverage": "fully-read"
+      }
+    ],
+    "personas": [
+      {
+        "id": "PERSONA-001",
+        "title": "Thai Knowledge & Tech Prosumer Switching Mobile <-> Desktop",
+        "role": "Beachhead champion",
+        "priority": "primary",
+        "evidence": "user",
+        "situation": "Saves mixed Thai/English/Japanese articles, code docs, tutorials, and social posts daily across phone and computer, losing track across disconnected bookmark folders and chat Keep.",
+        "outcome": "Capture links cleanly in full text across any language, preview fast, summarize in chosen language with BYOK option, and get cross-OS scheduled reminders that never drop.",
+        "workaround": "Browser bookmarks, LINE Keep, IG Saved, Notion tables",
+        "trigger": "Missing a deadline on a saved post or wasting time hunting for a Thai/English link across apps.",
+        "objections": [
+          "Data loss or truncated descriptions when sites break or change",
+          "Privacy of saved URLs/notes and locked-in AI subscriptions",
+          "Reliability of reminders across Android, Web, and pre-APNs iOS"
+        ],
+        "channels": [
+          "Owned: In-app onboarding & beta waitlist landing form (REQ-005)",
+          "Rented: Thai Dev / Productivity Facebook Groups, Discord servers, X/Twitter threads",
+          "Borrowed: Thai tech newsletter / dev creator demos (post-MVP beta)"
+        ],
+        "firstValue": "Save any Thai/English URL -> full clean preview title/description stored immediately -> trigger configurable AI summary + recurring reminder synced across devices.",
+        "positioning": "For Thai knowledge workers & tech prosumers who save mixed-language links across mobile and desktop only to lose them, Just-Save-It is a cross-OS link-knowledge hub that preserves full readable metadata, AI summaries (BYOK-ready), and recurring reminders across devices. Unlike plain bookmarks or chat Keep, it guarantees multi-language text fidelity, visual previews, and proactive reminders.",
+        "sources": [
+          "SRC-001",
+          "SRC-002"
+        ],
+        "links": [
+          "REQ-001",
+          "REQ-002",
+          "REQ-003",
+          "REQ-004",
+          "REQ-005",
+          "EXP-001"
+        ]
+      },
+      {
+        "id": "PERSONA-002",
+        "title": "Bulk Video Downloader / Piracy Archiver / Enterprise Compliance Team",
+        "role": "Anti-persona",
+        "priority": "excluded",
+        "evidence": "user",
+        "reason": "Product rejects video re-hosting, DRM/paywall circumvention scraping, and enterprise legal compliance archiving.",
+        "sources": [
+          "SRC-001",
+          "SRC-002"
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "id": "EDGE-001",
+        "title": "Non-UTF-8 / legacy charset & multi-language text mojibake or truncation",
+        "persona": "PERSONA-001",
+        "severity": "high",
+        "frequency": "frequent on Thai (TIS-620/Windows-874), Japanese (Shift_JIS), and Chinese websites",
+        "impact": "Garbled titles/descriptions, lost Thai tone marks, failed search matches, unreadable previews",
+        "response": "Detect encoding via HTTP Content-Type -> HTML <meta charset> -> charset-normalizer, unescape HTML entities, normalize Unicode NFC without stripping combining marks, store lossless full-length TEXT, and index across all 4 fields.",
+        "scopeDecision": "support-now",
+        "test": "Given HTML bytes encoded in TIS-620, Windows-874, Shift_JIS, or UTF-8 with Thai tone marks, CJK, RTL, and emoji, when processed and saved, then DB stores lossless readable UTF-8 NFC text searchable via FTS and trigram.",
+        "links": [
+          "REQ-003"
+        ]
+      },
+      {
+        "id": "EDGE-002",
+        "title": "iOS Pre-APNs 64-slot local notification cap and cross-OS schedule drift",
+        "persona": "PERSONA-001",
+        "severity": "high",
+        "frequency": "every iOS user with cross-device or recurring reminders",
+        "impact": "Reminders created on Web/Extension fail to trigger on iOS if un-synced or >64 local slots",
+        "response": "Persist canonical once/every_n_days schedule with IANA timezone in Supabase reminders table; push Android/Web via FCM/WebPush; provide atomic claim RPC + iOS local-sync unrolling endpoint.",
+        "scopeDecision": "support-now",
+        "test": "Given an every_n_days reminder created on desktop Web, when claimed by backend RPC or synced by iOS device endpoint, remind_at advances deterministically by exact repeat_every_days in user timezone.",
+        "links": [
+          "REQ-001"
+        ]
+      },
+      {
+        "id": "EDGE-003",
+        "title": "Unfurl failure or tracking-parameter duplicate URLs risking data loss",
+        "persona": "PERSONA-001",
+        "severity": "high",
+        "frequency": "frequent across social shares (utm_, fbclid, igsh) and rate-limited sites",
+        "impact": "User loses saved link/notes if save depends on live HTTP unfurl, or creates duplicate items",
+        "response": "Persist user item, folder, tags, and note to DB immediately with enrich_status='pending' even when HTTP fetch fails; canonicalize URL and normalize url_hash via DB trigger + Python helper.",
+        "scopeDecision": "support-now",
+        "test": "Given an unreachable URL saved with user note and tags, when created via API or MCP, then item and user note persist cleanly with enrich_status='pending' and duplicate utm_ variants map to identical canonical url_hash.",
+        "links": [
+          "REQ-001",
+          "REQ-004"
+        ]
+      },
+      {
+        "id": "EDGE-004",
+        "title": "Built-in AI free quota exhaustion (50/mo) or spoofed/expired auth headers",
+        "persona": "PERSONA-001",
+        "severity": "critical",
+        "frequency": "active users hitting free limit or unauthenticated API calls",
+        "impact": "Unexpected API failures or unauthorized cross-tenant access if X-User-Id bypass stays open",
+        "response": "Enforce Supabase JWT signature verification via backend/Login dependency; gate X-User-Id behind ENV=development and ALLOW_DEV_AUTH_BYPASS=true; surface remaining quota and seamless BYOK fallback.",
+        "scopeDecision": "support-now",
+        "test": "Given production environment settings, when request sends X-User-Id without valid signed Bearer JWT, then FastAPI returns HTTP 401.",
+        "links": [
+          "REQ-002",
+          "RISK-001"
+        ]
+      }
+    ],
+    "decisions": [
+      {
+        "id": "DEC-001",
+        "title": "Fast Stack: Supabase + FastAPI Modular Monolith + Expo/Next.js/WXT",
+        "status": "accepted",
+        "rationale": "Fast stack: Supabase Free->Pro + FastAPI (Database, Login, Ai, Unfurl, Reminders) + Next.js/Expo/WXT minimizes upfront $0 burn and leverages existing Ai/ codebase. Scale stack alternative: dedicated PgBouncer/workers + Cloudflare R2 CDN + APNs push service. Switch when: DB >400MB or egress >80% free limit or >500 paying users (provisional triggers).",
+        "alternatives": [
+          "Scale-first microservices + self-hosted Postgres/Redis: rejected for 2-day sprint overhead",
+          "Pure serverless Next.js only without Python backend: rejected because existing Ai/ & trafilatura ecosystem are Python"
+        ],
+        "evidence": "user",
+        "sources": [
+          "SRC-001",
+          "SRC-002",
+          "SRC-003"
+        ]
+      },
+      {
+        "id": "DEC-002",
+        "title": "Rich Preview Storage Cap: Cover-only WebP (<=800px/<120KB) + <=5 images + official embeds",
+        "status": "accepted",
+        "rationale": "Compressing only cover thumbnail to Supabase Storage and referencing indices 1..4 via external URL keeps storage cost negligible at 100-10K users.",
+        "alternatives": [
+          "Re-host all carousel images or videos: rejected due to egress cost and copyright risk"
+        ],
+        "evidence": "user",
+        "sources": [
+          "SRC-001",
+          "SRC-002"
+        ]
+      },
+      {
+        "id": "DEC-003",
+        "title": "Hybrid Reminders (once & every_n_days) with iOS pre-APNs local sync fallback",
+        "status": "accepted",
+        "rationale": "Delivers cross-OS reminders immediately without $99/yr Apple Developer gate during MVP test phase, cleanly upgradeable to APNs later.",
+        "alternatives": [
+          "Require Apple Developer APNs from Day 1: deferred until post-beta public iOS release"
+        ],
+        "evidence": "user",
+        "sources": [
+          "SRC-001",
+          "SRC-002"
+        ]
+      },
+      {
+        "id": "DEC-004",
+        "title": "Sequential Part 1 -> Part 2 -> Part 3 Backend Sprint + Day-2 Web-first UI Cut Line",
+        "status": "accepted",
+        "rationale": "Part 1 (DB + Auth + Integrity) locks contracts first, followed sequentially by Part 2 (Unfurl) and Part 3 (Reminders) today, then Day-2 live UI starting with Primary Web UI before Mobile Expo Local Sync and Browser Extension.",
+        "alternatives": [
+          "Parallelize ungrounded frontend & backend changes across all 3 clients simultaneously: rejected for regression risk"
+        ],
+        "evidence": "user",
+        "sources": [
+          "SRC-002"
+        ]
+      },
+      {
+        "id": "DEC-005",
+        "title": "Monetization Model: Price by AI Quota & Cloud Capacity (Freemium Free 50 AI/mo + BYOK + Pro ~99-149 THB/mo)",
+        "status": "proposed",
+        "rationale": "Model: Freemium + Unlimited BYOK. Value metric: monthly built-in AI summaries & cloud thumbnail storage. Tiers: Free (unlimited links/reminders + 50 built-in AI/mo + unlimited BYOK, 0 THB), Pro (~99-149 THB/mo provisional for higher AI quota/media/export extras). Why this model over alternatives: aligns variable LLM cost directly to quota without gating core bookmarking behind paywall. Clears provisional cost per active user by +$108/mo at 1K MAU assuming 5% conversion (EXP-002 tests).",
+        "alternatives": [
+          "Pure flat paywall with no free tier: rejected because bookmarking switching friction demands try-before-buy",
+          "Pure usage-based billing per link: rejected for bill-shock anxiety",
+          "Per-seat B2B pricing: rejected because beachhead is individual prosumer"
+        ],
+        "evidence": "assumption",
+        "sources": [
+          "SRC-001",
+          "SRC-002"
+        ],
+        "links": [
+          "ASM-001",
+          "ASM-002",
+          "EXP-002"
+        ]
+      },
+      {
+        "id": "DEC-006",
+        "title": "Part 1 Full Integrity Package & Configurable AI Language",
+        "status": "accepted",
+        "rationale": "Combines 11-table Postgres schema + RLS + accept_invite + 4-field FTS/pg_trgm search + multi-charset/NFC text hygiene + JWT security fix + configurable summary_language (default th) + backward-compatible backend/Ai alignment.",
+        "alternatives": [
+          "Schema-only Part 1 leaving JWT bypass & encoding fixes until later: rejected by user in Focus Mode Round 1 & 2"
+        ],
+        "evidence": "user",
+        "sources": [
+          "SRC-002"
+        ]
+      }
+    ],
+    "requirements": [
+      {
+        "id": "REQ-001",
+        "title": "11-table Supabase Postgres schema, RLS policies, canonical triggers, accept_invite RPC, atomic claim_due_reminders RPC, and FastAPI CRUD API",
+        "priority": "P0",
+        "status": "proposed",
+        "outcome": "Fast, normalized, zero-loss storage of link metadata, user organization/notes, AI summaries, and cross-OS reminders with tenant isolation.",
+        "acceptance": [
+          "All 11 tables, constraints, FK indexes, and RLS policies with (select auth.uid()) apply idempotently.",
+          "accept_invite(token) validates expiry/revocation/max_uses atomically; claim_due_reminders advances every_n_days in IANA timezone."
+        ],
+        "evidence": "user",
+        "sources": [
+          "SRC-001",
+          "SRC-002"
+        ]
+      },
+      {
+        "id": "REQ-002",
+        "title": "Shared Supabase JWT signature verification (backend/Login/) and strict ENV=development + ALLOW_DEV_AUTH_BYPASS gating for X-User-Id",
+        "priority": "P0",
+        "status": "proposed",
+        "outcome": "Closes unverified JWT & header bypass vulnerability across both Database/Login routes and existing Ai/router.py.",
+        "acceptance": [
+          "Invalid or tampered Bearer JWT returns HTTP 401; expired JWT returns HTTP 401.",
+          "X-User-Id without valid JWT returns HTTP 401 unless ENV=development and ALLOW_DEV_AUTH_BYPASS=true."
+        ],
+        "evidence": "observed",
+        "sources": [
+          "SRC-002",
+          "SRC-003"
+        ]
+      },
+      {
+        "id": "REQ-003",
+        "title": "Multi-charset HTML detection (UTF-8/TIS-620/Windows-874/Shift_JIS/GBK), Unicode NFC normalization preserving tone marks, lossless full title/description TEXT, and 4-field FTS+trigram search",
+        "priority": "P0",
+        "status": "proposed",
+        "outcome": "Full non-truncated title and description across every script/language without mojibake, searchable sub-second across Thai, CJK, and English.",
+        "acceptance": [
+          "Raw HTML bytes in TIS-620, Windows-874, Shift_JIS, and UTF-8 decode accurately to UTF-8 NFC without stripping Thai tone marks or emoji.",
+          "Search query matches substring phrases in title, description, note, and ai_summary across languages."
+        ],
+        "evidence": "user",
+        "sources": [
+          "SRC-002",
+          "SRC-003"
+        ]
+      },
+      {
+        "id": "REQ-004",
+        "title": "Immediate DB persistence of link + user folder/tags/note regardless of unfurl status, plus configurable AI summary_language (default th) preserving summary_th compatibility",
+        "priority": "P0",
+        "status": "proposed",
+        "outcome": "Zero user data loss even on remote fetch failure, while keeping existing AI/MCP clients backward-compatible and supporting per-user/request language.",
+        "acceptance": [
+          "POST /api/items saves user URL, folder, tags, note, and optional reminder with enrich_status='pending' without waiting on live scraping.",
+          "AI summary honors requested/profile language (th/en/auto) while preserving summary_th response field compatibility."
+        ],
+        "evidence": "user",
+        "sources": [
+          "SRC-002",
+          "SRC-003"
+        ]
+      },
+      {
+        "id": "REQ-005",
+        "title": "Owned waitlist/feedback capture channel and visible per-account Free AI quota indicator before hitting 50/mo cap",
+        "priority": "P1",
+        "status": "proposed",
+        "outcome": "Captures beta testers directly into an owned feedback loop and avoids sudden AI quota surprise by encouraging timely BYOK setup or Pro upgrade.",
+        "acceptance": [
+          "GET /api/auth/me exposes monthly built-in AI usage count and remaining free quota.",
+          "Beta onboarding collects tester feedback email/channel consent safely."
+        ],
+        "evidence": "assumption",
+        "sources": [
+          "SRC-001"
+        ],
+        "links": [
+          "EXP-001"
+        ]
+      }
+    ],
+    "risks": [
+      {
+        "id": "RISK-001",
+        "title": "CRITICAL: backend/Ai/router.py currently accepts unverified X-User-Id bypass and decodes JWT without verifying signature",
+        "status": "open",
+        "severity": "critical",
+        "mitigation": "Fix immediately in Part 1 REQ-002 by migrating router.py dependency to shared Login.auth_dep verify_supabase_jwt and strict dev-bypass env flags before any network exposure.",
+        "evidence": "observed",
+        "sources": [
+          "SRC-003"
+        ],
+        "links": [
+          "REQ-002",
+          "EDGE-004"
+        ]
+      },
+      {
+        "id": "RISK-002",
+        "title": "Provisional unit economics margin depends on staying inside free/low-cost LLM quotas and >=5% Pro conversion once >1K MAU",
+        "status": "open",
+        "severity": "medium",
+        "mitigation": "Enforce atomic daily/monthly 50-call Free cap in Postgres, prioritize zero-token BYOK flow, and verify real cloud billing via TASK-002 & EXP-002.",
+        "evidence": "assumption",
+        "sources": [
+          "SRC-001"
+        ],
+        "links": [
+          "ASM-001",
+          "ASM-002",
+          "DEC-005"
+        ]
+      },
+      {
+        "id": "RISK-003",
+        "title": "Legal/Privacy: Thailand PDPA consent/deletion flow, EU/UK out-of-scope note, third-party scraping ToS, and Gemini/Groq data retention terms unchecked",
+        "status": "open",
+        "severity": "medium",
+        "mitigation": "Execute TASK-001 checklist before opening public beta: publish PDPA privacy notice, verify cascade delete account flow, and store only official/cover WebP previews <=120KB.",
+        "evidence": "assumption",
+        "sources": [
+          "SRC-001"
+        ],
+        "links": [
+          "TASK-001"
+        ]
+      },
+      {
+        "id": "RISK-004",
+        "title": "2-Day Sprint Compression Risk: completing Backend Part 1-3 today + multi-client UI testing tomorrow without cutting Extension/Mobile scope could compromise quality",
+        "status": "open",
+        "severity": "high",
+        "mitigation": "Enforce strict sequential offline Pytest gate per part today (Part 1 -> Part 2 -> Part 3) and apply DEC-004 Day-2 Cut Line: Primary Web UI E2E first, Mobile Expo Notification second, Extension deferred if behind.",
+        "evidence": "user",
+        "sources": [
+          "SRC-002"
+        ],
+        "links": [
+          "DEC-004",
+          "TASK-003"
+        ]
+      }
+    ],
+    "assumptions": [
+      {
+        "id": "ASM-001",
+        "title": "Pro price hypothesis (~99-149 THB/mo) converts >=5% of frequent beta savers needing expanded AI quota",
+        "status": "untested",
+        "implication": "If <2% convert in EXP-002, keep Free+BYOK model and defer paid infrastructure upgrades or test annual-only pricing.",
+        "evidence": "assumption",
+        "sources": [
+          "SRC-002"
+        ],
+        "links": [
+          "EXP-002"
+        ]
+      },
+      {
+        "id": "ASM-002",
+        "title": "Built-in AI free tier (50 calls/mo cap) averages <=25 calls/MAU (~$0.015-$0.03 provisional variable cost/user when paid)",
+        "status": "untested",
+        "implication": "If free-tier burn exceeds margin threshold, lower free quota to 20/mo or require BYOK earlier.",
+        "evidence": "assumption",
+        "sources": [
+          "SRC-001",
+          "SRC-003"
+        ],
+        "links": [
+          "DEC-005"
+        ]
+      },
+      {
+        "id": "ASM-003",
+        "title": "Provisional 30-day success KPI: >=30% Week-4 retention on core save/retrieve/reminder loop among first 50 beta users",
+        "status": "untested",
+        "implication": "If W4 active reuse <15% in EXP-001, pause new feature expansion and revisit beachhead/onboarding trigger.",
+        "evidence": "assumption",
+        "sources": [
+          "SRC-002"
+        ],
+        "links": [
+          "EXP-001"
+        ]
+      },
+      {
+        "id": "ASM-004",
+        "title": "AI-accelerated execution completes Part 1 -> Part 2 -> Part 3 offline-verified today under sequential Pytest gates",
+        "status": "untested",
+        "implication": "If Part 1-3 exceeds today's budget, ship verified Part 1+2 cleanly before rushing unverified Part 3 or Day-2 UI clients.",
+        "evidence": "user",
+        "sources": [
+          "SRC-002"
+        ],
+        "links": [
+          "TASK-003"
+        ]
+      }
+    ],
+    "experiments": [
+      {
+        "id": "EXP-001",
+        "title": "Beta Activation & Week-4 Reuse Test with 50 Thai Knowledge/Tech Prosumers",
+        "status": "planned",
+        "hypothesis": "If we recruit 50 Thai Dev/Productivity users from Facebook/Discord communities to save >=5 mixed-language links with >=1 reminder, then >=30% (provisional) will actively retrieve or complete a reminder in Week 4 because clean preview + cross-OS reminders solve bookmark amnesia.",
+        "measure": "Share of activated testers completing >=1 search/open/reminder trigger in Week 4 (provisional >=30% threshold; zero data loss as guardrail).",
+        "timebox": "First 50 beta sign-ups or 30 calendar days post-UI beta open",
+        "decisionRule": ">=30% W4 active reuse -> proceed to v1.1 (Public Share/Semantic Search); <15% -> re-interview churned testers and pivot beachhead or reminder UX before adding features.",
+        "evidence": "assumption",
+        "links": [
+          "ASM-003",
+          "PERSONA-001",
+          "REQ-005"
+        ]
+      },
+      {
+        "id": "EXP-002",
+        "title": "Pro Tier Value Metric & Price Sensitivity Test (99-149 THB/mo)",
+        "status": "planned",
+        "hypothesis": "If active Free users approaching 50 built-in AI calls/mo see BYOK (free) alongside a Pro tier (~99-149 THB/mo provisional), then >=5% click Upgrade intent / pre-register within 14 days because convenience beats configuring API keys.",
+        "measure": "Pro upgrade intent click rate among quota-hit users over 14 days (guardrail: Free core save retention does not drop).",
+        "timebox": "14 days after beta reaches 50 active users",
+        "decisionRule": ">=5% upgrade intent -> implement Stripe/PromptPay checkout at tested THB price; <2% -> stay BYOK-first or test lower price/annual bundle before building billing.",
+        "evidence": "assumption",
+        "links": [
+          "ASM-001",
+          "DEC-005",
+          "PERSONA-001"
+        ]
+      }
+    ],
+    "tasks": [
+      {
+        "id": "TASK-001",
+        "title": "Investigate Thailand PDPA notice, user delete-all-data cascade flow, Supabase/Gemini/Groq DPA & retention rules, and oEmbed/robots ToS (Owner: Founder, Before: Public Beta)",
+        "status": "open",
+        "evidence": "assumption",
+        "sources": [
+          "SRC-001"
+        ],
+        "links": [
+          "RISK-003"
+        ]
+      },
+      {
+        "id": "TASK-002",
+        "title": "Verify live Supabase Free/Pro and Gemini/Groq API pricing pages with access date to replace provisional unit-economics estimates (Owner: Founder, Before: Paid Tier Launch)",
+        "status": "open",
+        "evidence": "assumption",
+        "sources": [
+          "SRC-001"
+        ],
+        "links": [
+          "RISK-002",
+          "DEC-005"
+        ]
+      },
+      {
+        "id": "TASK-003",
+        "title": "Run sequential Backend Sprint today (Part 1 DB+Auth+Multi-lang -> Part 2 Unfurl -> Part 3 Reminders, full Pytest gates) then Primary Web UI integration tomorrow (Owner: Claudy + Founder, Before: Day 2 E2E)",
+        "status": "in-progress",
+        "evidence": "user",
+        "sources": [
+          "SRC-002"
+        ],
+        "links": [
+          "DEC-004",
+          "RISK-004"
+        ]
+      }
+    ]
+  },
+  "overall": 72
+}

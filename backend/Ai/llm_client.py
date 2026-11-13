@@ -6,6 +6,7 @@ Supports 3 Tiers:
 - Tier 3 (Custom Endpoint): call_byok_or_custom_llm with keyless or bearer token for Ollama, vLLM, private GPU.
 """
 
+from contextvars import ContextVar
 import json
 import logging
 import os
@@ -17,6 +18,8 @@ import httpx
 from .schemas import AIConfig, AISummaryOutput
 
 logger = logging.getLogger("just_save_it.ai")
+
+_active_system_prompt_ctx: ContextVar[Optional[str]] = ContextVar("active_system_prompt", default=None)
 
 SYSTEM_PROMPT = """คุณคือผู้ช่วยสรุปเนื้อหาอัจฉริยะของแอป Just-Save-It
 เป้าหมายของคุณคือสรุปเนื้อหาที่ได้รับให้เข้าใจง่ายและรวดเร็วที่สุดสำหรับผู้ใช้
@@ -31,18 +34,61 @@ SYSTEM_PROMPT = """คุณคือผู้ช่วยสรุปเนื�
 """
 
 
-def _build_user_prompt(content_text: str, existing_user_tags: Optional[List[str]] = None) -> str:
-    """Build standardized user prompt for summarization."""
-    tags_str = ", ".join(existing_user_tags) if existing_user_tags else "(ยังไม่มีแท็กเดิม)"
-    return f"""แท็กเดิมของผู้ใช้: [{tags_str}]
+def _build_system_prompt(summary_language: str = "th") -> str:
+    """Build system prompt matching target summary language ('th', 'en', or 'auto')."""
+    if summary_language == "en":
+        return """You are the intelligent content summarizer for Just-Save-It.
+Your goal is to summarize the provided content clearly and concisely.
 
-เนื้อหาที่ต้องสรุป:
+Rules:
+1. Write 3 concise English bullet points (each starting with '• ') readable in under 5 seconds.
+2. Suggest 3-5 relevant tags (`suggested_tags`):
+   - Prioritize reusing the user's Existing Tags whenever semantically close to prevent duplicate tags.
+   - Only invent short new tags if no existing tag fits.
+3. Classify `content_type`: 'article' | 'video' | 'post' | 'product' | 'other'.
+4. Respond strictly as JSON matching the schema (`summary_th` holds the 3-bullet summary text), with zero preamble.
+"""
+    if summary_language == "auto":
+        return """You are the intelligent content summarizer for Just-Save-It.
+Your goal is to summarize the provided content clearly in the primary language of the source content.
+
+Rules:
+1. Write 3 concise bullet points (each starting with '• ') in the same primary language as the source text (Thai if source is Thai, English if English, etc.).
+2. Suggest 3-5 relevant tags (`suggested_tags`), prioritizing the user's Existing Tags first.
+3. Classify `content_type`: 'article' | 'video' | 'post' | 'product' | 'other'.
+4. Respond strictly as JSON matching the schema (`summary_th` holds the 3-bullet summary text), with zero preamble.
+"""
+    return SYSTEM_PROMPT
+
+
+def _current_system_prompt() -> str:
+    return _active_system_prompt_ctx.get() or SYSTEM_PROMPT
+
+
+def _build_user_prompt(
+    content_text: str,
+    existing_user_tags: Optional[List[str]] = None,
+    summary_language: str = "th",
+) -> str:
+    """Build standardized user prompt for summarization."""
+    tags_str = ", ".join(existing_user_tags) if existing_user_tags else "(none)"
+    if summary_language == "en":
+        lang_hint = "Language: English (3 concise bullets starting with '• ')."
+    elif summary_language == "auto":
+        lang_hint = "Language: Match the primary language of the source content (3 concise bullets starting with '• ')."
+    else:
+        lang_hint = "Language: ภาษาไทย 3 ข้อสั้นๆ (ขึ้นต้นด้วย '• ')."
+
+    return f"""Existing Tags: [{tags_str}]
+{lang_hint}
+
+Content to summarize:
 {content_text}
 
-จงตอบเป็น JSON โครงสร้างนี้เท่านั้น:
+Return strictly valid JSON in this exact schema:
 {{
-  "summary_th": "• บรรทัดที่ 1\\n• บรรทัดที่ 2\\n• บรรทัดที่ 3",
-  "suggested_tags": ["แท็ก1", "แท็ก2", "แท็ก3"],
+  "summary_th": "• Point 1\\n• Point 2\\n• Point 3",
+  "suggested_tags": ["tag1", "tag2", "tag3"],
   "content_type": "article"
 }}
 """
@@ -70,7 +116,7 @@ async def _call_gemini_raw(prompt: str, api_key: str, model_name: str = "gemini-
     """Call Google Gemini generateContent API."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     payload: Dict[str, Any] = {
-        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "system_instruction": {"parts": [{"text": _current_system_prompt()}]},
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "responseMimeType": "application/json",
@@ -102,7 +148,7 @@ async def _call_openai_compatible_raw(
         headers["Authorization"] = f"Bearer {api_key.strip()}"
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": _current_system_prompt()},
         {"role": "user", "content": prompt},
     ]
 
@@ -137,7 +183,7 @@ async def _call_anthropic_raw(
     payload = {
         "model": model_name,
         "max_tokens": 1024,
-        "system": SYSTEM_PROMPT,
+        "system": _current_system_prompt(),
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
     }
@@ -238,6 +284,7 @@ async def generate_structured_summary(
     content_text: str,
     existing_user_tags: List[str],
     config: Optional[AIConfig] = None,
+    summary_language: str = "th",
 ) -> Tuple[AISummaryOutput, str]:
     """Central router for 3 Tiers: builds prompt with existing tags and delegates to corresponding tier.
 
@@ -245,9 +292,12 @@ async def generate_structured_summary(
         tuple[AISummaryOutput, str]: (output, engine_used)
     """
     cfg = config or AIConfig(provider="built-in")
-    prompt = _build_user_prompt(content_text, existing_user_tags)
-
-    if cfg.provider == "built-in":
-        return await call_builtin_llm(prompt)
-    else:
+    lang = summary_language if summary_language in ("th", "en", "auto") else "th"
+    prompt = _build_user_prompt(content_text, existing_user_tags, summary_language=lang)
+    token = _active_system_prompt_ctx.set(_build_system_prompt(lang))
+    try:
+        if cfg.provider == "built-in":
+            return await call_builtin_llm(prompt)
         return await call_byok_or_custom_llm(prompt, cfg)
+    finally:
+        _active_system_prompt_ctx.reset(token)

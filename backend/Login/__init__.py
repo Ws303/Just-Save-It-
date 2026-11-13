@@ -1,41 +1,11 @@
-"""Login and Authentication module for Just-Save-It Backend."""
+"""Just-Save-It Login & Auth package (Supabase JWT verification, dev-bypass guard, profile & MCP token endpoints)."""
 
-from .dependencies import CurrentUser, get_current_user, get_optional_current_user
+from .auth_dep import get_current_user_id, is_dev_bypass_enabled, verify_supabase_jwt
 from .router import router
-from .schemas import (
-    ApiTokenSummary,
-    AuthTokenResponse,
-    CreateApiTokenRequest,
-    CreateApiTokenResponse,
-    LoginRequest,
-    MagicLinkRequest,
-    MagicLinkResponse,
-    NativeAuthRequest,
-    OAuthCallbackRequest,
-    RefreshTokenRequest,
-    RegisterRequest,
-    UpdateProfileRequest,
-    UserProfileResponse,
-)
-from .service import auth_service
 
 __all__ = [
     "router",
-    "CurrentUser",
-    "get_current_user",
-    "get_optional_current_user",
-    "auth_service",
-    "RegisterRequest",
-    "LoginRequest",
-    "MagicLinkRequest",
-    "MagicLinkResponse",
-    "NativeAuthRequest",
-    "OAuthCallbackRequest",
-    "RefreshTokenRequest",
-    "UserProfileResponse",
-    "AuthTokenResponse",
-    "UpdateProfileRequest",
-    "CreateApiTokenRequest",
-    "CreateApiTokenResponse",
-    "ApiTokenSummary",
+    "get_current_user_id",
+    "verify_supabase_jwt",
+    "is_dev_bypass_enabled",
 ]
