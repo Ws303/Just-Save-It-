@@ -1,0 +1,253 @@
+"""LLM Client for Just-Save-It AI module.
+
+Supports 3 Tiers:
+- Tier 1 (Built-in Free): call_builtin_llm (Gemini Flash primary + Groq failover on 429/error).
+- Tier 2 (BYOK): call_byok_or_custom_llm with user-supplied key (OpenAI, Gemini, Anthropic, OpenRouter, Groq).
+- Tier 3 (Custom Endpoint): call_byok_or_custom_llm with keyless or bearer token for Ollama, vLLM, private GPU.
+"""
+
+import json
+import logging
+import os
+import re
+from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
+
+from .schemas import AIConfig, AISummaryOutput
+
+logger = logging.getLogger("just_save_it.ai")
+
+SYSTEM_PROMPT = """คุณคือผู้ช่วยสรุปเนื้อหาอัจฉริยะของแอป Just-Save-It
+เป้าหมายของคุณคือสรุปเนื้อหาที่ได้รับให้เข้าใจง่ายและรวดเร็วที่สุดสำหรับผู้ใช้
+
+กฎเหล็ก:
+1. สรุปเป็นภาษาไทย 3 ข้อสั้นๆ (ขึ้นต้นด้วย '• ') อ่านจบได้ภายใน 5 วินาที กระชับ ตรงประเด็น
+2. แนะนำแท็กที่เกี่ยวข้อง 3-5 แท็ก (suggested_tags):
+   - ต้องตรวจสอบ 'แท็กเดิมของผู้ใช้' (Existing Tags) ก่อนเสมอ หากมีความหมายใกล้เคียงให้เลือกใช้แท็กเดิมเพื่อไม่ให้แท็กซ้ำซ้อน
+   - หากไม่มีแท็กเดิมที่ตรง ค่อยสร้างแท็กใหม่ที่สั้นกระชับ
+3. ระบุประเภทเนื้อหา (content_type): 'article' | 'video' | 'post' | 'product' | 'other'
+4. ตอบกลับเป็นรูปแบบ JSON ตาม Schema ที่กำหนดเท่านั้น ห้ามมีคำเกริ่นหรือคำลงท้ายเด็ดขาด
+"""
+
+
+def _build_user_prompt(content_text: str, existing_user_tags: Optional[List[str]] = None) -> str:
+    """Build standardized user prompt for summarization."""
+    tags_str = ", ".join(existing_user_tags) if existing_user_tags else "(ยังไม่มีแท็กเดิม)"
+    return f"""แท็กเดิมของผู้ใช้: [{tags_str}]
+
+เนื้อหาที่ต้องสรุป:
+{content_text}
+
+จงตอบเป็น JSON โครงสร้างนี้เท่านั้น:
+{{
+  "summary_th": "• บรรทัดที่ 1\\n• บรรทัดที่ 2\\n• บรรทัดที่ 3",
+  "suggested_tags": ["แท็ก1", "แท็ก2", "แท็ก3"],
+  "content_type": "article"
+}}
+"""
+
+
+def _parse_and_validate_json(raw_text: str) -> AISummaryOutput:
+    """Clean markdown fences and parse LLM response into AISummaryOutput."""
+    text = raw_text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n", "", text)
+        text = re.sub(r"\n```$", "", text)
+        text = text.strip()
+
+    try:
+        return AISummaryOutput.model_validate_json(text)
+    except Exception:
+        # Fallback: search for first and last curly braces
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            return AISummaryOutput.model_validate_json(match.group(0))
+        raise ValueError(f"Failed to parse LLM JSON output: {raw_text[:200]}")
+
+
+async def _call_gemini_raw(prompt: str, api_key: str, model_name: str = "gemini-2.5-flash") -> AISummaryOutput:
+    """Call Google Gemini generateContent API."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    payload: Dict[str, Any] = {
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.2,
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        candidates = data.get("candidates", [])
+        if not candidates:
+            raise ValueError("Gemini returned empty candidates")
+        raw_text = candidates[0]["content"]["parts"][0]["text"]
+        return _parse_and_validate_json(raw_text)
+
+
+async def _call_openai_compatible_raw(
+    prompt: str,
+    base_url: str,
+    api_key: Optional[str] = None,
+    model_name: str = "gpt-4o-mini",
+) -> AISummaryOutput:
+    """Call OpenAI-compatible completions endpoint."""
+    endpoint = f"{base_url.rstrip('/')}/chat/completions"
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    if api_key and api_key.strip():
+        headers["Authorization"] = f"Bearer {api_key.strip()}"
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+
+    payload: Dict[str, Any] = {
+        "model": model_name,
+        "messages": messages,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+    }
+
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        resp = await client.post(endpoint, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        raw_text = data["choices"][0]["message"]["content"]
+        return _parse_and_validate_json(raw_text)
+
+
+async def _call_anthropic_raw(
+    prompt: str,
+    api_key: str,
+    model_name: str = "claude-3-5-haiku-20241022",
+) -> AISummaryOutput:
+    """Call Anthropic Claude messages API."""
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+
+    payload = {
+        "model": model_name,
+        "max_tokens": 1024,
+        "system": SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+    }
+
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        raw_text = data["content"][0]["text"]
+        return _parse_and_validate_json(raw_text)
+
+
+async def call_builtin_llm(prompt: str) -> Tuple[AISummaryOutput, str]:
+    """Tier 1: Call Built-in Gemini Flash with automatic failover to Groq on 429 or error.
+
+    Returns:
+        tuple[AISummaryOutput, str]: (output, "built-in:gemini-flash" or "built-in:groq-llama3")
+    """
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+    # 1. Try Gemini Flash
+    if gemini_key:
+        try:
+            output = await _call_gemini_raw(prompt=prompt, api_key=gemini_key, model_name=gemini_model)
+            return output, "built-in:gemini-flash"
+        except Exception as e:
+            logger.warning("Gemini API call failed (%s); triggering automatic failover to Groq...", e)
+
+    # 2. Automatic Failover to Groq
+    if groq_key:
+        try:
+            output = await _call_openai_compatible_raw(
+                prompt=prompt,
+                base_url="https://api.groq.com/openai/v1",
+                api_key=groq_key,
+                model_name=groq_model,
+            )
+            return output, "built-in:groq-llama3"
+        except Exception as e:
+            logger.error("Groq failover call also failed: %s", e)
+            raise e
+
+    raise RuntimeError("No AI credentials available: GEMINI_API_KEY and GROQ_API_KEY are not configured on server.")
+
+
+async def call_byok_or_custom_llm(prompt: str, config: AIConfig) -> Tuple[AISummaryOutput, str]:
+    """Tier 2 & Tier 3: Call LLM with user-provided API key or custom endpoint (Ollama/vLLM).
+
+    - Tier 2 (BYOK): Stateless Header relay, supports OpenAI, Gemini, Anthropic, Groq, OpenRouter.
+    - Tier 3 (Custom): Keyless or Bearer token to custom base_url.
+
+    Returns:
+        tuple[AISummaryOutput, str]: (output, engine_used)
+    """
+    # ===== Tier 3: Custom / Local Endpoint (Keyless or Bearer) =====
+    if config.provider == "custom":
+        base_url = config.base_url or "http://localhost:11434/v1"
+        model = config.model or "llama3.2"
+        output = await _call_openai_compatible_raw(
+            prompt=prompt,
+            base_url=base_url,
+            api_key=config.api_key,
+            model_name=model,
+        )
+        return output, f"custom:{model}"
+
+    # ===== Tier 2: BYOK (User Key) =====
+    api_key = config.api_key
+    if not api_key:
+        raise ValueError("BYOK tier requires an API key in X-AI-Key header or config.")
+
+    # Provider routing for BYOK
+    # In BYOK, user can specify specific model or provider
+    model = config.model or "gpt-4o-mini"
+
+    if "gemini" in model.lower():
+        output = await _call_gemini_raw(prompt=prompt, api_key=api_key, model_name=model)
+        return output, f"byok:gemini/{model}"
+
+    if "claude" in model.lower() or "anthropic" in model.lower():
+        output = await _call_anthropic_raw(prompt=prompt, api_key=api_key, model_name=model)
+        return output, f"byok:anthropic/{model}"
+
+    base_url = config.base_url or "https://api.openai.com/v1"
+    output = await _call_openai_compatible_raw(
+        prompt=prompt,
+        base_url=base_url,
+        api_key=api_key,
+        model_name=model,
+    )
+    return output, f"byok:{model}"
+
+
+async def generate_structured_summary(
+    content_text: str,
+    existing_user_tags: List[str],
+    config: Optional[AIConfig] = None,
+) -> Tuple[AISummaryOutput, str]:
+    """Central router for 3 Tiers: builds prompt with existing tags and delegates to corresponding tier.
+
+    Returns:
+        tuple[AISummaryOutput, str]: (output, engine_used)
+    """
+    cfg = config or AIConfig(provider="built-in")
+    prompt = _build_user_prompt(content_text, existing_user_tags)
+
+    if cfg.provider == "built-in":
+        return await call_builtin_llm(prompt)
+    else:
+        return await call_byok_or_custom_llm(prompt, cfg)
