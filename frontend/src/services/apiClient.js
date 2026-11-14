@@ -5,6 +5,8 @@
  */
 import { AI_PROVIDER_PRESETS } from "../data/seed.js";
 import { store, generateUuid, inferPlatform, getFolderById, getLinkById, filterLinks } from "../state/store.js";
+import { getAuthMode } from "./routeGuard.js";
+import { extractClaimsSummary, supabaseAuth } from "./supabaseAuth.js";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,7 +41,7 @@ export function buildAiHeadersAndConfig() {
   };
   if (store.state.api.bearerToken.trim()) {
     headers["Authorization"] = `Bearer ${store.state.api.bearerToken.trim()}`;
-  } else if (store.state.api.userId.trim()) {
+  } else if (store.state.api.useDevBypass && store.state.api.userId.trim()) {
     headers["X-User-Id"] = store.state.api.userId.trim();
   }
 
@@ -58,18 +60,40 @@ export function buildAiHeadersAndConfig() {
   return { headers, aiConfigBody, preset };
 }
 
-async function dispatchRequest({ method = "GET", path, body = null, customHeaders = {}, mockHandler }) {
+function buildAuthHeaders(customHeaders = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+  };
+  const bearer = store.state.api.bearerToken?.trim();
+  if (bearer) {
+    headers["Authorization"] = `Bearer ${bearer}`;
+  } else if (store.state.api.useDevBypass && store.state.api.userId?.trim()) {
+    headers["X-User-Id"] = store.state.api.userId.trim();
+  }
+  return { ...headers, ...customHeaders };
+}
+
+function getSupabaseConfig() {
+  return {
+    supabaseUrl: store.state.api.supabaseUrl,
+    supabaseAnonKey: store.state.api.supabaseAnonKey,
+  };
+}
+
+async function dispatchRequest({
+  method = "GET",
+  path,
+  body = null,
+  customHeaders = {},
+  mockHandler,
+  skipAuthRefresh = false,
+  skipUnauthRedirect = false,
+}) {
   const { mode, baseUrl, latencyMs } = store.state.api;
   const started = performance.now();
   const base = baseUrl.replace(/\/+$/, "");
 
-  const headers = {
-    "Content-Type": "application/json",
-    ...(store.state.api.bearerToken
-      ? { Authorization: `Bearer ${store.state.api.bearerToken}` }
-      : { "X-User-Id": store.state.api.userId }),
-    ...customHeaders,
-  };
+  const headers = buildAuthHeaders(customHeaders);
 
   if (mode === "mock") {
     await sleep(Math.max(40, Number(latencyMs) || 120));
@@ -105,8 +129,8 @@ async function dispatchRequest({ method = "GET", path, body = null, customHeader
   }
 
   // Live HTTP Mode
-  try {
-    const fetchOpts = { method, headers };
+  const performLiveFetch = async (reqHeaders) => {
+    const fetchOpts = { method, headers: reqHeaders };
     if (body !== null && method !== "GET" && method !== "HEAD") {
       fetchOpts.body = JSON.stringify(body);
     }
@@ -118,6 +142,27 @@ async function dispatchRequest({ method = "GET", path, body = null, customHeader
     } catch {
       parsed = { raw: text };
     }
+    return { resp, parsed };
+  };
+
+  try {
+    let { resp, parsed } = await performLiveFetch(headers);
+
+    if (
+      resp.status === 401 &&
+      !skipAuthRefresh &&
+      store.state.api.refreshToken &&
+      !path.startsWith("/api/auth/login") &&
+      !path.startsWith("/api/auth/register") &&
+      !path.startsWith("/api/auth/refresh")
+    ) {
+      const refreshed = await apiClient.refreshSession();
+      if (refreshed.ok) {
+        const retryHeaders = buildAuthHeaders(customHeaders);
+        ({ resp, parsed } = await performLiveFetch(retryHeaders));
+      }
+    }
+
     const durationMs = performance.now() - started;
     recordLog({
       method,
@@ -130,7 +175,15 @@ async function dispatchRequest({ method = "GET", path, body = null, customHeader
       responseBody: parsed,
       error: resp.ok ? null : parsed?.detail || `HTTP ${resp.status}`,
     });
-    return { ok: resp.ok, status: resp.status, data: parsed, isMock: false };
+
+    if (resp.status === 401 && !skipUnauthRedirect && !path.startsWith("/api/auth/login") && !path.startsWith("/api/auth/register")) {
+      store.clearSession({
+        redirectToLogin: store.state.ui.authGuardEnabled !== false,
+        authError: parsed?.detail || "เซสชันหมดอายุหรือยังไม่ได้ยืนยันตัวตน (HTTP 401)",
+      });
+    }
+
+    return { ok: resp.ok, status: resp.status, data: parsed, error: resp.ok ? null : parsed?.detail || `HTTP ${resp.status}`, isMock: false };
   } catch (err) {
     const durationMs = performance.now() - started;
     const msg = `${err.message} (ตรวจสอบว่าเซิร์ฟเวอร์ FastAPI กำลังรันอยู่ที่ ${base})`;
@@ -325,7 +378,7 @@ export const apiClient = {
 
     await dispatchRequest({
       method: "POST",
-      path: "/api/links",
+      path: "/api/items",
       body: {
         url: newItem.url,
         title: newItem.title,
@@ -380,7 +433,7 @@ export const apiClient = {
     store.emit();
     await dispatchRequest({
       method: "PATCH",
-      path: `/api/links/${itemId}`,
+      path: `/api/items/${itemId}`,
       body: updates,
       mockHandler: () => ({ status: 200, data: item }),
     });
@@ -396,7 +449,7 @@ export const apiClient = {
     store.emit();
     await dispatchRequest({
       method: "DELETE",
-      path: `/api/links/${itemId}`,
+      path: `/api/items/${itemId}`,
       body: null,
       mockHandler: () => ({ status: 200, data: { deleted: true, id: itemId } }),
     });
@@ -459,6 +512,24 @@ export const apiClient = {
 
   async signInEmail(email) {
     const clean = (email || "").trim() || "may@example.com";
+    const authMode = getAuthMode(store.state);
+
+    if (authMode === "supabase") {
+      const started = performance.now();
+      const res = await supabaseAuth.signInWithMagicLink(getSupabaseConfig(), { email: clean });
+      recordLog({
+        method: "POST",
+        path: "/auth/v1/otp",
+        mode: "supabase",
+        status: res.status || (res.ok ? 200 : 400),
+        durationMs: performance.now() - started,
+        requestBody: { email: clean },
+        responseBody: res.data || { error: res.error },
+        error: res.ok ? null : res.error,
+      });
+      return res;
+    }
+
     const res = await dispatchRequest({
       method: "POST",
       path: "/api/auth/magic-link",
@@ -469,23 +540,52 @@ export const apiClient = {
       }),
     });
     if (res.ok && res.data) {
-      if (res.data.access_token) {
-        store.state.api.bearerToken = res.data.access_token;
+      if (res.isMock || res.data.access_token) {
+        store.applyAuthenticatedSession({
+          user: res.data.user || { id: store.state.data.user.id, email: clean },
+          accessToken: res.data.access_token || "",
+          refreshToken: res.data.refresh_token || "",
+          claims: res.data.access_token ? extractClaimsSummary(res.data.access_token) : null,
+          isMock: Boolean(res.isMock),
+        });
       }
-      if (res.data.user) {
-        store.state.data.user.id = res.data.user.id || store.state.data.user.id;
-        store.state.data.user.email = res.data.user.email || clean;
-        store.state.data.user.displayName = res.data.user.display_name || clean.split("@")[0];
-        store.state.api.userId = res.data.user.id || store.state.api.userId;
-      }
-      store.state.data.user.isAuthenticated = true;
-      store.emit();
     }
     return res;
   },
 
   async signInPassword(email, password) {
     const clean = (email || "").trim() || "may@example.com";
+    const authMode = getAuthMode(store.state);
+
+    if (authMode === "supabase") {
+      const started = performance.now();
+      const res = await supabaseAuth.signInWithPassword(getSupabaseConfig(), { email: clean, password });
+      recordLog({
+        method: "POST",
+        path: "/auth/v1/token?grant_type=password",
+        mode: "supabase",
+        status: res.status || (res.ok ? 200 : 401),
+        durationMs: performance.now() - started,
+        requestBody: { email: clean, password: "***" },
+        responseBody: res.data
+          ? { ...res.data, access_token: res.data.access_token ? `${res.data.access_token.slice(0, 18)}...` : "" }
+          : { error: res.error },
+        error: res.ok ? null : res.error,
+      });
+      if (res.ok && res.data?.access_token) {
+        store.applyAuthenticatedSession({
+          user: res.data.user,
+          accessToken: res.data.access_token,
+          refreshToken: res.data.refresh_token || "",
+          claims: res.data.claims || extractClaimsSummary(res.data.access_token),
+        });
+      } else {
+        store.state.ui.authError = res.error || "เข้าสู่ระบบไม่สำเร็จ";
+        store.emit();
+      }
+      return res;
+    }
+
     const res = await dispatchRequest({
       method: "POST",
       path: "/api/auth/login",
@@ -501,16 +601,15 @@ export const apiClient = {
       }),
     });
     if (res.ok && res.data) {
-      if (res.data.access_token) {
-        store.state.api.bearerToken = res.data.access_token;
-      }
-      if (res.data.user) {
-        store.state.data.user.id = res.data.user.id || store.state.data.user.id;
-        store.state.data.user.email = res.data.user.email || clean;
-        store.state.data.user.displayName = res.data.user.display_name || clean.split("@")[0];
-        store.state.api.userId = res.data.user.id || store.state.api.userId;
-      }
-      store.state.data.user.isAuthenticated = true;
+      store.applyAuthenticatedSession({
+        user: res.data.user || { id: store.state.data.user.id, email: clean },
+        accessToken: res.data.access_token || "",
+        refreshToken: res.data.refresh_token || "",
+        claims: res.data.access_token && !res.isMock ? extractClaimsSummary(res.data.access_token) : null,
+        isMock: Boolean(res.isMock),
+      });
+    } else {
+      store.state.ui.authError = res.error || "อีเมลหรือรหัสผ่านไม่ถูกต้อง";
       store.emit();
     }
     return res;
@@ -518,6 +617,44 @@ export const apiClient = {
 
   async registerUser(email, password, displayName) {
     const clean = (email || "").trim();
+    const authMode = getAuthMode(store.state);
+
+    if (authMode === "supabase") {
+      const started = performance.now();
+      const res = await supabaseAuth.signUpWithPassword(getSupabaseConfig(), {
+        email: clean,
+        password,
+        displayName,
+      });
+      recordLog({
+        method: "POST",
+        path: "/auth/v1/signup",
+        mode: "supabase",
+        status: res.status || (res.ok ? 201 : 400),
+        durationMs: performance.now() - started,
+        requestBody: { email: clean, display_name: displayName },
+        responseBody: res.data
+          ? {
+              ...res.data,
+              access_token: res.data.access_token ? `${res.data.access_token.slice(0, 18)}...` : "",
+            }
+          : { error: res.error },
+        error: res.ok ? null : res.error,
+      });
+      if (res.ok && res.data?.access_token) {
+        store.applyAuthenticatedSession({
+          user: res.data.user,
+          accessToken: res.data.access_token,
+          refreshToken: res.data.refresh_token || "",
+          claims: res.data.claims || extractClaimsSummary(res.data.access_token),
+        });
+      } else if (!res.ok) {
+        store.state.ui.authError = res.error || "สมัครสมาชิกไม่สำเร็จ";
+        store.emit();
+      }
+      return res;
+    }
+
     const res = await dispatchRequest({
       method: "POST",
       path: "/api/auth/register",
@@ -533,19 +670,112 @@ export const apiClient = {
       }),
     });
     if (res.ok && res.data) {
-      if (res.data.access_token) {
-        store.state.api.bearerToken = res.data.access_token;
-      }
-      if (res.data.user) {
-        store.state.data.user.id = res.data.user.id || store.state.data.user.id;
-        store.state.data.user.email = res.data.user.email || clean;
-        store.state.data.user.displayName = res.data.user.display_name || displayName;
-        store.state.api.userId = res.data.user.id || store.state.api.userId;
-      }
-      store.state.data.user.isAuthenticated = true;
+      store.applyAuthenticatedSession({
+        user: res.data.user,
+        accessToken: res.data.access_token || "",
+        refreshToken: res.data.refresh_token || "",
+        claims: res.data.access_token && !res.isMock ? extractClaimsSummary(res.data.access_token) : null,
+        isMock: Boolean(res.isMock),
+      });
+    } else {
+      store.state.ui.authError = res.error || "สมัครสมาชิกไม่สำเร็จ";
       store.emit();
     }
     return res;
+  },
+
+  async refreshSession() {
+    const authMode = getAuthMode(store.state);
+    const refreshToken = store.state.api.refreshToken;
+
+    if (authMode === "supabase") {
+      const started = performance.now();
+      const res = await supabaseAuth.refreshSession(getSupabaseConfig(), refreshToken);
+      recordLog({
+        method: "POST",
+        path: "/auth/v1/token?grant_type=refresh_token",
+        mode: "supabase",
+        status: res.status || (res.ok ? 200 : 401),
+        durationMs: performance.now() - started,
+        requestBody: { has_refresh_token: Boolean(refreshToken) },
+        responseBody: res.ok ? { refreshed: true, claims: res.data?.claims } : { error: res.error },
+        error: res.ok ? null : res.error,
+      });
+      if (res.ok && res.data?.access_token) {
+        store.applyAuthenticatedSession({
+          user: res.data.user,
+          accessToken: res.data.access_token,
+          refreshToken: res.data.refresh_token || refreshToken,
+          claims: res.data.claims,
+        });
+      }
+      return res;
+    }
+
+    if (!refreshToken) return { ok: false, status: 401, error: "ไม่มี Refresh Token" };
+    const res = await dispatchRequest({
+      method: "POST",
+      path: "/api/auth/refresh",
+      body: { refresh_token: refreshToken },
+      skipAuthRefresh: true,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({
+        status: 200,
+        data: {
+          access_token: `mock_jwt_${Date.now()}`,
+          refresh_token: `mock_ref_${Date.now()}`,
+          user: store.state.data.user,
+        },
+      }),
+    });
+    if (res.ok && res.data?.access_token) {
+      store.applyAuthenticatedSession({
+        user: res.data.user,
+        accessToken: res.data.access_token,
+        refreshToken: res.data.refresh_token || refreshToken,
+        claims: !res.isMock ? extractClaimsSummary(res.data.access_token) : null,
+        isMock: Boolean(res.isMock),
+      });
+    }
+    return res;
+  },
+
+  async checkSupabaseSession() {
+    const res = await supabaseAuth.getClaimsOrSession(getSupabaseConfig());
+    if (res.ok && res.data?.access_token) {
+      store.applyAuthenticatedSession({
+        user: res.data.user,
+        accessToken: res.data.access_token,
+        refreshToken: res.data.refresh_token || "",
+        claims: res.data.claims,
+      });
+    }
+    return res;
+  },
+
+  async updateAccountEmail(email) {
+    const clean = String(email || "").trim();
+    const authMode = getAuthMode(store.state);
+    if (authMode === "supabase") {
+      const res = await supabaseAuth.updateEmail(getSupabaseConfig(), clean);
+      if (res.ok) {
+        store.state.data.user.email = clean;
+        store.emit();
+      }
+      return res;
+    }
+    store.state.data.user.email = clean;
+    store.emit();
+    return { ok: true, status: 200, data: { email: clean } };
+  },
+
+  async sendPasswordReset(email) {
+    const clean = String(email || store.state.data.user.email || "").trim();
+    const authMode = getAuthMode(store.state);
+    if (authMode === "supabase") {
+      return supabaseAuth.resetPasswordForEmail(getSupabaseConfig(), clean);
+    }
+    return this.signInEmail(clean);
   },
 
   async getMe() {
@@ -557,6 +787,22 @@ export const apiClient = {
         status: 200,
         data: store.state.data.user,
       }),
+    });
+  },
+
+  async probeProtectedRoute() {
+    return dispatchRequest({
+      method: "GET",
+      path: "/api/items?limit=1",
+      body: null,
+      skipAuthRefresh: true,
+      skipUnauthRedirect: true,
+      mockHandler: () => {
+        if (!store.state.data.user.isAuthenticated) {
+          return { status: 401, data: { detail: "Unauthorized: Protected route requires authentication." } };
+        }
+        return { status: 200, data: { items: store.state.data.links.slice(0, 1), count: 1 } };
+      },
     });
   },
 
@@ -604,6 +850,23 @@ export const apiClient = {
   },
 
   async signInGoogle() {
+    const authMode = getAuthMode(store.state);
+    if (authMode === "supabase") {
+      const started = performance.now();
+      const res = await supabaseAuth.signInWithGoogle(getSupabaseConfig());
+      recordLog({
+        method: "GET",
+        path: "/auth/v1/authorize?provider=google",
+        mode: "supabase",
+        status: res.status || (res.ok ? 200 : 400),
+        durationMs: performance.now() - started,
+        requestBody: null,
+        responseBody: res.data || { error: res.error },
+        error: res.ok ? null : res.error,
+      });
+      return res;
+    }
+
     const res = await dispatchRequest({
       method: "GET",
       path: "/api/auth/oauth/google",
@@ -613,21 +876,38 @@ export const apiClient = {
         data: { provider: "google", user: store.state.data.user },
       }),
     });
-    store.state.data.user.isAuthenticated = true;
-    store.emit();
+    if (res.isMock) {
+      store.applyAuthenticatedSession({ user: res.data?.user || store.state.data.user, isMock: true });
+    }
     return res;
   },
 
   async signOut() {
+    const authMode = getAuthMode(store.state);
+    if (authMode === "supabase") {
+      const started = performance.now();
+      const res = await supabaseAuth.signOut(getSupabaseConfig(), store.state.api.bearerToken);
+      recordLog({
+        method: "POST",
+        path: "/auth/v1/logout",
+        mode: "supabase",
+        status: 200,
+        durationMs: performance.now() - started,
+        requestBody: null,
+        responseBody: res.data,
+      });
+      store.clearSession({ redirectToLogin: true });
+      return res;
+    }
+
     const res = await dispatchRequest({
       method: "POST",
       path: "/api/auth/logout",
       body: null,
+      skipUnauthRedirect: true,
       mockHandler: () => ({ status: 200, data: { logged_out: true } }),
     });
-    store.state.data.user.isAuthenticated = false;
-    store.state.api.bearerToken = "";
-    store.emit();
+    store.clearSession({ redirectToLogin: true });
     return res;
   },
 

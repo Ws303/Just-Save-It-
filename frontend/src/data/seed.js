@@ -107,7 +107,7 @@ export function createInitialSeed() {
       email: "may@example.com",
       avatarInitial: "ม",
       notificationsEnabled: true,
-      isAuthenticated: true, // toggle false via Login screen or Sign Out
+      isAuthenticated: false, // enforced by Protected Route Guard until signed in
     },
     appearance: {
       theme: "sharely",

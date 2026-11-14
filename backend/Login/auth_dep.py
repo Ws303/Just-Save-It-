@@ -12,6 +12,8 @@ import os
 from typing import Any, Dict, Optional
 
 import jwt
+from jwt import PyJWKClient
+from jwt.exceptions import PyJWKClientError
 from fastapi import Header, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -28,6 +30,54 @@ bearer_scheme = HTTPBearer(
     auto_error=False,
     description="Paste your access_token JWT from /api/auth/login or /api/auth/register",
 )
+
+
+def get_configured_hs256_secret() -> Optional[str]:
+    """Return configured SUPABASE_JWT_SECRET, ignoring empty or template placeholder values."""
+    secret = os.getenv("SUPABASE_JWT_SECRET", "").strip()
+    if not secret or secret == _PLACEHOLDER_SECRET or "placeholder" in secret.lower():
+        return None
+    return secret
+
+
+_ASYMMETRIC_ALGS = {"ES256", "ES384", "ES512", "RS256", "RS384", "RS512", "PS256", "EdDSA"}
+_jwk_clients: Dict[str, PyJWKClient] = {}
+
+
+def get_configured_supabase_url() -> Optional[str]:
+    """Return configured SUPABASE_URL, ignoring empty or template placeholder values."""
+    url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    if not url or url == _PLACEHOLDER_URL or "placeholder" in url.lower():
+        return None
+    return url
+
+
+def _get_jwk_client(supabase_url: str) -> PyJWKClient:
+    """Return a cached PyJWKClient bound to Supabase Auth's /.well-known/jwks.json."""
+    jwks_url = f"{supabase_url}/auth/v1/.well-known/jwks.json"
+    client = _jwk_clients.get(jwks_url)
+    if client is None:
+        client = PyJWKClient(jwks_url, cache_keys=True, lifespan=300)
+        _jwk_clients[jwks_url] = client
+    return client
+
+
+def _ensure_authenticated_claims(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure decoded JWT contains a non-empty subject and is not an anonymous key token."""
+    sub = str(payload.get("sub") or "").strip()
+    if not sub:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token: missing subject claim.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if str(payload.get("role") or "").strip().lower() == "anon":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: anonymous API key cannot be used as user session.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return payload
 
 
 def is_dev_bypass_enabled() -> bool:
@@ -47,8 +97,8 @@ def verify_supabase_jwt(token: str) -> Dict[str, Any]:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    configured_secret = os.getenv("SUPABASE_JWT_SECRET", "").strip()
-    has_configured_secret = bool(configured_secret and configured_secret != _PLACEHOLDER_SECRET)
+    configured_secret = get_configured_hs256_secret() or ""
+    has_configured_secret = bool(configured_secret)
     live_supabase = is_supabase_configured()
 
     try:
@@ -61,6 +111,13 @@ def verify_supabase_jwt(token: str) -> Dict[str, Any]:
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
+    if alg == "NONE":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: unsecured JWT algorithm is not allowed.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     # Verify HS256 JWTs locally when using local dev auth or when SUPABASE_JWT_SECRET is configured
     if alg == "HS256" and (has_configured_secret or not live_supabase):
         jwt_secret = configured_secret if has_configured_secret else _LOCAL_DEV_JWT_SECRET
@@ -72,14 +129,7 @@ def verify_supabase_jwt(token: str) -> Dict[str, Any]:
                 audience="authenticated",
                 options={"require": ["exp", "sub"]},
             )
-            sub = str(payload.get("sub") or "").strip()
-            if not sub:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid token: missing subject claim.",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            return payload
+            return _ensure_authenticated_claims(payload)
         except jwt.ExpiredSignatureError as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -93,18 +143,58 @@ def verify_supabase_jwt(token: str) -> Dict[str, Any]:
                 headers={"WWW-Authenticate": "Bearer"},
             ) from exc
 
-    # Live Supabase fallback for asymmetric (RS256/ES256) keys or when SUPABASE_JWT_SECRET is omitted
+    # Verify asymmetric Supabase JWTs (ES256 / RS256 / etc.) locally against cached JWKS
+    configured_url = get_configured_supabase_url()
+    if alg in _ASYMMETRIC_ALGS and configured_url:
+        try:
+            signing_key = _get_jwk_client(configured_url).get_signing_key_from_jwt(clean_token)
+            payload = jwt.decode(
+                clean_token,
+                signing_key.key,
+                algorithms=[alg],
+                audience="authenticated",
+                issuer=f"{configured_url}/auth/v1",
+                options={"require": ["exp", "sub"]},
+            )
+            return _ensure_authenticated_claims(payload)
+        except jwt.ExpiredSignatureError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication token has expired.",
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+        except PyJWKClientError as exc:
+            logger.warning("Supabase JWKS verification unavailable (%s): %s", alg, exc)
+            if not live_supabase:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Unauthorized: could not verify signing key against Supabase JWKS.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                ) from exc
+        except jwt.InvalidTokenError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: invalid authentication token.",
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+
+    # Live Supabase fallback when SUPABASE_JWT_SECRET is omitted or JWKS lookup temporarily failed
     if live_supabase:
         try:
             db = get_supabase_client()
             user_resp = db.auth.get_user(clean_token)
             if user_resp and getattr(user_resp, "user", None) and user_resp.user.id:
                 u = user_resp.user
-                return {
-                    "sub": str(u.id),
-                    "email": getattr(u, "email", None),
-                    "user_metadata": getattr(u, "user_metadata", None) or {},
-                }
+                return _ensure_authenticated_claims(
+                    {
+                        "sub": str(u.id),
+                        "email": getattr(u, "email", None),
+                        "role": getattr(u, "role", None) or "authenticated",
+                        "user_metadata": getattr(u, "user_metadata", None) or {},
+                    }
+                )
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.warning("Supabase auth.get_user verification failed: %s", exc)
 

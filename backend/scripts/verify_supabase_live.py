@@ -68,7 +68,7 @@ def _verify_schema_and_bucket(service_client: object) -> None:
 
 def _create_confirmed_test_user(service_client: object, url: str, anon_key: str, label: str) -> tuple[str, str]:
     suffix = uuid.uuid4().hex[:10]
-    email = f"rls-check-{label}-{suffix}@justsaveit.example"
+    email = f"rls-check-{label}-{suffix}@rls-test.justsaveit.app"
     password = f"RlsPass!{suffix}99"
     created = service_client.auth.admin.create_user(
         {

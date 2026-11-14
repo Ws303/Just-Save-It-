@@ -161,15 +161,16 @@ async def logout_endpoint(
 
 @router.get("/me")
 def get_me(
-    user_id: str = Depends(get_current_user_id),
+    current_user: CurrentUser = Depends(get_current_user),
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
     """Return current user's profile and monthly built-in AI quota usage."""
+    user_id = current_user.id
     prof_res = db.table("profiles").select("*").eq("id", user_id).execute()
     profile = dict(prof_res.data[0]) if prof_res.data else _default_profile(user_id)
     profile.setdefault("preferred_summary_language", "th")
     profile.setdefault("default_timezone", "Asia/Bangkok")
-    profile.setdefault("tier", "free")
+    profile.setdefault("tier", current_user.tier or "free")
 
     current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     usage_res = (
@@ -191,8 +192,17 @@ def get_me(
                 local_user = u
                 break
 
-    email = profile.get("email") or (local_user.get("email") if local_user else None) or f"{user_id}@example.com"
-    display_name = profile.get("display_name") or (local_user.get("display_name") if local_user else None)
+    email = (
+        profile.get("email")
+        or current_user.email
+        or (local_user.get("email") if local_user else None)
+        or f"{user_id}@example.com"
+    )
+    display_name = (
+        profile.get("display_name")
+        or current_user.display_name
+        or (local_user.get("display_name") if local_user else None)
+    )
     if display_name and not profile.get("display_name"):
         profile["display_name"] = display_name
     if email and not profile.get("email"):
@@ -204,6 +214,7 @@ def get_me(
         "email": email,
         "display_name": profile.get("display_name"),
         "tier": profile.get("tier", "free"),
+        "role": getattr(current_user, "role", None) or "authenticated",
         "profile": profile,
         "ai_quota": {
             "usage_month": current_month,

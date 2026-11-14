@@ -7,6 +7,7 @@
 import { escHtml } from "../components/icons.js";
 import { MCP_TOOLS_CATALOG } from "../data/seed.js";
 import { buildAiHeadersAndConfig } from "../services/apiClient.js";
+import { getAuthMode, hasValidSession } from "../services/routeGuard.js";
 
 export function renderTestbedPanel(state) {
   const { api, data, ui } = state;
@@ -65,6 +66,11 @@ function renderControlsTab(state, selectedLink, headers, preset) {
         </div>
       </div>
 
+      <label style="display:flex;align-items:center;justify-content:space-between;font-size:11.5px;color:var(--ink-secondary);padding:4px 2px 0;cursor:pointer;">
+        <span>ส่ง X-User-Id Dev Bypass เมื่อไม่มี Bearer JWT</span>
+        <input type="checkbox" ${api.useDevBypass ? "checked" : ""} data-toggle-dev-bypass="1" />
+      </label>
+
       ${
         api.healthDetail
           ? `<pre class="tb-pre">${escHtml(JSON.stringify(api.healthDetail, null, 2))}</pre>`
@@ -72,40 +78,73 @@ function renderControlsTab(state, selectedLink, headers, preset) {
       }
     </div>
 
-    <!-- Phase 1: Backend Login & Auth Test Runner -->
+    <!-- Phase 1: Supabase Auth & Protected Route Guard Runner -->
     <div class="tb-card" style="border: 2px solid var(--theme-accent); background: #faf5ff;">
       <h3 class="tb-card-title">
         <span style="display:inline-flex;align-items:center;gap:6px;">
-          <span style="background:var(--theme-accent);color:#fff;border-radius:6px;padding:1px 6px;font-size:11px;font-weight:900;">PHASE 1</span>
-          <span>ทดสอบระบบ Login หลังบ้าน (Backend Auth Runner)</span>
+          <span style="background:var(--theme-accent);color:#fff;border-radius:6px;padding:1px 6px;font-size:11px;font-weight:900;">AUTH</span>
+          <span>Supabase Auth &amp; Protected Routes</span>
+        </span>
+        <span class="tag-badge ${hasValidSession(state) ? "live" : "mock"}">
+          ${hasValidSession(state) ? "AUTHENTICATED" : "LOCKED"}
         </span>
       </h3>
-      <p class="tiny-hint" style="margin:0 0 6px;">
-        ทดสอบยิง API Auth หลังบ้านจริง (Email/Password, Magic Link, Profile, Google OAuth, MCP Personal Access Tokens)
-      </p>
 
-      <div style="font-size:11.5px;color:var(--ink-secondary);margin-bottom:8px;padding:6px;background:#fff;border-radius:6px;border:1px solid var(--tb-border);word-break:break-all;">
-        <strong>Bearer Token:</strong> ${api.bearerToken ? `<span style="color:#059669;font-weight:600;">${escHtml(api.bearerToken.slice(0, 24))}...</span>` : `<span style="color:#dc2626;">(ยังไม่มี Token - กรุณาล็อกอิน)</span>`}
+      <div class="tb-segmented" style="width:100%;margin-bottom:6px;">
+        <button class="tb-seg-btn ${getAuthMode(state) === "mock" ? "active" : ""}" style="flex:1;font-size:11px;" data-set-auth-provider="mock">Mock</button>
+        <button class="tb-seg-btn ${getAuthMode(state) === "supabase" ? "active" : ""}" style="flex:1;font-size:11px;" data-set-auth-provider="supabase">Supabase Cloud</button>
+        <button class="tb-seg-btn ${getAuthMode(state) === "backend" ? "active" : ""}" style="flex:1;font-size:11px;" data-set-auth-provider="backend">FastAPI JWT</button>
+      </div>
+
+      ${
+        getAuthMode(state) === "supabase"
+          ? `<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px;">
+              <span class="tiny-hint">Supabase URL (JWKS Asymmetric Auth)</span>
+              <input class="tb-mini-input" type="url" value="${escHtml(api.supabaseUrl)}" data-bind-supabase-url="1" />
+              <span class="tiny-hint">Publishable / Anon Key</span>
+              <input class="tb-mini-input" type="text" value="${escHtml(api.supabaseAnonKey)}" data-bind-supabase-key="1" />
+            </div>`
+          : ""
+      }
+
+      <label style="display:flex;align-items:center;justify-content:space-between;background:#fff;padding:6px 8px;border-radius:6px;border:1px solid var(--tb-border);margin-bottom:6px;font-size:11.5px;cursor:pointer;">
+        <span>🛡️ Protected Route Guard (${state.ui.authGuardEnabled !== false ? "ON" : "OFF"})</span>
+        <input type="checkbox" ${state.ui.authGuardEnabled !== false ? "checked" : ""} data-toggle-auth-guard="1" />
+      </label>
+
+      <div style="font-size:11px;color:var(--ink-secondary);margin-bottom:8px;padding:6px;background:#fff;border-radius:6px;border:1px solid var(--tb-border);word-break:break-all;">
+        <div><strong>Bearer JWT:</strong> ${api.bearerToken ? `<span style="color:#059669;font-weight:600;">${escHtml(api.bearerToken.slice(0, 26))}...</span>` : `<span style="color:#dc2626;">(ยังไม่มี Token - Protected Routes Locked)</span>`}</div>
+        ${
+          api.jwtClaims
+            ? `<div style="margin-top:3px;color:#334155;"><strong>Claims:</strong> alg=${escHtml(api.jwtClaims.alg || "-")} · sub=${escHtml(String(api.jwtClaims.sub || "").slice(0, 14))}... · email=${escHtml(api.jwtClaims.email || "-")}</div>`
+            : ""
+        }
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="loginPassword" title="POST /api/auth/login">
+        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="loginPassword" title="POST /api/auth/login or Supabase Sign In">
           🔑 Login (may/pass)
         </button>
-        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="magicLink" title="POST /api/auth/magic-link">
+        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="magicLink" title="Magic Link OTP">
           ✉️ Magic Link
         </button>
         <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="getMe" title="GET /api/auth/me">
           👤 Get /api/auth/me
         </button>
-        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="googleOauth" title="GET /api/auth/oauth/google">
+        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="testProtectedRoute" title="ทดสอบ Protected Route + GET /api/items">
+          🛡️ Test Protected Route
+        </button>
+        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="refreshToken" title="Refresh Session JWT">
+          🔄 Refresh Session
+        </button>
+        <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="googleOauth" title="Google OAuth">
           🌐 Google OAuth URL
         </button>
         <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="createToken" title="POST /api/auth/tokens">
           🎟️ Create MCP Token
         </button>
-        <button class="tb-btn" style="justify-content:center;background:#fff;color:#dc2626;" data-tb-test-auth="logout" title="POST /api/auth/logout">
-          🚪 Logout
+        <button class="tb-btn" style="justify-content:center;background:#fff;color:#dc2626;" data-tb-test-auth="logout" title="Sign Out & Lock Protected Routes">
+          🚪 Logout (Lock)
         </button>
       </div>
     </div>

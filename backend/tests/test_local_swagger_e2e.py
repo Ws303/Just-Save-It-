@@ -31,10 +31,21 @@ def isolated_local_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     reset_local_dev_db()
 
 
-def test_env_example_placeholders_rejected_by_is_supabase_configured(monkeypatch: pytest.MonkeyPatch):
+def test_env_example_placeholders_rejected_by_is_supabase_configured(
+    isolated_local_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     monkeypatch.setenv("SUPABASE_URL", "https://your-project.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "your_supabase_service_role_key_here")
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "your_supabase_jwt_secret_here")
     assert is_supabase_configured() is False
+
+    # Placeholder JWT secret must stay consistent between token issuer and verifier
+    client = TestClient(app)
+    login_resp = client.post("/api/auth/login", json={"email": "may@example.com", "password": "password123"})
+    assert login_resp.status_code == 200
+    me_resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {login_resp.json()['access_token']}"})
+    assert me_resp.status_code == 200
 
 
 def test_swagger_docs_openapi_security_and_health(isolated_local_db: Path):

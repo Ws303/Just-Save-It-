@@ -28,6 +28,7 @@ from Database.supabase_client import (
     get_supabase_service_client,
     is_supabase_configured,
 )
+from .auth_dep import get_configured_hs256_secret
 from .schemas import (
     ApiTokenSummary,
     AuthTokenResponse,
@@ -70,7 +71,7 @@ class AuthService:
         }
 
     def _get_jwt_secret(self) -> str:
-        return os.getenv("SUPABASE_JWT_SECRET", "").strip() or DEFAULT_LOCAL_JWT_SECRET
+        return get_configured_hs256_secret() or DEFAULT_LOCAL_JWT_SECRET
 
     def _get_local_dev_client(self) -> Optional[Any]:
         try:

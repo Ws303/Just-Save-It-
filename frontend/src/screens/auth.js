@@ -6,7 +6,38 @@
  * - 23 Folder invitation landing (154:360)
  */
 import { icons, escHtml } from "../components/icons.js";
+import { getAuthMode } from "../services/routeGuard.js";
 import { getFolderById, getFolderCount } from "../state/store.js";
+
+function renderAuthBanner(state) {
+  const { authError, postAuthRedirect } = state.ui;
+  const authMode = getAuthMode(state);
+  const modeLabel =
+    authMode === "supabase"
+      ? "Supabase Cloud Auth"
+      : authMode === "backend"
+        ? "FastAPI Backend Auth"
+        : "Mock Simulator";
+
+  const redirectNote = postAuthRedirect?.screen
+    ? `<div style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:10px;padding:8px 12px;font-size:12.5px;font-weight:600;">
+        🔒 หน้า "${escHtml(postAuthRedirect.screen)}" เป็น Protected Route — เข้าสู่ระบบเพื่อดำเนินการต่อ
+      </div>`
+    : "";
+
+  const errNote = authError
+    ? `<div style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:10px;padding:8px 12px;font-size:12.5px;font-weight:600;">
+        ⚠️ ${escHtml(authError)}
+      </div>`
+    : "";
+
+  const modeBadge = `<div style="font-size:11.5px;color:var(--ink-secondary);display:flex;align-items:center;gap:6px;">
+    <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${authMode === "supabase" ? "#10b981" : authMode === "backend" ? "#3b82f6" : "#f59e0b"};"></span>
+    <span>Auth Provider: <strong>${escHtml(modeLabel)}</strong></span>
+  </div>`;
+
+  return `${modeBadge}${redirectNote}${errNote}`;
+}
 
 export function renderLoginScreen(state) {
   const isInviteAuth = state.ui.authContext === "invite";
@@ -34,6 +65,20 @@ export function renderLoginScreen(state) {
       </div>
 
       <div class="login-actions">
+        ${
+          state.ui.postAuthRedirect?.screen
+            ? `<div style="background:#fffbeb;color:#92400e;border:1px solid #fde68a;border-radius:12px;padding:8px 12px;font-size:12px;font-weight:600;text-align:center;">
+                🔒 เข้าสู่ระบบเพื่อเปิดหน้า "${escHtml(state.ui.postAuthRedirect.screen)}"
+              </div>`
+            : ""
+        }
+        ${
+          state.ui.authError
+            ? `<div style="background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:12px;padding:8px 12px;font-size:12px;font-weight:600;text-align:center;">
+                ⚠️ ${escHtml(state.ui.authError)}
+              </div>`
+            : ""
+        }
         <button class="btn-login-primary" data-go-screen="emailLogin">
           <img src="./assets/icons/email-white.svg" alt="" style="width:22px;height:18px;" />
           <span>${isSignup ? "สมัครด้วยอีเมล" : "เข้าสู่ระบบด้วยอีเมล"}</span>
@@ -57,41 +102,76 @@ export function renderLoginScreen(state) {
 
 export function renderEmailLoginScreen(state) {
   const isInvite = state.ui.authContext === "invite";
-  const emailVal = state.ui.authEmail || state.data.user.email || "";
+  const isSignup = state.ui.authMode === "signup";
+  const emailVal = state.ui.authEmail || (isSignup ? "" : state.data.user.email || "");
+  const nameVal = state.ui.authDisplayName || "";
+
   return `
     <div class="screen-scroll">
       <div class="sub-topbar">
         <div class="sub-topbar-left">
           <button class="icon-btn" data-go-screen="${isInvite ? "inviteLanding" : "login"}">${icons.back(22)}</button>
-          <span style="font-size:19px;font-weight:700;">เข้าสู่ระบบ</span>
+          <span style="font-size:19px;font-weight:700;">${isSignup ? "สมัครใช้งาน" : "เข้าสู่ระบบ"}</span>
         </div>
       </div>
-      <div class="app-pad" style="display:flex;flex-direction:column;gap:20px;padding-top:20px;">
+      <div class="app-pad" style="display:flex;flex-direction:column;gap:16px;padding-top:16px;">
         <div>
-          <h2 style="margin:0 0 6px;font-size:24px;color:var(--ink-primary);">เข้าสู่ระบบด้วยอีเมล</h2>
+          <h2 style="margin:0 0 6px;font-size:24px;color:var(--ink-primary);">
+            ${isSignup ? "สร้างบัญชีด้วยอีเมล" : "เข้าสู่ระบบด้วยอีเมล"}
+          </h2>
           <p style="margin:0;font-size:14px;color:var(--ink-secondary);">
             ซิงก์ลิงก์ โน้ต และโฟลเดอร์ร่วมกันข้ามอุปกรณ์
           </p>
         </div>
 
+        ${renderAuthBanner(state)}
+
+        ${
+          isSignup
+            ? `<div class="field-group">
+                <label class="field-label" for="displayNameSignupInput">ชื่อที่แสดง (Display Name)</label>
+                <input id="displayNameSignupInput" class="field-input" type="text" value="${escHtml(nameVal)}" placeholder="เช่น เมย์" data-bind-displayname-signup="1" />
+              </div>`
+            : ""
+        }
+
         <div class="field-group">
           <label class="field-label" for="emailLoginInput">อีเมล</label>
           <input id="emailLoginInput" class="field-input" type="email" value="${escHtml(emailVal)}" placeholder="may@example.com" data-bind-email-login="1" />
-          <span class="tiny-hint">เลือกเข้าด้วย Magic Link หรือใส่รหัสผ่าน</span>
+          ${
+            isSignup
+              ? ""
+              : `<span class="tiny-hint">เลือกเข้าด้วย Magic Link หรือใส่รหัสผ่าน</span>`
+          }
         </div>
 
         <div class="field-group">
-          <label class="field-label" for="passwordLoginInput">รหัสผ่าน (กรณีเข้าสู่ระบบด้วยรหัสผ่าน)</label>
-          <input id="passwordLoginInput" class="field-input" type="password" placeholder="••••••••" data-bind-password-login="1" />
-          <span class="tiny-hint">บัญชีทดสอบ May: password123</span>
+          <label class="field-label" for="passwordLoginInput">
+            ${isSignup ? "รหัสผ่าน (อย่างน้อย 8 ตัวอักษร)" : "รหัสผ่าน (กรณีเข้าสู่ระบบด้วยรหัสผ่าน)"}
+          </label>
+          <input id="passwordLoginInput" class="field-input" type="password" value="${escHtml(state.ui.authPassword || "")}" placeholder="••••••••" data-bind-password-login="1" />
+          ${
+            isSignup
+              ? ""
+              : `<span class="tiny-hint">บัญชีทดสอบ Mock/Dev: password123</span>`
+          }
         </div>
 
         <div style="display:flex;flex-direction:column;gap:10px;">
-          <button class="btn-accent-pill full48" data-submit-password-login="1">
-            เข้าสู่ระบบด้วยรหัสผ่าน
-          </button>
-          <button class="btn-outline-pill full48" data-submit-email-login="1" style="background:#fff;">
-            ขอรับ Magic Link ทางอีเมล
+          ${
+            isSignup
+              ? `<button class="btn-accent-pill full48" data-submit-signup="1">
+                  สมัครสมาชิกด้วยอีเมล
+                </button>`
+              : `<button class="btn-accent-pill full48" data-submit-password-login="1">
+                  เข้าสู่ระบบด้วยรหัสผ่าน
+                </button>
+                <button class="btn-outline-pill full48" data-submit-email-login="1" style="background:#fff;">
+                  ขอรับ Magic Link ทางอีเมล
+                </button>`
+          }
+          <button class="link-more-btn" style="text-decoration:none;color:var(--ink-secondary);margin-top:4px;" data-toggle-auth-mode="1">
+            ${isSignup ? "มีบัญชีอยู่แล้ว? กลับไปเข้าสู่ระบบ" : "ยังไม่มีบัญชี? สมัครใช้งานใหม่"}
           </button>
         </div>
       </div>
@@ -101,6 +181,7 @@ export function renderEmailLoginScreen(state) {
 
 export function renderCheckEmailScreen(state) {
   const isInvite = state.ui.authContext === "invite";
+  const authMode = getAuthMode(state);
   const targetEmail = state.ui.authEmail || state.data.user.email;
   return `
     <div class="screen-scroll">
@@ -113,9 +194,15 @@ export function renderCheckEmailScreen(state) {
         <p style="margin:0;font-size:14px;color:var(--ink-secondary);line-height:1.6;">
           ส่งลิงก์ยืนยันตัวตนไปที่ <strong>${escHtml(targetEmail)}</strong> เรียบร้อยแล้ว
         </p>
-        <button class="btn-accent-pill full48" data-simulate-magic-link="${isInvite ? "invite" : "app"}">
-          จำลองการเปิดลิงก์จากอีเมล
-        </button>
+        ${
+          authMode === "supabase"
+            ? `<button class="btn-accent-pill full48" data-check-supabase-session="1">
+                ตรวจสอบสถานะการยืนยัน (Supabase Auth)
+              </button>`
+            : `<button class="btn-accent-pill full48" data-simulate-magic-link="${isInvite ? "invite" : "app"}">
+                จำลองการเปิดลิงก์จากอีเมล
+              </button>`
+        }
       </div>
     </div>
   `;

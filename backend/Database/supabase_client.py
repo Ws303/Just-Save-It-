@@ -39,13 +39,13 @@ def get_supabase_service_role_key() -> str:
 
 
 def is_supabase_configured() -> bool:
-    """Check whether actual (non-placeholder) Supabase credentials are set in environment."""
+    """Check whether actual (non-placeholder) Supabase URL and Service Role key are configured."""
     url = os.getenv("SUPABASE_URL", "").strip()
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip() or os.getenv("SUPABASE_ANON_KEY", "").strip()
-    if not url or not key:
+    service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if not url or not service_key:
         return False
     lowered_url = url.lower()
-    lowered_key = key.lower()
+    lowered_key = service_key.lower()
     if "placeholder" in lowered_url or "placeholder" in lowered_key:
         return False
     if "your-project.supabase.co" in lowered_url or lowered_key.startswith("your_supabase_"):

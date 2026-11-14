@@ -8,6 +8,7 @@
  */
 import { icons, escHtml } from "../components/icons.js";
 import { THEME_OPTIONS } from "../data/seed.js";
+import { getAuthMode } from "../services/routeGuard.js";
 import { renderBottomNav } from "./common.js";
 
 export function renderProfileScreen(state) {
@@ -175,6 +176,8 @@ export function renderDisplayScreen(state) {
 }
 
 export function renderSecurityScreen(state) {
+  const authMode = getAuthMode(state);
+  const claims = state.api.jwtClaims;
   return `
     <div class="screen-scroll">
       <div class="sub-topbar">
@@ -185,6 +188,12 @@ export function renderSecurityScreen(state) {
       </div>
 
       <div class="app-pad" style="display:flex;flex-direction:column;gap:16px;">
+        <div style="background:var(--bg-muted);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:4px;">
+          <strong style="font-size:13.5px;">สถานะเซสชัน (${escHtml(authMode.toUpperCase())})</strong>
+          <span class="tiny-hint">User ID (sub): ${escHtml(claims?.sub || state.data.user.id || "-")}</span>
+          <span class="tiny-hint">JWT Alg: ${escHtml(claims?.alg || (state.api.bearerToken ? "JWT" : "none"))}</span>
+        </div>
+
         <div>
           <strong style="font-size:15px;">อีเมลบัญชี</strong>
           <p style="margin:6px 0 10px;font-size:14px;color:var(--ink-secondary);">${escHtml(state.data.user.email)}</p>

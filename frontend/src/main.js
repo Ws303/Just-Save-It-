@@ -4,6 +4,13 @@
 import { AI_PROVIDER_PRESETS, COVER_CHOICES, FOLDER_NAME_SUGGESTIONS } from "./data/seed.js";
 import { store, inferPlatform, getFolderById, getLinkById } from "./state/store.js";
 import { apiClient } from "./services/apiClient.js";
+import {
+  getAuthMode,
+  hasValidSession,
+  isProtectedScreen,
+  isProtectedViewport,
+} from "./services/routeGuard.js";
+import { supabaseAuth } from "./services/supabaseAuth.js";
 import { icons, escHtml } from "./components/icons.js";
 import { renderPostMenuAndDialog } from "./screens/common.js";
 import {
@@ -163,20 +170,21 @@ function renderApp() {
           ? "err"
           : "";
 
+  const isUnlocked = hasValidSession(state) || state.ui.authGuardEnabled === false;
   const quickButtons = [
-    { id: "login", label: "10 Login" },
-    { id: "home", label: "11 Home" },
-    { id: "folders", label: "14 Folders" },
-    { id: "folderDetail", label: "15 Folder Detail" },
-    { id: "saveSheet", label: "1 Save Link" },
-    { id: "linkDetail", label: "5 Link Detail" },
-    { id: "reminderSheet", label: "6 Reminder" },
-    { id: "savedPreview", label: "7 Preview" },
-    { id: "ai", label: "18 AI Config" },
-    { id: "profile", label: "19 Profile" },
-    { id: "display", label: "20 Themes" },
-    { id: "inviteLanding", label: "23 Invite" },
-    { id: "inviteSheet", label: "24 Share" },
+    { id: "login", label: "10 Login", protected: false },
+    { id: "home", label: "11 Home", protected: true },
+    { id: "folders", label: "14 Folders", protected: true },
+    { id: "folderDetail", label: "15 Folder Detail", protected: true },
+    { id: "saveSheet", label: "1 Save Link", protected: true },
+    { id: "linkDetail", label: "5 Link Detail", protected: true },
+    { id: "reminderSheet", label: "6 Reminder", protected: true },
+    { id: "savedPreview", label: "7 Preview", protected: true },
+    { id: "ai", label: "18 AI Config", protected: true },
+    { id: "profile", label: "19 Profile", protected: true },
+    { id: "display", label: "20 Themes", protected: true },
+    { id: "inviteLanding", label: "23 Invite", protected: false },
+    { id: "inviteSheet", label: "24 Share", protected: true },
   ];
 
   appEl.innerHTML = `
@@ -229,7 +237,7 @@ function renderApp() {
                   (b.id === "reminderSheet" && state.ui.activeSheet?.type === "reminder") ||
                   (b.id === "inviteSheet" && state.ui.activeSheet?.type === "invite") ||
                   (state.ui.viewportMode === "mobile" && !state.ui.activeSheet && state.ui.screen === b.id);
-                return `<button class="tb-qbtn ${isActive ? "active" : ""}" data-quick-jump="${b.id}">${b.label}</button>`;
+                return `<button class="tb-qbtn ${isActive ? "active" : ""}" data-quick-jump="${b.id}">${b.protected && !isUnlocked ? "🔒 " : ""}${b.label}</button>`;
               })
               .join("")}
           </div>
@@ -269,12 +277,14 @@ function openSaveSheet(prefill = {}) {
   const url = prefill.url || "https://vt.tiktok.com/ZSjXample/";
   const { platform, domain } = inferPlatform(url);
 
-  store.state.ui.viewportMode = "mobile";
+  const targetScreen = ["home", "folders", "folderDetail", "linkDetail"].includes(state.ui.screen)
+    ? state.ui.screen
+    : "home";
+  const allowed = store.navigate(targetScreen, { viewportMode: "mobile" });
+  if (!allowed) return;
+
   if (typeof prefill.simulatedSourceApp !== "undefined") {
     store.state.ui.simulatedSourceApp = prefill.simulatedSourceApp;
-  }
-  if (!["home", "folders", "folderDetail", "linkDetail"].includes(state.ui.screen)) {
-    state.ui.screen = "home";
   }
   store.openSheet({
     type: "saveLink",
@@ -341,10 +351,15 @@ appEl.addEventListener("input", (e) => {
   } else if (el.dataset.searchInput === "folderDetail") {
     ui.folderDetailSearch = el.value;
     store.emit();
+  } else if (el.dataset.bindDisplaynameSignup) {
+    ui.authDisplayName = el.value;
+    ui.authError = null;
   } else if (el.dataset.bindEmailLogin) {
     ui.authEmail = el.value;
+    ui.authError = null;
   } else if (el.dataset.bindPasswordLogin) {
     ui.authPassword = el.value;
+    ui.authError = null;
   } else if (el.dataset.editNote) {
     const item = getLinkById(el.dataset.editNote);
     if (item) {
@@ -383,6 +398,10 @@ appEl.addEventListener("input", (e) => {
     ui.extensionDraft.note = el.value;
   } else if (el.dataset.bindApiBase) {
     api.baseUrl = el.value;
+  } else if (el.dataset.bindSupabaseUrl) {
+    api.supabaseUrl = el.value;
+  } else if (el.dataset.bindSupabaseKey) {
+    api.supabaseAnonKey = el.value;
   } else if (el.dataset.bindUserId) {
     api.userId = el.value;
   } else if (el.dataset.bindLatency) {
@@ -401,16 +420,48 @@ appEl.addEventListener("change", (e) => {
   } else if (el.dataset.toggleSaveNote) {
     store.state.api.summarizeOptions.saveToNote = el.checked;
     store.emit();
+  } else if (el.dataset.toggleAuthGuard) {
+    store.state.ui.authGuardEnabled = el.checked;
+    if (
+      el.checked &&
+      !hasValidSession(store.state) &&
+      (isProtectedScreen(store.state.ui.screen) || isProtectedViewport(store.state.ui.viewportMode))
+    ) {
+      store.navigate(store.state.ui.screen, { viewportMode: store.state.ui.viewportMode });
+    } else {
+      store.emit();
+    }
+  } else if (el.dataset.toggleDevBypass) {
+    store.state.api.useDevBypass = el.checked;
+    store.emit();
   } else if (el.dataset.toggleSeen) {
     apiClient.patchLink(el.dataset.toggleSeen, { status: el.checked ? "read" : "unread" });
   }
 });
 
+function completePostAuthNavigation(fallbackScreen = "home") {
+  const redirect = store.state.ui.postAuthRedirect;
+  store.state.ui.postAuthRedirect = null;
+  if (store.state.ui.authContext === "invite") {
+    store.navigate("inviteLanding", { viewportMode: "mobile" });
+    return;
+  }
+  if (redirect && redirect.screen) {
+    store.navigate(redirect.screen, {
+      viewportMode: redirect.viewportMode || "mobile",
+      activeFolderId: redirect.activeFolderId ?? store.state.ui.activeFolderId,
+      activeLinkId: redirect.activeLinkId ?? store.state.ui.activeLinkId,
+    });
+    return;
+  }
+  store.navigate(fallbackScreen, { viewportMode: "mobile" });
+}
+
 // =========================================================
 // DELEGATED CLICK HANDLERS
 // =========================================================
 appEl.addEventListener("click", async (e) => {
-  const target = e.target.closest("[data-viewport-switch],[data-toggle-inspector],[data-ins-tab],[data-quick-jump],[data-nav],[data-go-screen],[data-open-folder],[data-open-edit-folder],[data-open-link],[data-open-preview],[data-toggle-auth-mode],[data-oauth-google],[data-submit-email-login],[data-submit-password-login],[data-simulate-magic-link],[data-accept-invite],[data-toggle-notifs],[data-mark-notifs-read],[data-filter-chip],[data-toggle-fav],[data-open-post-menu],[data-close-sheet],[data-close-host-app],[data-toggle-pin-link],[data-toggle-save-advanced],[data-sim-share-preset],[data-sim-custom-share],[data-toggle-host-backdrop],[data-toggle-status-sheet],[data-trigger-ai-sheet],[data-confirm-delete-post],[data-execute-delete-post],[data-open-save-sheet],[data-run-unfurl],[data-select-save-folder],[data-toggle-save-tag],[data-toggle-draft-reminder],[data-submit-save-link],[data-toggle-video-play],[data-toggle-seen],[data-run-ai-summarize],[data-remove-tag],[data-open-add-tag],[data-save-new-tag],[data-open-reminder],[data-cal-month],[data-select-cal-day],[data-clear-reminder],[data-save-reminder],[data-preview-mark-read],[data-preview-step],[data-open-create-folder],[data-suggest-folder-name],[data-open-pick-cover],[data-select-cover],[data-back-to-folder-edit],[data-save-folder-sheet],[data-open-invite-sheet],[data-copy-invite],[data-open-invite-apps],[data-open-invite-preview],[data-preview-recipient-invite],[data-toggle-ai-dropdown],[data-select-ai-provider],[data-select-ai-model],[data-toggle-ai-keyless],[data-save-ai-config],[data-open-edit-nickname],[data-save-nickname],[data-toggle-notif-setting],[data-set-text-size],[data-set-theme],[data-update-account-email],[data-send-password-reset],[data-submit-support],[data-open-export-csv],[data-download-csv],[data-open-logout-dialog],[data-confirm-logout],[data-web-scope],[data-web-folder],[data-select-web-link],[data-ext-unfurl],[data-ext-folder],[data-ext-tag],[data-ext-toggle-reminder],[data-ext-submit],[data-set-api-mode],[data-ping-health],[data-tb-test-auth],[data-sim-share-intent],[data-sim-open-invite],[data-export-json-state],[data-reset-seed],[data-clear-logs],[data-run-mcp-tool]");
+  const target = e.target.closest("[data-viewport-switch],[data-toggle-inspector],[data-ins-tab],[data-quick-jump],[data-nav],[data-go-screen],[data-open-folder],[data-open-edit-folder],[data-open-link],[data-open-preview],[data-toggle-auth-mode],[data-oauth-google],[data-submit-email-login],[data-submit-signup],[data-submit-password-login],[data-simulate-magic-link],[data-check-supabase-session],[data-accept-invite],[data-toggle-notifs],[data-mark-notifs-read],[data-filter-chip],[data-toggle-fav],[data-open-post-menu],[data-close-sheet],[data-close-host-app],[data-toggle-pin-link],[data-toggle-save-advanced],[data-sim-share-preset],[data-sim-custom-share],[data-toggle-host-backdrop],[data-toggle-status-sheet],[data-trigger-ai-sheet],[data-confirm-delete-post],[data-execute-delete-post],[data-open-save-sheet],[data-run-unfurl],[data-select-save-folder],[data-toggle-save-tag],[data-toggle-draft-reminder],[data-submit-save-link],[data-toggle-video-play],[data-toggle-seen],[data-run-ai-summarize],[data-remove-tag],[data-open-add-tag],[data-save-new-tag],[data-open-reminder],[data-cal-month],[data-select-cal-day],[data-clear-reminder],[data-save-reminder],[data-preview-mark-read],[data-preview-step],[data-open-create-folder],[data-suggest-folder-name],[data-open-pick-cover],[data-select-cover],[data-back-to-folder-edit],[data-save-folder-sheet],[data-open-invite-sheet],[data-copy-invite],[data-open-invite-apps],[data-open-invite-preview],[data-preview-recipient-invite],[data-toggle-ai-dropdown],[data-select-ai-provider],[data-select-ai-model],[data-toggle-ai-keyless],[data-save-ai-config],[data-open-edit-nickname],[data-save-nickname],[data-toggle-notif-setting],[data-set-text-size],[data-set-theme],[data-update-account-email],[data-send-password-reset],[data-submit-support],[data-open-export-csv],[data-download-csv],[data-open-logout-dialog],[data-confirm-logout],[data-web-scope],[data-web-folder],[data-select-web-link],[data-ext-unfurl],[data-ext-folder],[data-ext-tag],[data-ext-toggle-reminder],[data-ext-submit],[data-set-api-mode],[data-set-auth-provider],[data-ping-health],[data-tb-test-auth],[data-sim-share-intent],[data-sim-open-invite],[data-export-json-state],[data-reset-seed],[data-clear-logs],[data-run-mcp-tool]");
   if (!target) return;
 
   const d = target.dataset;
@@ -418,9 +469,7 @@ appEl.addEventListener("click", async (e) => {
 
   // 1. Viewport & Inspector controls
   if (d.viewportSwitch) {
-    ui.viewportMode = d.viewportSwitch;
-    if (d.goScreen) ui.screen = d.goScreen;
-    store.emit();
+    store.setViewport(d.viewportSwitch, d.goScreen ? { screen: d.goScreen } : {});
     return;
   }
   if (d.toggleInspector) {
@@ -434,34 +483,40 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.quickJump) {
-    ui.viewportMode = "mobile";
     if (d.quickJump === "saveSheet") {
       openSaveSheet();
       return;
     }
     if (d.quickJump === "reminderSheet") {
-      ui.screen = "linkDetail";
-      openReminderSheet(ui.activeLinkId);
+      if (store.navigate("linkDetail", { viewportMode: "mobile" })) {
+        openReminderSheet(ui.activeLinkId);
+      }
       return;
     }
     if (d.quickJump === "inviteSheet") {
-      ui.screen = "folderDetail";
-      store.openSheet({ type: "invite", folderId: ui.activeFolderId });
+      if (store.navigate("folderDetail", { viewportMode: "mobile" })) {
+        store.openSheet({ type: "invite", folderId: ui.activeFolderId });
+      }
       return;
     }
-    store.navigate(d.quickJump);
+    store.navigate(d.quickJump, {
+      viewportMode: "mobile",
+      allowGuestSwitch: ["login", "emailLogin", "checkEmail", "inviteLanding"].includes(d.quickJump),
+    });
     return;
   }
 
   // 2. Navigation
   if (d.nav) {
-    store.navigate(d.nav);
+    store.navigate(d.nav, { viewportMode: "mobile" });
     return;
   }
   if (d.goScreen) {
     if (d.authCtx) ui.authContext = d.authCtx;
     else ui.authContext = "app";
-    store.navigate(d.goScreen);
+    store.navigate(d.goScreen, {
+      allowGuestSwitch: ui.authContext === "invite" || ["login", "emailLogin", "checkEmail"].includes(d.goScreen),
+    });
     return;
   }
   if (d.openEditFolder) {
@@ -494,40 +549,92 @@ appEl.addEventListener("click", async (e) => {
   // 3. Auth flows
   if (d.toggleAuthMode) {
     ui.authMode = ui.authMode === "login" ? "signup" : "login";
+    ui.authError = null;
     store.emit();
     return;
   }
   if (d.oauthGoogle) {
-    await apiClient.signInGoogle();
-    if (d.oauthGoogle === "invite") {
-      store.navigate("inviteLanding");
-    } else {
-      store.navigate("home");
+    const res = await apiClient.signInGoogle();
+    if (!res.ok) {
+      store.showToast(res.error || "ไม่รองรับ Google OAuth ในการตั้งค่านี้");
+      return;
     }
+    if (res.data?.url && !res.isMock) {
+      store.showToast("กำลังเปิดหน้าต่าง Google OAuth...");
+      window.open(res.data.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    completePostAuthNavigation(d.oauthGoogle === "invite" ? "inviteLanding" : "home");
     store.showToast("เข้าสู่ระบบด้วย Google สำเร็จ");
     return;
   }
   if (d.submitEmailLogin) {
-    if (!ui.authEmail) ui.authEmail = data.user.email || "may@example.com";
-    store.navigate("checkEmail");
+    const email = (ui.authEmail || data.user.email || "may@example.com").trim();
+    ui.authEmail = email;
+    const authMode = getAuthMode(store.state);
+    if (authMode === "supabase") {
+      const res = await apiClient.signInEmail(email);
+      if (!res.ok) {
+        ui.authError = res.error || "ส่ง Magic Link ไม่สำเร็จ";
+        store.emit();
+        store.showToast(ui.authError);
+        return;
+      }
+      store.showToast("ส่ง Magic Link จริงไปทางอีเมลแล้ว");
+    }
+    store.navigate("checkEmail", { allowGuestSwitch: true });
+    return;
+  }
+  if (d.submitSignup) {
+    const email = (ui.authEmail || "").trim();
+    const password = ui.authPassword || "";
+    const displayName = (ui.authDisplayName || "").trim();
+    if (!email || !password || password.length < 8) {
+      ui.authError = "กรุณากรอกอีเมลและรหัสผ่านอย่างน้อย 8 ตัวอักษร";
+      store.emit();
+      store.showToast(ui.authError);
+      return;
+    }
+    const res = await apiClient.registerUser(email, password, displayName);
+    if (!res.ok) {
+      store.showToast(res.error || "สมัครสมาชิกไม่สำเร็จ");
+      return;
+    }
+    if (res.data?.needs_email_confirmation) {
+      store.navigate("checkEmail", { allowGuestSwitch: true });
+      store.showToast("สมัครสำเร็จ! กรุณายืนยันอีเมลในกล่องข้อความ");
+      return;
+    }
+    completePostAuthNavigation("home");
+    store.showToast("สมัครใช้งานและเข้าสู่ระบบสำเร็จ");
     return;
   }
   if (d.submitPasswordLogin) {
-    const email = ui.authEmail || data.user.email || "may@example.com";
+    const email = (ui.authEmail || data.user.email || "may@example.com").trim();
     const password = ui.authPassword || "password123";
     const res = await apiClient.signInPassword(email, password);
-    if (res.ok) {
-      store.navigate("home");
+    if (res.ok && hasValidSession(store.state)) {
+      completePostAuthNavigation("home");
       store.showToast("เข้าสู่ระบบด้วยรหัสผ่านสำเร็จ");
     } else {
-      store.showToast(res.error || "รหัสผ่านไม่ถูกต้อง");
+      store.showToast(res.error || "อีเมลหรือรหัสผ่านไม่ถูกต้อง");
+    }
+    return;
+  }
+  if (d.checkSupabaseSession) {
+    const res = await apiClient.checkSupabaseSession();
+    if (res.ok && hasValidSession(store.state)) {
+      completePostAuthNavigation("home");
+      store.showToast("ยืนยันเซสชัน Supabase สำเร็จ");
+    } else {
+      store.showToast(res.error || "ยังไม่มีเซสชันที่ยืนยันแล้ว");
     }
     return;
   }
   if (d.simulateMagicLink) {
     const res = await apiClient.signInEmail(ui.authEmail);
-    if (res.ok) {
-      store.navigate(d.simulateMagicLink === "invite" ? "inviteLanding" : "home");
+    if (res.ok && hasValidSession(store.state)) {
+      completePostAuthNavigation(d.simulateMagicLink === "invite" ? "inviteLanding" : "home");
       store.showToast("ยืนยัน Magic Link สำเร็จ");
     } else {
       store.showToast(res.error || "ยืนยันไม่สำเร็จ");
@@ -902,14 +1009,15 @@ appEl.addEventListener("click", async (e) => {
       store.showToast("กรุณากรอกอีเมลใหม่");
       return;
     }
-    data.user.email = val;
-    store.emit();
-    store.showToast("อัปเดตอีเมลบัญชีเรียบร้อย");
+    const res = await apiClient.updateAccountEmail(val);
+    store.showToast(res.ok ? "อัปเดตอีเมลบัญชีเรียบร้อย" : `❌ ${res.error}`);
     return;
   }
   if (d.sendPasswordReset) {
-    await apiClient.signInEmail(data.user.email);
-    store.showToast(`ส่งลิงก์ตั้งรหัสผ่านไปที่ ${data.user.email} แล้ว`);
+    const res = await apiClient.sendPasswordReset(data.user.email);
+    store.showToast(
+      res.ok ? `ส่งลิงก์ตั้งรหัสผ่านไปที่ ${data.user.email} แล้ว` : `❌ ${res.error}`
+    );
     return;
   }
   if (d.submitSupport) {
@@ -1026,7 +1134,38 @@ appEl.addEventListener("click", async (e) => {
   // 12. Testbed Controls & MCP
   if (d.setApiMode) {
     api.mode = d.setApiMode;
-    store.emit();
+    if (d.setApiMode === "live" && api.authProvider === "mock") {
+      api.authProvider = "backend";
+    } else if (d.setApiMode === "mock" && api.authProvider === "backend") {
+      api.authProvider = "mock";
+    }
+    if (
+      ui.authGuardEnabled !== false &&
+      !hasValidSession(store.state) &&
+      (isProtectedScreen(ui.screen) || isProtectedViewport(ui.viewportMode))
+    ) {
+      store.navigate(ui.screen, { viewportMode: ui.viewportMode });
+    } else {
+      store.emit();
+    }
+    return;
+  }
+  if (d.setAuthProvider) {
+    api.authProvider = d.setAuthProvider;
+    if (d.setAuthProvider === "backend") {
+      api.mode = "live";
+    } else if (d.setAuthProvider === "mock") {
+      api.mode = "mock";
+    }
+    if (
+      ui.authGuardEnabled !== false &&
+      !hasValidSession(store.state) &&
+      (isProtectedScreen(ui.screen) || isProtectedViewport(ui.viewportMode))
+    ) {
+      store.navigate(ui.screen, { viewportMode: ui.viewportMode });
+    } else {
+      store.emit();
+    }
     return;
   }
   if (d.pingHealth) {
@@ -1036,14 +1175,34 @@ appEl.addEventListener("click", async (e) => {
   if (d.tbTestAuth) {
     const act = d.tbTestAuth;
     if (act === "loginPassword") {
-      const res = await apiClient.signInPassword("may@example.com", "password123");
-      store.showToast(res.ok ? "🔑 Login รหัสผ่านสำเร็จ (HTTP 200)" : `❌ ${res.error}`);
+      const email = ui.authEmail || data.user.email || "may@example.com";
+      const password = ui.authPassword || "password123";
+      const res = await apiClient.signInPassword(email, password);
+      if (res.ok && hasValidSession(store.state)) {
+        completePostAuthNavigation("home");
+      }
+      store.showToast(res.ok ? "🔑 Login รหัสผ่านสำเร็จ" : `❌ ${res.error}`);
     } else if (act === "magicLink") {
-      const res = await apiClient.signInEmail("may@example.com");
-      store.showToast(res.ok ? "✉️ ส่ง Magic Link สำเร็จ (HTTP 200)" : `❌ ${res.error}`);
+      const email = ui.authEmail || data.user.email || "may@example.com";
+      const res = await apiClient.signInEmail(email);
+      if (res.ok && hasValidSession(store.state)) {
+        completePostAuthNavigation("home");
+      }
+      store.showToast(res.ok ? "✉️ ส่ง Magic Link สำเร็จ" : `❌ ${res.error}`);
     } else if (act === "getMe") {
       const res = await apiClient.getMe();
-      store.showToast(res.ok ? `👤 ${res.data.display_name} (${res.data.email})` : `❌ ${res.error}`);
+      store.showToast(res.ok ? `👤 ${res.data.display_name || res.data.email} (${res.data.email})` : `❌ ${res.error}`);
+    } else if (act === "testProtectedRoute") {
+      const guardBlocked = !store.navigate("folders", { viewportMode: "mobile" });
+      const res = await apiClient.probeProtectedRoute();
+      if (guardBlocked || res.status === 401) {
+        store.showToast(`🛡️ Protected Route ป้องกันสำเร็จ (HTTP ${res.status} / Guard Redirect)`);
+      } else {
+        store.showToast(`✅ Protected Route อนุญาต (HTTP ${res.status})`);
+      }
+    } else if (act === "refreshToken") {
+      const res = await apiClient.refreshSession();
+      store.showToast(res.ok ? "🔄 Refresh Session JWT สำเร็จ" : `❌ ${res.error}`);
     } else if (act === "googleOauth") {
       const res = await apiClient.signInGoogle();
       store.showToast(res.ok ? "🌐 ขอ Google OAuth URL สำเร็จ" : `❌ ${res.error}`);
@@ -1052,7 +1211,7 @@ appEl.addEventListener("click", async (e) => {
       store.showToast(res.ok ? `🎟️ MCP Token: ${res.data.token_prefix}` : `❌ ${res.error}`);
     } else if (act === "logout") {
       await apiClient.signOut();
-      store.showToast("🚪 ออกจากระบบสำเร็จ");
+      store.showToast("🚪 ออกจากระบบและล็อก Protected Routes แล้ว");
     }
     return;
   }
@@ -1173,5 +1332,57 @@ appEl.addEventListener("click", async (e) => {
 
 // Initialize
 store.applyAppearanceToDom();
+if (
+  store.state.ui.authGuardEnabled !== false &&
+  !hasValidSession(store.state) &&
+  (isProtectedScreen(store.state.ui.screen) || isProtectedViewport(store.state.ui.viewportMode))
+) {
+  store.state.ui.viewportMode = "mobile";
+  store.state.ui.screen = "login";
+}
 store.subscribe(renderApp);
 renderApp();
+
+// Hydrate & listen for live Supabase Auth session / OAuth / Magic-Link callbacks
+supabaseAuth
+  .init(
+    {
+      supabaseUrl: store.state.api.supabaseUrl,
+      supabaseAnonKey: store.state.api.supabaseAnonKey,
+    },
+    ({ event, session, claims, user }) => {
+      if (event === "SIGNED_OUT") {
+        if (getAuthMode(store.state) === "supabase") {
+          store.clearSession({ redirectToLogin: store.state.ui.authGuardEnabled !== false });
+        }
+        return;
+      }
+      if (session?.access_token) {
+        store.state.api.authProvider = "supabase";
+        store.applyAuthenticatedSession({
+          user,
+          accessToken: session.access_token,
+          refreshToken: session.refresh_token || "",
+          claims,
+        });
+        if (["login", "emailLogin", "checkEmail"].includes(store.state.ui.screen)) {
+          completePostAuthNavigation("home");
+        }
+      }
+    }
+  )
+  .then(({ session, claims, user }) => {
+    if (session?.access_token) {
+      store.state.api.authProvider = "supabase";
+      store.applyAuthenticatedSession({
+        user,
+        accessToken: session.access_token,
+        refreshToken: session.refresh_token || "",
+        claims,
+      });
+      if (["login", "emailLogin", "checkEmail"].includes(store.state.ui.screen)) {
+        completePostAuthNavigation("home");
+      }
+    }
+  })
+  .catch(() => {});
