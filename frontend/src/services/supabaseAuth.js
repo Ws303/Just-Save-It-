@@ -1,14 +1,14 @@
 /**
  * Supabase Auth Browser Client Wrapper for Sharely.
- * Connects to live Supabase Auth (https://qztscahszlgahsptycvc.supabase.co)
+ * Connects to live Supabase Auth (https://pnqjamwhgzqzvpiytcln.supabase.co)
  * using @supabase/supabase-js ESM (with direct GoTrue HTTP fallback),
  * verifies/reads claims via supabase.auth.getClaims(), and synchronizes
  * authenticated sessions & tokens with the Sharely store.
  */
 import { decodeJwtHeader, decodeJwtPayload } from "./routeGuard.js";
 
-export const DEFAULT_SUPABASE_URL = "https://qztscahszlgahsptycvc.supabase.co";
-export const DEFAULT_SUPABASE_KEY = "sb_publishable_cNZxFYjOUanP1bW4zt93vw_PysYdsZ9";
+export const DEFAULT_SUPABASE_URL = "https://pnqjamwhgzqzvpiytcln.supabase.co";
+export const DEFAULT_SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBucWphbXdoZ3pxenZwaXl0Y2xuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ2NjAzMjIsImV4cCI6MjExMDIzNjMyMn0.4RfZtHD9-23dSQw2P6tWRz45mty5BumKWAKKBifbebw";
 const SUPABASE_ESM_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
 let _cachedClient = null;

@@ -73,6 +73,7 @@ create table if not exists public.items (
   ai_summary_language text default 'th'
                         check (ai_summary_language is null or ai_summary_language in ('th','en','auto')),
   ai_tags             text[],
+  is_favorite         boolean not null default false,
   status              public.item_status not null default 'inbox',
   enrich_status       public.enrich_status not null default 'pending',
   enrich_attempts     int not null default 0 check (enrich_attempts >= 0),

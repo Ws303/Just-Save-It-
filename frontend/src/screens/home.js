@@ -1,60 +1,146 @@
 /**
- * 11 / 12 / 13 / 16 Home Screen
- * Matches Figma 62:202: Sharely header, + เพิ่มลิงก์, bell notifications, search,
- * 4 filter chips, "กลับมาดูสิ่งที่บันทึกไว้กันเถอะ" banner, 2x2 folders, recent links, bottom nav.
+ * 11 / 11B / 12 / 13 / 14 Home Screen + 26 Notifications Screen
+ * Matches Figma 319:871, 319:944, 319:915, 319:926, 319:935, and 357:784.
  */
-import { icons, escHtml } from "../components/icons.js";
-import { filterLinks, getFolderCount } from "../state/store.js";
-import { renderBottomNav, renderFilterChips, renderLinkCard } from "./common.js";
+import { icons, escHtml, safeImgUrl } from "../components/icons.js";
+import { filterLinks, getFolderById, getFolderCount } from "../state/store.js";
+import { renderBottomNav, renderLinkCard } from "./common.js";
 
-export function renderHomeScreen(state) {
-  const { folders, links, notifications } = state.data;
-  const { homeSearch, homeFilter, showNotifications } = state.ui;
+export function renderNotificationsFullScreen(state) {
+  const notifications = state.data.notifications || [];
+  const recent = notifications.filter((n) => n.section !== "earlier");
+  const earlier = notifications.filter((n) => n.section === "earlier");
 
-  const filteredLinks = filterLinks(links, homeSearch, homeFilter);
-  const unreadNotifications = notifications.filter((n) => n.unread).length;
-  const unreadCount = links.filter((l) => l.status === "unread").length;
+  const renderNotifCard = (n) => {
+    const iconBg =
+      n.type === "shared_folder"
+        ? "#f3ecfb"
+        : n.type === "ai_summary"
+          ? "#eaf8ef"
+          : n.type === "invite"
+            ? "#fff4e2"
+            : "#fdecef";
+    const iconColor =
+      n.type === "shared_folder"
+        ? "#6f59a8"
+        : n.type === "ai_summary"
+          ? "#1c7c48"
+          : n.type === "invite"
+            ? "#b4690e"
+            : "#be2235";
+    const badgeIcon =
+      n.type === "shared_folder"
+        ? icons.people(17)
+        : n.type === "ai_summary"
+          ? icons.bot(17)
+          : n.type === "invite"
+            ? icons.share(17)
+            : icons.clock(17);
+
+    return `
+      <button
+        class="figma-notif-card ${n.unread ? "unread" : ""}"
+        data-action="open-notification-item"
+        data-id="${escHtml(n.id)}"
+      >
+        <div class="figma-notif-icon" style="background:${iconBg};color:${iconColor};">
+          ${badgeIcon}
+        </div>
+        <div class="figma-notif-content">
+          <div class="figma-notif-title-row">
+            <span class="figma-notif-title">${escHtml(n.title)}</span>
+            ${n.unread ? `<span class="figma-unread-dot" aria-label="ยังไม่ได้อ่าน"></span>` : ""}
+          </div>
+          ${n.body ? `<p class="figma-notif-body">${escHtml(n.body)}</p>` : ""}
+          <div class="figma-notif-meta">
+            <span>${escHtml(n.time)}</span>
+            ${n.badgeLabel ? `<span class="figma-notif-tag">${escHtml(n.badgeLabel)}</span>` : ""}
+            ${n.badgeSecondary ? `<span class="figma-notif-tag">${escHtml(n.badgeSecondary)}</span>` : ""}
+          </div>
+        </div>
+      </button>
+    `;
+  };
 
   return `
-    <div class="screen-scroll with-nav-pad">
-      <div class="home-topbar">
-        <h1 class="brand-heading">Sharely</h1>
-        <div class="inline-flex-row">
-          <button class="btn-accent-pill" data-open-save-sheet="1">
-            ${icons.plus(16)}
+    <div class="screen-scroll figma-notif-screen">
+      <div class="figma-notif-header">
+        <button class="figma-notif-back" data-action="close-notifications">
+          ${icons.back(20)}
+          <span>การแจ้งเตือน</span>
+        </button>
+        <button class="figma-notif-mark-all" data-action="mark-all-notifications-read">
+          อ่านทั้งหมด
+        </button>
+      </div>
+      <p class="figma-notif-subtitle">รวมแจ้งเตือนเตือนความจำและกิจกรรมที่เกี่ยวกับโฟลเดอร์ของคุณ</p>
+
+      ${
+        recent.length
+          ? `<div class="figma-notif-section">
+              <div class="figma-notif-section-label">ล่าสุด</div>
+              ${recent.map(renderNotifCard).join("")}
+            </div>`
+          : ""
+      }
+
+      ${
+        earlier.length
+          ? `<div class="figma-notif-section">
+              <div class="figma-notif-section-label">ก่อนหน้านี้</div>
+              ${earlier.map(renderNotifCard).join("")}
+            </div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+export function renderFigmaLinkItemCard(item) {
+  return renderLinkCard(item, { variant: "figma-home" });
+}
+
+export function renderHomeScreen(state) {
+  if (state.ui.notificationScreenOpen) {
+    return renderNotificationsFullScreen(state);
+  }
+
+  const { folders, links, notifications } = state.data;
+  const { homeSearch, homeFilter, showAllHomeLinks } = state.ui;
+
+  const filteredLinks = filterLinks(links, homeSearch, homeFilter);
+  const visibleLinks =
+    !showAllHomeLinks && !homeSearch && homeFilter === "all"
+      ? filteredLinks.slice(0, 2)
+      : filteredLinks;
+  const unreadNotifications = notifications.filter((n) => n.unread).length;
+
+  const filterChips = [
+    { id: "all", label: "ทั้งหมด" },
+    { id: "unread", label: "ยังไม่ได้ดู" },
+    { id: "read", label: "ดูแล้ว" },
+    { id: "favorite", label: "ชื่นชอบ", hasCherry: true },
+  ];
+
+  return `
+    <div class="screen-scroll with-nav-pad figma-home-page">
+      <div class="figma-home-header">
+        <h1 class="figma-home-brand">Sharely</h1>
+        <div class="figma-home-header-actions">
+          <button type="button" class="figma-add-pill-btn" data-open-save-sheet="1">
+            ${icons.plus(14)}
             <span>เพิ่มลิงก์</span>
           </button>
-          <button class="bell-btn" data-toggle-notifs="1" title="การแจ้งเตือน">
-            ${icons.bell(20)}
-            ${unreadNotifications > 0 ? `<span class="bell-dot"></span>` : ""}
+          <button type="button" class="figma-bell-btn" data-action="open-notifications" title="การแจ้งเตือน">
+            ${icons.bell(18)}
+            ${unreadNotifications > 0 ? `<span class="figma-bell-dot"></span>` : ""}
           </button>
         </div>
       </div>
 
-      ${
-        showNotifications
-          ? `
-        <div class="notif-popover">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <strong style="font-size:14px;">การแจ้งเตือน (${unreadNotifications})</strong>
-            <button class="link-more-btn" style="font-size:12px;" data-mark-notifs-read="1">อ่านทั้งหมด</button>
-          </div>
-          ${notifications
-            .map(
-              (n) => `
-            <div style="padding:8px;border-radius:10px;background:${n.unread ? "var(--theme-soft)" : "var(--bg-muted)"};font-size:12.5px;">
-              <div style="font-weight:600;">${escHtml(n.title)}</div>
-              <div class="tiny-hint">${escHtml(n.time)}</div>
-            </div>`
-            )
-            .join("")}
-        </div>`
-          : ""
-      }
-
-      <div class="app-pad" style="display:flex;flex-direction:column;gap:14px;padding-top:6px;">
-        <div class="search-box">
-          <span style="color:var(--ink-strong);display:inline-flex;">${icons.search(18)}</span>
+      <div class="figma-home-content">
+        <div class="figma-search-bar">
+          <span class="figma-search-icon">${icons.search(17)}</span>
           <input
             type="search"
             placeholder="ค้นหาลิงก์ โน้ต หรือแท็ก"
@@ -63,61 +149,99 @@ export function renderHomeScreen(state) {
           />
         </div>
 
-        ${renderFilterChips(homeFilter, "home")}
-
-        <div class="resume-banner">
-          <div style="flex:1;min-width:0;">
-            <p class="resume-title">กลับมาดู<br />สิ่งที่บันทึกไว้กันเถอะ</p>
-            <button class="resume-cta" data-open-preview="1">
-              <span>ดูรายการที่ยังไม่ได้ดู (${unreadCount})</span>
-              ${icons.chevronRight(15)}
-            </button>
-          </div>
-          <div class="resume-thumb-box">
-            ${icons.imagePlaceholder(30)}
-          </div>
+        <div class="figma-filter-row" role="tablist">
+          ${filterChips
+            .map(
+              (c) => `
+            <button
+              type="button"
+              class="figma-filter-pill ${homeFilter === c.id ? "active" : ""}"
+              data-filter-chip="${c.id}"
+              data-filter-scope="home"
+            >
+              ${c.hasCherry ? `<span class="figma-chip-cherry">${icons.cherry(14)}</span>` : ""}
+              <span>${escHtml(c.label)}</span>
+            </button>`
+            )
+            .join("")}
         </div>
 
-        <div>
-          <div class="section-header-row">
-            <h2 class="section-title">โฟลเดอร์ของฉัน</h2>
-            <button class="link-more-btn" data-nav="folders">ดูทั้งหมด</button>
+        ${
+          homeFilter === "all" && !homeSearch
+            ? `
+          <div class="figma-resume-banner">
+            <div class="figma-resume-copy">
+              <strong>กลับมาดู<br />สิ่งที่บันทึกไว้กันเถอะ</strong>
+              <button type="button" class="figma-resume-cta" data-open-preview="1">
+                <span>ดูรายการที่ยังไม่ได้ดู</span>
+                ${icons.chevronRight(14)}
+              </button>
+            </div>
+            <div class="figma-resume-thumb">
+              ${icons.imagePlaceholder(22)}
+            </div>
+          </div>`
+            : ""
+        }
+
+        <div class="figma-section-block">
+          <div class="figma-section-head">
+            <h2 class="figma-section-title">โฟลเดอร์ของฉัน</h2>
+            <button type="button" class="figma-section-action" data-nav="folders">ดูทั้งหมด</button>
           </div>
-          <div class="folder-grid">
+
+          <div class="figma-folder-grid">
             ${folders
+              .filter((f) => f.name !== "ยังไม่จัดหมวด")
               .slice(0, 4)
               .map(
                 (f) => `
-              <button class="folder-card" data-open-folder="${f.id}">
-                <div class="folder-cover-wrap">
-                  <img src="${escHtml(f.cover)}" alt="${escHtml(f.name)}" />
+              <button type="button" class="figma-folder-card" data-open-folder="${escHtml(f.id)}">
+                <div class="figma-folder-cover-wrap">
+                  <img
+                    src="${escHtml(safeImgUrl(f.cover) || "./assets/covers/coffee.png")}"
+                    alt=""
+                    class="figma-folder-cover-img"
+                  />
                 </div>
-                <p class="folder-name">${escHtml(f.name)}</p>
-                <p class="folder-meta">${getFolderCount(f)} รายการ</p>
+                <div class="figma-folder-card-name">${escHtml(f.name)}</div>
+                <div class="figma-folder-card-count">${getFolderCount(f)} รายการ</div>
               </button>`
               )
               .join("")}
           </div>
         </div>
 
-        <div>
-          <div class="section-header-row">
-            <h2 class="section-title">บันทึกล่าสุด</h2>
-            <span class="tiny-hint">${filteredLinks.length} รายการ</span>
+        <div class="figma-section-block">
+          <div class="figma-section-head">
+            <h2 class="figma-section-title">บันทึกล่าสุด</h2>
+            ${
+              filteredLinks.length > 2
+                ? `<button type="button" class="figma-section-action" data-action="toggle-home-all-links">${
+                    showAllHomeLinks ? "ย่อรายการ" : "ดูทั้งหมด"
+                  }</button>`
+                : `<span class="figma-section-hint">${filteredLinks.length} รายการ</span>`
+            }
           </div>
+
           ${
-            filteredLinks.length === 0
-              ? `<div class="ai-summary-card" style="text-align:center;color:var(--ink-secondary);">
-                   ไม่พบลิงก์ที่ตรงกับเงื่อนไข
-                 </div>`
-              : `<div class="link-list">
-                   ${filteredLinks.map((item) => renderLinkCard(item)).join("")}
-                 </div>`
+            visibleLinks.length === 0
+              ? `
+            <div class="figma-empty-state">
+              <div class="figma-empty-icon">${icons.bookmarkSolid(22)}</div>
+              <h3>ยังไม่มีลิงก์ที่บันทึกไว้</h3>
+              <p>กดปุ่ม "+ เพิ่มลิงก์" ด้านบน หรือแชร์ลิงก์จากแอปอื่นมาที่ Sharely เพื่อเริ่มเก็บสิ่งน่าสนใจไว้ดูทีหลัง</p>
+              <button type="button" class="figma-primary-btn compact" data-open-save-sheet="1">
+                + เพิ่มลิงก์แรกของฉัน
+              </button>
+            </div>`
+              : `<div class="figma-link-list">
+                  ${visibleLinks.map(renderFigmaLinkItemCard).join("")}
+                </div>`
           }
         </div>
       </div>
-
-      ${renderBottomNav("home")}
     </div>
+    ${renderBottomNav("home")}
   `;
 }

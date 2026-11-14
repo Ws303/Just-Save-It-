@@ -135,6 +135,33 @@ def _fetch_item_tags(db: Any, item_id: str) -> List[str]:
     return [row["name"] for row in (tags_res.data or []) if row.get("name")]
 
 
+def _attach_tags_batch(db: Any, rows: List[Dict[str, Any]]) -> None:
+    """Batch-load tags across a list of items in <=2 queries to prevent N+1 roundtrips."""
+    target_ids = [str(r["id"]) for r in rows if r.get("id") and "tags" not in r]
+    if not target_ids:
+        return
+    links_res = db.table("item_tags").select("item_id, tag_id").in_("item_id", target_ids).execute()
+    link_rows = links_res.data or []
+    tag_ids = list({row["tag_id"] for row in link_rows if row.get("tag_id")})
+    tag_name_by_id: Dict[str, str] = {}
+    if tag_ids:
+        tags_res = db.table("tags").select("id, name").in_("id", tag_ids).execute()
+        for t in tags_res.data or []:
+            if t.get("id") and t.get("name"):
+                tag_name_by_id[str(t["id"])] = str(t["name"])
+    tags_by_item: Dict[str, List[str]] = {iid: [] for iid in target_ids}
+    for lr in link_rows:
+        iid = str(lr.get("item_id") or "")
+        tid = str(lr.get("tag_id") or "")
+        name = tag_name_by_id.get(tid)
+        if iid in tags_by_item and name and name not in tags_by_item[iid]:
+            tags_by_item[iid].append(name)
+    for r in rows:
+        iid = str(r.get("id") or "")
+        if "tags" not in r and iid:
+            r["tags"] = tags_by_item.get(iid, [])
+
+
 def upsert_item_reminder(
     db: Any,
     user_id: str,
@@ -142,7 +169,7 @@ def upsert_item_reminder(
     title_snapshot: Optional[str],
     reminder: ReminderConfig,
 ) -> Dict[str, Any]:
-    """Upsert a single active reminder rule (once or every_n_days) for (item_id, user_id)."""
+    """Upsert a single reminder rule (once or every_n_days) for (item_id, user_id)."""
     if reminder.remind_at is not None:
         remind_at_dt = reminder.remind_at
         if remind_at_dt.tzinfo is None:
@@ -162,7 +189,8 @@ def upsert_item_reminder(
         "repeat_every_days": reminder.repeat_every_days,
         "remind_time": reminder.remind_time,
         "timezone": reminder.timezone,
-        "status": "pending",
+        "status": "cancelled" if reminder.is_enabled is False else "pending",
+        "sent_at": None,
         "title_snapshot": clean_text_field(reminder.title_snapshot or title_snapshot, unescape_html=False),
         "updated_at": now_iso,
     }
@@ -182,6 +210,24 @@ def upsert_item_reminder(
     return res.data[0] if res.data else payload
 
 
+def _with_item_compat_fields(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure API compatibility aliases (thumbnail_url, user_note, tag_names, is_favorite) exist alongside SQL columns."""
+    media = item.get("media_items") or []
+    first_media = None
+    if isinstance(media, list) and media:
+        head = media[0]
+        if isinstance(head, str):
+            first_media = head
+        elif isinstance(head, dict):
+            first_media = head.get("thumbnail_url") or head.get("media_url") or head.get("url")
+    item.setdefault("thumbnail_url", item.get("image_url") or first_media)
+    item.setdefault("user_note", item.get("note"))
+    if "tags" in item:
+        item.setdefault("tag_names", item["tags"])
+    item.setdefault("is_favorite", bool(item.get("is_favorite", False)))
+    return item
+
+
 def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[str, Any]:
     """Persist item immediately with enrich_status='pending' without waiting on live unfurling."""
     if req.folder_id:
@@ -197,6 +243,8 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
     clean_title = clean_text_field(req.title, unescape_html=True)
     clean_desc = clean_text_field(req.description, unescape_html=True)
     clean_note = clean_text_field(req.note, unescape_html=False)
+    clean_image = req.image_url.strip() if isinstance(req.image_url, str) and req.image_url.strip() else None
+    clean_embed_url = req.embed_url.strip() if isinstance(req.embed_url, str) and req.embed_url.strip() else None
     now_iso = _now_iso()
 
     existing_res = (
@@ -210,6 +258,11 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
     if existing_res.data:
         existing_item = existing_res.data[0]
         item_id = existing_item["id"]
+        if existing_item.get("status") in ("done", "archived") and req.reminder is not None and req.status in ("done", "archived"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot set a reminder on a done or archived item.",
+            )
         bump_updates: Dict[str, Any] = {"saved_at": now_iso, "updated_at": now_iso}
         if clean_title is not None:
             bump_updates["title"] = clean_title
@@ -219,10 +272,40 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
             bump_updates["note"] = clean_note
         if req.folder_id is not None:
             bump_updates["folder_id"] = req.folder_id
-        upd_res = db.table("items").update(bump_updates).eq("id", item_id).execute()
+        if clean_image is not None:
+            bump_updates["image_url"] = clean_image
+        if clean_embed_url is not None:
+            bump_updates["embed_url"] = clean_embed_url
+        if req.media_items:
+            bump_updates["media_items"] = req.media_items
+        if req.is_favorite is not None:
+            bump_updates["is_favorite"] = bool(req.is_favorite)
+        if existing_item.get("status") in ("done", "archived") and (
+            req.reminder is not None or "status" in req.model_fields_set
+        ):
+            bump_updates["status"] = req.status
+            if req.status != "done":
+                bump_updates["done_at"] = None
+        elif "status" in req.model_fields_set:
+            bump_updates["status"] = req.status
+            if req.status != "done":
+                bump_updates["done_at"] = None
+        try:
+            upd_res = db.table("items").update(bump_updates).eq("id", item_id).execute()
+        except Exception as exc:
+            if "is_favorite" in bump_updates and ("is_favorite" in str(exc) or "PGRST204" in str(exc)):
+                bump_updates.pop("is_favorite", None)
+                upd_res = db.table("items").update(bump_updates).eq("id", item_id).execute()
+            else:
+                raise
         item = dict(upd_res.data[0]) if upd_res.data else {**existing_item, **bump_updates}
         deduplicated = True
     else:
+        if req.reminder is not None and req.status in ("done", "archived"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot set a reminder on a done or archived item.",
+            )
         payload: Dict[str, Any] = {
             "owner_id": user_id,
             "folder_id": req.folder_id,
@@ -231,8 +314,10 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
             "url_hash": url_hash,
             "title": clean_title if clean_title is not None else canon_url,
             "description": clean_desc,
+            "image_url": clean_image,
             "media_items": req.media_items or [],
-            "embed_type": "none",
+            "embed_type": req.embed_type or "none",
+            "embed_url": clean_embed_url,
             "content_type": req.content_type,
             "platform": req.platform,
             "note": clean_note,
@@ -242,7 +327,16 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
             "saved_at": now_iso,
             "updated_at": now_iso,
         }
-        ins_res = db.table("items").insert(payload).execute()
+        if req.is_favorite is not None:
+            payload["is_favorite"] = bool(req.is_favorite)
+        try:
+            ins_res = db.table("items").insert(payload).execute()
+        except Exception as exc:
+            if "is_favorite" in payload and ("is_favorite" in str(exc) or "PGRST204" in str(exc)):
+                payload.pop("is_favorite", None)
+                ins_res = db.table("items").insert(payload).execute()
+            else:
+                raise
         item = dict(ins_res.data[0]) if ins_res.data else payload
         item_id = item.get("id", "")
         deduplicated = False
@@ -256,7 +350,7 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
 
     item["tags"] = _fetch_item_tags(db, item_id) if item_id else []
     item["deduplicated"] = deduplicated
-    return item
+    return _with_item_compat_fields(item)
 
 
 _CURSOR_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
@@ -367,12 +461,10 @@ def list_and_search_items(
             ).execute()
             rpc_rows = getattr(rpc_res, "data", None)
             if isinstance(rpc_rows, list):
-                results: List[Dict[str, Any]] = []
-                for row in rpc_rows:
-                    item_dict = dict(row)
-                    if "tags" not in item_dict and item_dict.get("id"):
-                        item_dict["tags"] = _fetch_item_tags(db, item_dict["id"])
-                    results.append(item_dict)
+                results: List[Dict[str, Any]] = [dict(row) for row in rpc_rows]
+                _attach_tags_batch(db, results)
+                for item_dict in results:
+                    _with_item_compat_fields(item_dict)
                 return results
         except Exception as rpc_exc:
             logger.debug("search_user_items_for_user RPC fallback to Python filter: %s", rpc_exc)
@@ -443,8 +535,14 @@ def list_and_search_items(
             for item in candidates
             if (_safe_sort_ts(item.get("saved_at")), str(item.get("id") or "")) < cursor_tuple
         ]
-        return candidates[:limit]
-    return candidates[offset : offset + limit]
+        sliced = candidates[:limit]
+    else:
+        sliced = candidates[offset : offset + limit]
+
+    _attach_tags_batch(db, sliced)
+    for row in sliced:
+        _with_item_compat_fields(row)
+    return sliced
 
 
 def get_item_for_user(db: Any, user_id: str, item_id: str) -> Dict[str, Any]:
@@ -457,7 +555,7 @@ def get_item_for_user(db: Any, user_id: str, item_id: str) -> Dict[str, Any]:
     item["tags"] = _fetch_item_tags(db, item_id)
     rem_res = db.table("reminders").select("*").eq("item_id", item_id).eq("user_id", user_id).execute()
     item["reminders"] = rem_res.data or []
-    return item
+    return _with_item_compat_fields(item)
 
 
 def update_item_for_user(db: Any, user_id: str, item_id: str, req: ItemUpdateRequest) -> Dict[str, Any]:
@@ -492,12 +590,22 @@ def update_item_for_user(db: Any, user_id: str, item_id: str, req: ItemUpdateReq
         updates["platform"] = req.platform
     if "content_type" in fields_set:
         updates["content_type"] = req.content_type
+    if "image_url" in fields_set:
+        updates["image_url"] = req.image_url
+    if "embed_url" in fields_set:
+        updates["embed_url"] = req.embed_url
+    if "embed_type" in fields_set and req.embed_type is not None:
+        updates["embed_type"] = req.embed_type
     if "media_items" in fields_set:
         updates["media_items"] = req.media_items or []
+    if "is_favorite" in fields_set and req.is_favorite is not None:
+        updates["is_favorite"] = bool(req.is_favorite)
     if "status" in fields_set and req.status is not None:
         updates["status"] = req.status
         if req.status == "done":
             updates["done_at"] = _now_iso()
+        else:
+            updates["done_at"] = None
         if req.status in ("done", "archived") and item.get("status") != req.status:
             db.table("reminders").update({"status": "cancelled", "updated_at": _now_iso()}).eq(
                 "item_id", item_id
@@ -505,15 +613,23 @@ def update_item_for_user(db: Any, user_id: str, item_id: str, req: ItemUpdateReq
 
     if updates:
         updates["updated_at"] = _now_iso()
-        upd_res = db.table("items").update(updates).eq("id", item_id).execute()
+        try:
+            upd_res = db.table("items").update(updates).eq("id", item_id).execute()
+        except Exception as exc:
+            if "is_favorite" in updates and ("is_favorite" in str(exc) or "PGRST204" in str(exc)):
+                updates.pop("is_favorite", None)
+                upd_res = db.table("items").update(updates).eq("id", item_id).execute()
+            else:
+                raise
         item = dict(upd_res.data[0]) if upd_res.data else {**item, **updates}
 
     if "tags" in fields_set and req.tags is not None:
         db.table("item_tags").delete().eq("item_id", item_id).execute()
-        _attach_tags_to_item(db, user_id, item_id, req.tags)
+        tag_owner_id = str(item.get("owner_id") or user_id)
+        _attach_tags_to_item(db, tag_owner_id, item_id, req.tags)
 
     item["tags"] = _fetch_item_tags(db, item_id)
-    return item
+    return _with_item_compat_fields(item)
 
 
 def delete_item_for_user(db: Any, user_id: str, item_id: str) -> Dict[str, Any]:
@@ -1015,7 +1131,7 @@ def revoke_folder_invite(db: Any, user_id: str, folder_id: str, token: str) -> D
 
 def create_beta_feedback(db: Any, user_id: str, req: FeedbackCreateRequest) -> Dict[str, Any]:
     """Persist user waitlist/beta feedback submission for REQ-005."""
-    payload = {
+    payload: Dict[str, Any] = {
         "user_id": user_id,
         "category": req.category,
         "message": req.message,
@@ -1023,8 +1139,13 @@ def create_beta_feedback(db: Any, user_id: str, req: FeedbackCreateRequest) -> D
         "allow_contact": req.allow_contact,
         "created_at": _now_iso(),
     }
+    if req.page_context and bool(getattr(db, "is_local_dev", False)):
+        payload["page_context"] = req.page_context.strip()
     res = db.table("beta_feedback").insert(payload).execute()
-    return dict(res.data[0]) if res.data else payload
+    row = dict(res.data[0]) if res.data else payload
+    if req.page_context:
+        row.setdefault("page_context", req.page_context.strip())
+    return row
 
 
 def list_user_beta_feedback(db: Any, user_id: str) -> List[Dict[str, Any]]:

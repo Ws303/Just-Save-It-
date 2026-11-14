@@ -27,7 +27,7 @@ class AIConfig(BaseModel):
     )
     model: Optional[str] = Field(
         default=None,
-        description="Specific model identifier to use (e.g. 'gpt-4o-mini', 'llama3.2', 'claude-3-5-haiku', 'gemini-2.5-flash')",
+        description="Specific model identifier to use (e.g. 'gpt-4o-mini', 'llama3.2', 'claude-3-5-haiku', 'gemini-3.1-flash-lite')",
     )
 
     @property
@@ -109,6 +109,7 @@ class AISummaryOutput(BaseModel):
 
     summary_th: str = Field(
         ...,
+        min_length=1,
         description="3-bullet Thai summary reading in under 5 seconds (e.g. '• ...\\n• ...\\n• ...')",
     )
     suggested_tags: List[str] = Field(
@@ -120,6 +121,33 @@ class AISummaryOutput(BaseModel):
         default="article",
         description="Classified content category of the URL/body.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_llm_output(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        if "summary_th" not in normalized or not normalized.get("summary_th"):
+            for alt_key in ("summary", "summary_en", "bullets", "points"):
+                if normalized.get(alt_key):
+                    normalized["summary_th"] = normalized[alt_key]
+                    break
+        raw_summary = normalized.get("summary_th")
+        if isinstance(raw_summary, list):
+            normalized["summary_th"] = "\n".join(str(x).strip() for x in raw_summary if str(x).strip())
+        if isinstance(normalized.get("summary_th"), str):
+            normalized["summary_th"] = normalized["summary_th"].strip()
+        raw_tags = normalized.get("suggested_tags")
+        if isinstance(raw_tags, list):
+            normalized["suggested_tags"] = [str(t).strip() for t in raw_tags if str(t).strip()]
+        if "content_type" in normalized and isinstance(normalized["content_type"], str):
+            stripped_type = normalized["content_type"].strip().lower()
+            if not stripped_type:
+                normalized["content_type"] = "article"
+            elif stripped_type in ("article", "video", "post", "product", "other"):
+                normalized["content_type"] = stripped_type
+        return normalized
 
 
 class SummarizeResponse(BaseModel):

@@ -24,7 +24,14 @@ client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def setup_mock_db():
+def setup_mock_db(monkeypatch):
+    for env_key in (
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_JWT_SECRET",
+    ):
+        monkeypatch.delenv(env_key, raising=False)
     db = InMemoryDB()
     set_override_supabase_client(db)
     yield db
@@ -237,3 +244,60 @@ def test_logout():
     logout_resp = client.post("/api/auth/logout", headers=headers)
     assert logout_resp.status_code == 200
     assert logout_resp.json()["logged_out"] is True
+
+
+def test_oauth_url_uses_supabase_sign_in_with_oauth(monkeypatch):
+    """Ensure Supabase OAuth URL generation delegates to sign_in_with_oauth when configured."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    mock_client = MagicMock()
+    mock_client.auth.sign_in_with_oauth.return_value = SimpleNamespace(
+        url="https://example.supabase.co/auth/v1/authorize?provider=google"
+    )
+    monkeypatch.setenv("APP_URL", "https://app.example.com")
+    monkeypatch.setattr("Login.service.is_supabase_configured", lambda: True)
+    monkeypatch.setattr("Login.service.get_supabase_anon_client", lambda: mock_client)
+
+    resp = client.get("/api/auth/oauth/google", params={"redirect_to": "https://app.example.com/cb"})
+    assert resp.status_code == 200
+    assert resp.json()["url"].startswith("https://example.supabase.co/auth/v1/authorize")
+    mock_client.auth.sign_in_with_oauth.assert_called_once_with({
+        "provider": "google",
+        "options": {"redirect_to": "https://app.example.com/cb"},
+    })
+
+    # External / unsafe redirect_to hosts must be rejected
+    assert client.get("/api/auth/oauth/google", params={"redirect_to": "https://evil.attacker.com/cb"}).status_code == 400
+    assert client.get("/api/auth/oauth/google", params={"redirect_to": "javascript:alert(1)"}).status_code == 400
+
+
+def test_supabase_auth_never_fails_open_to_local_tokens(monkeypatch):
+    """Ensure Supabase errors or pending confirmation never fall back to dev JWT minting."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    mock_client = MagicMock()
+    mock_client.auth.sign_in_with_otp.side_effect = RuntimeError("For security purposes, request again after 60s")
+    mock_client.auth.sign_up.return_value = SimpleNamespace(
+        user=SimpleNamespace(id="22222222-2222-4222-8222-222222222222"),
+        session=None,
+    )
+    mock_client.auth.sign_in_with_oauth.side_effect = RuntimeError("OAuth upstream outage")
+
+    monkeypatch.setattr("Login.service.is_supabase_configured", lambda: True)
+    monkeypatch.setattr("Login.service.get_supabase_anon_client", lambda: mock_client)
+
+    magic_resp = client.post("/api/auth/magic-link", json={"email": "may@example.com"})
+    assert magic_resp.status_code in (400, 429)
+    assert "access_token" not in magic_resp.json()
+
+    reg_resp = client.post(
+        "/api/auth/register",
+        json={"email": "newuser@example.com", "password": "Password123!", "display_name": "New"},
+    )
+    assert reg_resp.status_code == 403
+    assert "access_token" not in reg_resp.json()
+
+    oauth_resp = client.get("/api/auth/oauth/google", params={"redirect_to": "http://localhost:5173/cb"})
+    assert oauth_resp.status_code == 502

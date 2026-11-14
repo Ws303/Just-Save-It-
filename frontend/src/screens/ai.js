@@ -142,7 +142,7 @@ export function renderAiScreen(state) {
             <p class="tiny-hint" style="margin:0 0 8px;">
               ทดสอบยิง <code>POST /api/ai/summarize</code> สำหรับ "${escHtml(firstLink.title)}"
             </p>
-            <button class="btn-outline-pill" style="width:100%;height:38px;font-size:13px;" data-run-ai-summarize="${firstLink.id}">
+            <button class="btn-outline-pill" style="width:100%;height:38px;font-size:13px;" data-run-ai-summarize="${escHtml(firstLink.id)}">
               ${state.api.isSummarizing ? "กำลังส่งคำขอ..." : "ทดสอบสรุปเนื้อหาทันที"}
             </button>
           </div>`

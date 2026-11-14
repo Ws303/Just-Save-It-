@@ -6,9 +6,11 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 
 from Database.repository import can_access_item, upsert_item_reminder
 from Reminders.push_adapters import dispatch_push_to_device
@@ -17,6 +19,7 @@ from Reminders.schemas import (
     LocalSyncResponse,
     PushDeliverySummary,
     ReminderListResponse,
+    ReminderPatchRequest,
     ReminderRecordResponse,
     ReminderUpsertRequest,
     SnoozeReminderRequest,
@@ -72,6 +75,7 @@ def _serialize_reminder_record(
         remind_time=str(rem["remind_time"]) if rem.get("remind_time") is not None else None,
         timezone=str(rem.get("timezone") or "Asia/Bangkok"),
         status=str(rem.get("status") or "pending"),  # type: ignore[arg-type]
+        is_enabled=(str(rem.get("status") or "pending") != "cancelled"),
         title_snapshot=rem.get("title_snapshot"),
         last_triggered_at=ensure_utc_datetime(rem.get("last_triggered_at")),
         sent_at=ensure_utc_datetime(rem.get("sent_at")),
@@ -128,6 +132,101 @@ def upsert_reminder_for_user(
         )
 
     saved = upsert_item_reminder(db, user_id, item_id, item.get("title"), req)
+    return _serialize_reminder_record(saved, item)
+
+
+def patch_reminder_for_user(
+    db: Any,
+    user_id: str,
+    item_id: str,
+    req: ReminderPatchRequest,
+) -> ReminderRecordResponse:
+    """Partially update caller's existing reminder rule on an accessible item."""
+    item = _require_item_read_access(db, user_id, item_id)
+    if item.get("status") in ("done", "archived"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot update a reminder on a done or archived item.",
+        )
+
+    existing_res = (
+        db.table("reminders")
+        .select("*")
+        .eq("item_id", item_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if not existing_res.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reminder not found.")
+
+    cur = dict(existing_res.data[0])
+    merged: Dict[str, Any] = {
+        "schedule_type": cur.get("schedule_type") or "once",
+        "remind_at": cur.get("remind_at"),
+        "repeat_every_days": cur.get("repeat_every_days"),
+        "remind_time": cur.get("remind_time"),
+        "timezone": cur.get("timezone") or "Asia/Bangkok",
+        "title_snapshot": cur.get("title_snapshot"),
+        "is_enabled": str(cur.get("status") or "pending") != "cancelled",
+    }
+    fields_set = req.model_fields_set
+    if "schedule_type" in fields_set and req.schedule_type is not None:
+        merged["schedule_type"] = req.schedule_type
+    if "remind_at" in fields_set:
+        merged["remind_at"] = req.remind_at
+    elif "next_remind_at" in fields_set:
+        merged["remind_at"] = req.next_remind_at
+    if "repeat_every_days" in fields_set:
+        merged["repeat_every_days"] = req.repeat_every_days
+    elif "repeat_interval_days" in fields_set:
+        merged["repeat_every_days"] = req.repeat_interval_days
+    if "remind_time" in fields_set:
+        merged["remind_time"] = req.remind_time
+    if "timezone" in fields_set and req.timezone is not None:
+        merged["timezone"] = req.timezone
+    if (
+        "remind_time" in fields_set
+        and req.remind_time
+        and "remind_at" not in fields_set
+        and "next_remind_at" not in fields_set
+    ):
+        base_utc = ensure_utc_datetime(merged.get("remind_at"))
+        if base_utc is not None:
+            try:
+                tz = ZoneInfo(str(merged.get("timezone") or "Asia/Bangkok"))
+                time_parts = [int(p) for p in str(req.remind_time).strip().split(":")]
+                if len(time_parts) >= 2:
+                    updated_local = base_utc.astimezone(tz).replace(
+                        hour=time_parts[0],
+                        minute=time_parts[1],
+                        second=time_parts[2] if len(time_parts) > 2 else 0,
+                        microsecond=0,
+                    )
+                    merged["remind_at"] = updated_local.astimezone(timezone.utc)
+            except (ValueError, KeyError):
+                # Invalid remind_time/timezone format is handled by ReminderUpsertRequest validation below.
+                pass
+    if "title_snapshot" in fields_set:
+        merged["title_snapshot"] = req.title_snapshot
+    if "is_enabled" in fields_set and req.is_enabled is not None:
+        merged["is_enabled"] = req.is_enabled
+
+    if (
+        merged.get("schedule_type") == "once"
+        and "repeat_every_days" not in fields_set
+        and "repeat_interval_days" not in fields_set
+    ):
+        merged["repeat_every_days"] = None
+
+    try:
+        validated = ReminderUpsertRequest(**merged)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422),
+            detail=exc.errors(),
+        ) from exc
+
+    saved = upsert_item_reminder(db, user_id, item_id, item.get("title"), validated)
     return _serialize_reminder_record(saved, item)
 
 

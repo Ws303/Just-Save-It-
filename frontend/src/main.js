@@ -112,8 +112,13 @@ function renderSimulatedHostApp(appName) {
 }
 
 function renderViewportContent(state) {
-  if (state.ui.viewportMode === "web") {
-    return renderWebView(state);
+  const isAuthScreen = ["login", "emailLogin", "checkEmail", "inviteLanding"].includes(state.ui.screen);
+  if (state.ui.viewportMode === "web" && !isAuthScreen) {
+    return `
+      ${renderWebView(state)}
+      ${state.ui.activeSheet ? `<div class="pc-modal-portal">${[renderPostMenuAndDialog(state.ui, state.data.links), renderFolderSheets(state), renderSaveAndReminderSheets(state), renderProfileSheets(state)].join("")}</div>` : ""}
+      ${state.ui.toast ? `<div class="toast-banner">${escHtml(state.ui.toast)}</div>` : ""}
+    `;
   }
   if (state.ui.viewportMode === "extension") {
     return renderExtensionPopup(state);
@@ -187,68 +192,89 @@ function renderApp() {
     { id: "inviteSheet", label: "24 Share", protected: true },
   ];
 
-  appEl.innerHTML = `
-    <div class="tb-root">
-      <header class="tb-topbar">
-        <div class="tb-brand">
-          <span style="color:var(--theme-swatch);display:inline-flex;">${icons.cherry(22)}</span>
-          <span class="tb-brand-logo">Sharely</span>
-          <span class="tb-pill-badge">Interactive UI & Backend Testbed</span>
-        </div>
+  const isCollapsed = state.ui.qaPanelCollapsed !== false;
+  const showQaToggle =
+    typeof window !== "undefined" &&
+    (window.location.search.includes("qa=1") || window.location.hash.includes("qa"));
 
-        <div class="tb-segmented" role="tablist" aria-label="Viewport Mode">
-          <button class="tb-seg-btn ${state.ui.viewportMode === "mobile" ? "active" : ""}" data-viewport-switch="mobile">
-            Mobile (390×844)
-          </button>
-          <button class="tb-seg-btn ${state.ui.viewportMode === "web" ? "active" : ""}" data-viewport-switch="web">
-            W1 Web View
-          </button>
-          <button class="tb-seg-btn ${state.ui.viewportMode === "extension" ? "active" : ""}" data-viewport-switch="extension">
-            E1 Extension
-          </button>
-        </div>
-
-        <div class="tb-topbar-actions">
-          <button class="tb-status-pill" data-ping-health="1" title="คลิกเพื่อตรวจสอบ Backend Health">
-            <span class="tb-dot ${healthDotClass}"></span>
-            <span>
-              ${
-                state.api.mode === "mock"
-                  ? "Mock Mode Active"
-                  : state.api.healthStatus === "healthy"
-                    ? "FastAPI Healthy"
-                    : "FastAPI Live Mode"
-              }
-            </span>
-          </button>
-          <button class="tb-btn" data-toggle-inspector="1">
-            ${state.ui.inspectorVisible ? "ซ่อน Testbed Panel" : "แสดง Testbed Panel"}
-          </button>
-        </div>
-      </header>
-
-      <div class="tb-workspace ${state.ui.inspectorVisible ? "" : "inspector-hidden"}">
-        <div class="tb-stage-col">
-          <div class="tb-quick-nav" aria-label="Screen quick switcher">
-            ${quickButtons
-              .map((b) => {
-                const isActive =
-                  (b.id === "saveSheet" && state.ui.activeSheet?.type === "saveLink") ||
-                  (b.id === "reminderSheet" && state.ui.activeSheet?.type === "reminder") ||
-                  (b.id === "inviteSheet" && state.ui.activeSheet?.type === "invite") ||
-                  (state.ui.viewportMode === "mobile" && !state.ui.activeSheet && state.ui.screen === b.id);
-                return `<button class="tb-qbtn ${isActive ? "active" : ""}" data-quick-jump="${b.id}">${b.protected && !isUnlocked ? "🔒 " : ""}${b.label}</button>`;
-              })
-              .join("")}
+  appEl.innerHTML = isCollapsed
+    ? `
+      <div class="tb-clean-stage ${state.ui.viewportMode === "web" ? "is-pc-stage" : "is-mobile-stage"}">
+        ${renderViewportContent(state)}
+        ${
+          showQaToggle
+            ? `<button class="qa-floating-toggle" data-action="toggle-qa-panel" title="เปิด QA & API Testbed Panel">
+          🛠️ QA &amp; API
+        </button>`
+            : ""
+        }
+      </div>
+    `
+    : `
+      <div class="tb-root">
+        <header class="tb-topbar">
+          <div class="tb-brand">
+            <span style="color:var(--theme-swatch);display:inline-flex;">${icons.cherry(22)}</span>
+            <span class="tb-brand-logo">Sharely</span>
+            <span class="tb-pill-badge">Interactive UI &amp; Backend Testbed</span>
           </div>
 
-          ${renderViewportContent(state)}
-        </div>
+          <div class="tb-segmented" role="tablist" aria-label="Viewport Mode">
+            <button class="tb-seg-btn ${state.ui.viewportMode === "mobile" ? "active" : ""}" data-viewport-switch="mobile">
+              Mobile (390×844)
+            </button>
+            <button class="tb-seg-btn ${state.ui.viewportMode === "web" ? "active" : ""}" data-viewport-switch="web">
+              W1 Web View
+            </button>
+            <button class="tb-seg-btn ${state.ui.viewportMode === "extension" ? "active" : ""}" data-viewport-switch="extension">
+              E1 Extension
+            </button>
+          </div>
 
-        ${state.ui.inspectorVisible ? renderTestbedPanel(state) : ""}
+          <div class="tb-topbar-actions">
+            <button class="tb-status-pill" data-ping-health="1" title="คลิกเพื่อตรวจสอบ Backend Health">
+              <span class="tb-dot ${healthDotClass}"></span>
+              <span>
+                ${
+                  state.api.mode === "mock"
+                    ? "Mock Mode Active"
+                    : state.api.healthStatus === "healthy"
+                      ? "FastAPI Healthy"
+                      : "FastAPI Live Mode"
+                }
+              </span>
+            </button>
+            <button class="tb-btn" data-toggle-inspector="1">
+              ${state.ui.inspectorVisible ? "ซ่อน Inspector" : "แสดง Inspector"}
+            </button>
+            <button class="tb-btn" data-action="toggle-qa-panel">
+              ย่อเป็นโหมด Figma 1:1
+            </button>
+          </div>
+        </header>
+
+        <div class="tb-workspace ${state.ui.inspectorVisible ? "" : "inspector-hidden"}">
+          <div class="tb-stage-col">
+            <div class="tb-quick-nav" aria-label="Screen quick switcher">
+              ${quickButtons
+                .map((b) => {
+                  const isActive =
+                    (b.id === "saveSheet" && state.ui.activeSheet?.type === "saveLink") ||
+                    (b.id === "reminderSheet" && state.ui.activeSheet?.type === "reminder") ||
+                    (b.id === "inviteSheet" && state.ui.activeSheet?.type === "invite") ||
+                    (state.ui.viewportMode === "mobile" && !state.ui.activeSheet && state.ui.screen === b.id);
+                  return `<button class="tb-qbtn ${isActive ? "active" : ""}" data-quick-jump="${b.id}">${b.protected && !isUnlocked ? "🔒 " : ""}${b.label}</button>`;
+                })
+                .join("")}
+            </div>
+
+            ${renderViewportContent(state)}
+          </div>
+
+          ${state.ui.inspectorVisible ? renderTestbedPanel(state) : ""}
+        </div>
       </div>
-    </div>
-  `;
+    `;
 
   const phoneScrollEl = appEl.querySelector(".screen-scroll");
   if (phoneScrollEl) phoneScrollEl.scrollTop = scrollPhone;
@@ -274,33 +300,41 @@ function renderApp() {
 function openSaveSheet(prefill = {}) {
   const state = store.state;
   const folderId = prefill.folderId || state.ui.activeFolderId || state.data.folders[0]?.id;
-  const url = prefill.url || "https://vt.tiktok.com/ZSjXample/";
-  const { platform, domain } = inferPlatform(url);
+  const url = prefill.url || "";
+  const { platform, domain } = inferPlatform(url || "https://www.instagram.com/reel/SharelyDemo");
 
+  const currentViewport = state.ui.viewportMode === "web" ? "web" : "mobile";
   const targetScreen = ["home", "folders", "folderDetail", "linkDetail"].includes(state.ui.screen)
     ? state.ui.screen
     : "home";
-  const allowed = store.navigate(targetScreen, { viewportMode: "mobile" });
+  const allowed = store.navigate(targetScreen, { viewportMode: currentViewport });
   if (!allowed) return;
 
   if (typeof prefill.simulatedSourceApp !== "undefined") {
     store.state.ui.simulatedSourceApp = prefill.simulatedSourceApp;
   }
+  store.state.ui.addLinkExpanded = false;
+  store.state.ui.folderPickerSheetOpen = false;
+  store.state.ui.createFolderSheetOpen = false;
   store.openSheet({
     type: "saveLink",
     draft: {
       url,
       platform: prefill.platform || platform,
       domain: prefill.domain || domain,
-      title: prefill.title || (platform === "TikTok" ? "TikTok - Make Your Day" : "โพสต์ที่แชร์เข้ามา"),
+      title: prefill.title || "",
+      coverUrl: prefill.coverUrl || null,
+      media_items: prefill.media_items || [],
       folderId,
       pinned: Boolean(prefill.pinned),
       showAdvanced: false,
-      tags: prefill.tags || (platform === "TikTok" ? ["#วิดีโอสั้น"] : ["#แชร์มา"]),
+      tags: prefill.tags || [],
       note: prefill.note || "",
       reminder: "",
       reminderDate: null,
       reminderTime: "18:00",
+      scheduleType: "once",
+      repeatEveryDays: null,
       sourceApp: prefill.sourceApp || platform,
     },
   });
@@ -308,12 +342,24 @@ function openSaveSheet(prefill = {}) {
 
 function openReminderSheet(linkId) {
   const item = getLinkById(linkId) || store.state.data.links[0];
+  if (!item) return;
+  const ym = item.reminderDate ? item.reminderDate.slice(0, 7) : "2026-11";
+  const monthLabels = {
+    "2026-10": "ตุลาคม 2569",
+    "2026-11": "พฤศจิกายน 2569",
+    "2026-12": "ธันวาคม 2569",
+  };
+  store.state.ui.reminderScheduleType = item.scheduleType || "once";
+  store.state.ui.reminderRepeatDays = item.repeatEveryDays || 3;
   store.openSheet({
     type: "reminder",
     linkId: item.id,
-    day: 12,
-    monthLabel: "พฤศจิกายน 2569",
+    day: Number(item.reminderDate?.slice(8, 10)) || 15,
+    monthLabel: monthLabels[ym] || "พฤศจิกายน 2569",
+    yearMonth: monthLabels[ym] ? ym : "2026-11",
     time: item.reminderTime || "18:00",
+    scheduleType: item.scheduleType || "once",
+    repeatEveryDays: item.repeatEveryDays || 3,
   });
 }
 
@@ -366,6 +412,16 @@ appEl.addEventListener("input", (e) => {
       item.note = el.value;
       store.save();
     }
+  } else if (el.dataset.bindNoteDraft !== undefined) {
+    ui.noteDraft = el.value;
+  } else if (el.dataset.bindTagDraft !== undefined) {
+    ui.tagDraft = el.value;
+  } else if (el.dataset.bindInlineFolderName !== undefined) {
+    ui.inlineFolderName = el.value;
+  } else if (el.dataset.bindInlineFolderEmoji !== undefined) {
+    ui.inlineFolderEmoji = el.value;
+  } else if (el.dataset.bindPasswordConfirm !== undefined) {
+    ui.authPasswordConfirm = el.value;
   } else if (el.dataset.bindSaveUrl && ui.activeSheet?.type === "saveLink") {
     ui.activeSheet.draft.url = el.value;
     const { platform, domain } = inferPlatform(el.value);
@@ -379,8 +435,6 @@ appEl.addEventListener("input", (e) => {
     ui.activeSheet.nameDraft = el.value;
   } else if (el.dataset.bindCalTime && ui.activeSheet?.type === "reminder") {
     ui.activeSheet.time = el.value;
-  } else if (el.dataset.bindNewTag && ui.activeSheet?.type === "addTag") {
-    ui.activeSheet.value = el.value;
   } else if (el.dataset.bindAiEndpoint) {
     data.aiConfig.endpointUrl = el.value;
     store.save();
@@ -440,6 +494,9 @@ appEl.addEventListener("change", (e) => {
 });
 
 function completePostAuthNavigation(fallbackScreen = "home") {
+  if (store.state.api.mode === "live") {
+    apiClient.hydrateWorkspace().catch(() => {});
+  }
   const redirect = store.state.ui.postAuthRedirect;
   store.state.ui.postAuthRedirect = null;
   if (store.state.ui.authContext === "invite") {
@@ -461,11 +518,279 @@ function completePostAuthNavigation(fallbackScreen = "home") {
 // DELEGATED CLICK HANDLERS
 // =========================================================
 appEl.addEventListener("click", async (e) => {
-  const target = e.target.closest("[data-viewport-switch],[data-toggle-inspector],[data-ins-tab],[data-quick-jump],[data-nav],[data-go-screen],[data-open-folder],[data-open-edit-folder],[data-open-link],[data-open-preview],[data-toggle-auth-mode],[data-oauth-google],[data-submit-email-login],[data-submit-signup],[data-submit-password-login],[data-simulate-magic-link],[data-check-supabase-session],[data-accept-invite],[data-toggle-notifs],[data-mark-notifs-read],[data-filter-chip],[data-toggle-fav],[data-open-post-menu],[data-close-sheet],[data-close-host-app],[data-toggle-pin-link],[data-toggle-save-advanced],[data-sim-share-preset],[data-sim-custom-share],[data-toggle-host-backdrop],[data-toggle-status-sheet],[data-trigger-ai-sheet],[data-confirm-delete-post],[data-execute-delete-post],[data-open-save-sheet],[data-run-unfurl],[data-select-save-folder],[data-toggle-save-tag],[data-toggle-draft-reminder],[data-submit-save-link],[data-toggle-video-play],[data-toggle-seen],[data-run-ai-summarize],[data-remove-tag],[data-open-add-tag],[data-save-new-tag],[data-open-reminder],[data-cal-month],[data-select-cal-day],[data-clear-reminder],[data-save-reminder],[data-preview-mark-read],[data-preview-step],[data-open-create-folder],[data-suggest-folder-name],[data-open-pick-cover],[data-select-cover],[data-back-to-folder-edit],[data-save-folder-sheet],[data-open-invite-sheet],[data-copy-invite],[data-open-invite-apps],[data-open-invite-preview],[data-preview-recipient-invite],[data-toggle-ai-dropdown],[data-select-ai-provider],[data-select-ai-model],[data-toggle-ai-keyless],[data-save-ai-config],[data-open-edit-nickname],[data-save-nickname],[data-toggle-notif-setting],[data-set-text-size],[data-set-theme],[data-update-account-email],[data-send-password-reset],[data-submit-support],[data-open-export-csv],[data-download-csv],[data-open-logout-dialog],[data-confirm-logout],[data-web-scope],[data-web-folder],[data-select-web-link],[data-ext-unfurl],[data-ext-folder],[data-ext-tag],[data-ext-toggle-reminder],[data-ext-submit],[data-set-api-mode],[data-set-auth-provider],[data-ping-health],[data-tb-test-auth],[data-sim-share-intent],[data-sim-open-invite],[data-export-json-state],[data-reset-seed],[data-clear-logs],[data-run-mcp-tool]");
+  const target = e.target.closest("[data-action],[data-viewport-switch],[data-toggle-inspector],[data-ins-tab],[data-quick-jump],[data-nav],[data-go-screen],[data-open-folder],[data-open-edit-folder],[data-open-link],[data-open-preview],[data-toggle-auth-mode],[data-oauth-google],[data-submit-email-login],[data-submit-signup],[data-submit-password-login],[data-simulate-magic-link],[data-check-supabase-session],[data-accept-invite],[data-toggle-notifs],[data-mark-notifs-read],[data-filter-chip],[data-toggle-fav],[data-open-post-menu],[data-close-sheet],[data-close-host-app],[data-toggle-pin-link],[data-toggle-save-advanced],[data-sim-share-preset],[data-sim-custom-share],[data-toggle-host-backdrop],[data-toggle-status-sheet],[data-trigger-ai-sheet],[data-confirm-delete-post],[data-execute-delete-post],[data-open-save-sheet],[data-run-unfurl],[data-select-save-folder],[data-toggle-save-tag],[data-toggle-draft-reminder],[data-submit-save-link],[data-toggle-video-play],[data-toggle-seen],[data-run-ai-summarize],[data-open-reminder],[data-cal-month],[data-select-cal-day],[data-clear-reminder],[data-save-reminder],[data-preview-mark-read],[data-preview-step],[data-open-create-folder],[data-suggest-folder-name],[data-open-pick-cover],[data-select-cover],[data-back-to-folder-edit],[data-save-folder-sheet],[data-open-invite-sheet],[data-copy-invite],[data-open-invite-apps],[data-open-invite-preview],[data-preview-recipient-invite],[data-toggle-ai-dropdown],[data-select-ai-provider],[data-select-ai-model],[data-toggle-ai-keyless],[data-save-ai-config],[data-open-edit-nickname],[data-save-nickname],[data-toggle-notif-setting],[data-set-text-size],[data-set-theme],[data-update-account-email],[data-send-password-reset],[data-submit-support],[data-open-export-csv],[data-download-csv],[data-open-logout-dialog],[data-confirm-logout],[data-web-scope],[data-web-folder],[data-select-web-link],[data-ext-unfurl],[data-ext-folder],[data-ext-tag],[data-ext-toggle-reminder],[data-ext-submit],[data-set-api-mode],[data-set-auth-provider],[data-ping-health],[data-tb-test-auth],[data-sim-share-intent],[data-sim-open-invite],[data-export-json-state],[data-reset-seed],[data-clear-logs],[data-run-mcp-tool]");
   if (!target) return;
 
   const d = target.dataset;
   const { ui, data, api } = store.state;
+
+  // 0. Unified Figma data-action handlers
+  if (d.action) {
+    const act = d.action;
+    if (act === "toggle-qa-panel") {
+      ui.qaPanelCollapsed = !(ui.qaPanelCollapsed !== false);
+      ui.inspectorVisible = !ui.qaPanelCollapsed;
+      store.emit();
+      return;
+    }
+    if (act === "toggle-home-all-links") {
+      ui.showAllHomeLinks = !ui.showAllHomeLinks;
+      store.emit();
+      return;
+    }
+    if (act === "open-notifications") {
+      ui.notificationScreenOpen = true;
+      ui.showNotifications = true;
+      store.emit();
+      return;
+    }
+    if (act === "close-notifications") {
+      ui.notificationScreenOpen = false;
+      ui.showNotifications = false;
+      store.emit();
+      return;
+    }
+    if (act === "mark-all-notifications-read") {
+      data.notifications.forEach((n) => (n.unread = false));
+      store.showToast("อ่านแจ้งเตือนทั้งหมดแล้ว");
+      return;
+    }
+    if (act === "open-notification-item") {
+      const n = data.notifications.find((item) => item.id === d.id);
+      if (n) n.unread = false;
+      ui.notificationScreenOpen = false;
+      ui.showNotifications = false;
+      if (n?.linkId) {
+        store.navigate("linkDetail", { activeLinkId: n.linkId });
+      } else if (n?.folderId) {
+        store.navigate("folderDetail", { activeFolderId: n.folderId });
+      } else {
+        store.emit();
+      }
+      return;
+    }
+    if (act === "set-auth-mode") {
+      ui.authMode = d.mode || "login";
+      ui.authError = null;
+      if (d.mode === "checkEmail") {
+        store.navigate("checkEmail", { allowGuestSwitch: true });
+      } else {
+        store.navigate("login", { allowGuestSwitch: true });
+      }
+      return;
+    }
+    if (act === "toggle-show-password") {
+      ui.showPassword = !ui.showPassword;
+      store.emit();
+      return;
+    }
+    if (act === "send-reset-link") {
+      const email = (ui.authEmail || data.user.email || "").trim();
+      if (!email) {
+        ui.authError = "กรุณากรอกอีเมลที่ใช้สมัคร";
+        store.emit();
+        return;
+      }
+      await apiClient.sendPasswordReset(email);
+      ui.authMode = "login";
+      store.showToast(`ส่งลิงก์ตั้งรหัสผ่านใหม่ไปที่ ${email} แล้ว`);
+      store.navigate("checkEmail", { allowGuestSwitch: true });
+      return;
+    }
+    if (act === "toggle-add-link-expand" && ui.activeSheet?.type === "saveLink") {
+      ui.addLinkExpanded = !ui.addLinkExpanded;
+      ui.activeSheet.draft.showAdvanced = ui.addLinkExpanded;
+      store.emit();
+      return;
+    }
+    if (act === "paste-clipboard-url" && ui.activeSheet?.type === "saveLink") {
+      let clip = "";
+      try {
+        clip = await navigator.clipboard.readText();
+      } catch {}
+      const pastedUrl = clip && clip.startsWith("http") ? clip : "https://www.instagram.com/reel/CafeChiangMai2026";
+      ui.activeSheet.draft.url = pastedUrl;
+      const pv = await apiClient.previewUrl(pastedUrl);
+      if (pv.ok && pv.data) {
+        ui.activeSheet.draft.title = pv.data.title || ui.activeSheet.draft.title;
+        ui.activeSheet.draft.platform = pv.data.platform || ui.activeSheet.draft.platform;
+        ui.activeSheet.draft.coverUrl = pv.data.image_url || ui.activeSheet.draft.coverUrl;
+        ui.activeSheet.draft.media_items = pv.data.media_items || [];
+      }
+      store.emit();
+      return;
+    }
+    if (act === "open-folder-picker-sheet") {
+      ui.folderPickerSheetOpen = true;
+      store.emit();
+      return;
+    }
+    if (act === "close-folder-picker-sheet") {
+      ui.folderPickerSheetOpen = false;
+      store.emit();
+      return;
+    }
+    if (act === "open-create-folder-sheet") {
+      ui.createFolderSheetOpen = true;
+      ui.inlineFolderName = "";
+      ui.inlineFolderEmoji = "☕";
+      store.emit();
+      return;
+    }
+    if (act === "close-create-folder-sheet") {
+      ui.createFolderSheetOpen = false;
+      store.emit();
+      return;
+    }
+    if (act === "select-inline-emoji") {
+      ui.inlineFolderEmoji = d.emoji || "📁";
+      store.emit();
+      return;
+    }
+    if (act === "create-folder-inline") {
+      const name = (ui.inlineFolderName || "").trim() || "โฟลเดอร์ใหม่";
+      const created = await apiClient.saveFolder({ name, emoji: ui.inlineFolderEmoji || "📁" });
+      ui.createFolderSheetOpen = false;
+      ui.folderPickerSheetOpen = false;
+      if (ui.activeSheet?.type === "saveLink" && created) {
+        ui.activeSheet.draft.folderId = created.id;
+      }
+      store.showToast(`สร้างโฟลเดอร์ "${name}" แล้ว`);
+      return;
+    }
+    if (act === "open-ai-confirm") {
+      ui.aiConfirmModalOpen = true;
+      ui.aiSummaryStatus = "confirm";
+      store.emit();
+      return;
+    }
+    if (act === "close-ai-confirm") {
+      ui.aiRequestId = (ui.aiRequestId || 0) + 1;
+      ui.aiConfirmModalOpen = false;
+      ui.aiSummaryStatus = "idle";
+      store.emit();
+      return;
+    }
+    if (act === "confirm-ai-summarize") {
+      const targetId = d.id || ui.activeLinkId;
+      const reqId = (ui.aiRequestId || 0) + 1;
+      ui.aiRequestId = reqId;
+      ui.aiConfirmModalOpen = false;
+      ui.aiSummaryStatus = "loading";
+      store.emit();
+      const res = await apiClient.summarizeLink(targetId, { forceRefresh: Boolean(d.forceRefresh) });
+      if (ui.aiRequestId !== reqId || ui.activeLinkId !== targetId) return;
+      ui.aiSummaryStatus = res.ok ? "success" : "error";
+      store.showToast(res.ok ? "สรุปเนื้อหาด้วย AI สำเร็จ" : `สรุปไม่สำเร็จ: ${res.error || "ลองใหม่"}`);
+      return;
+    }
+    if (act === "toggle-note-edit") {
+      const item = getLinkById(d.id || ui.activeLinkId);
+      ui.noteEditing = !ui.noteEditing;
+      ui.noteDraft = item?.note || "";
+      store.emit();
+      return;
+    }
+    if (act === "save-note-inline") {
+      const targetId = d.id || ui.activeLinkId;
+      const updated = await apiClient.patchLink(targetId, { note: ui.noteDraft ?? "" });
+      if (!updated) {
+        store.showToast("บันทึกโน้ตไม่สำเร็จ กรุณาลองอีกครั้ง");
+        return;
+      }
+      ui.noteEditing = false;
+      store.showToast("บันทึกโน้ตแล้ว");
+      return;
+    }
+    if (act === "cancel-note-edit") {
+      ui.noteEditing = false;
+      store.emit();
+      return;
+    }
+    if (act === "toggle-tag-popover") {
+      ui.tagPopoverOpen = !ui.tagPopoverOpen;
+      ui.tagDraft = "";
+      store.emit();
+      return;
+    }
+    if (act === "add-tag-inline") {
+      const item = getLinkById(d.id || ui.activeLinkId);
+      const raw = (d.tag || ui.tagDraft || "").trim();
+      if (item && raw) {
+        const formatted = raw.startsWith("#") ? raw : `#${raw}`;
+        const nextTags = item.tags.includes(formatted) ? item.tags : [...item.tags, formatted];
+        const updated = await apiClient.patchLink(item.id, { tags: nextTags });
+        if (!updated) {
+          store.showToast("เพิ่มแท็กไม่สำเร็จ กรุณาลองอีกครั้ง");
+          return;
+        }
+        ui.tagDraft = "";
+        ui.tagPopoverOpen = false;
+        store.showToast(`เพิ่มแท็ก ${formatted} แล้ว`);
+      }
+      return;
+    }
+    if (act === "remove-tag-inline") {
+      const item = getLinkById(d.id || ui.activeLinkId);
+      if (item && d.tag) {
+        await apiClient.patchLink(item.id, { tags: item.tags.filter((t) => t !== d.tag) });
+      }
+      return;
+    }
+    if (act === "carousel-prev" || act === "carousel-next" || act === "carousel-dot") {
+      const item = getLinkById(d.id || ui.activeLinkId);
+      const total = item?.media_items?.length || 1;
+      if (act === "carousel-dot") ui.carouselIndex = Number(d.index || 0) % total;
+      else if (act === "carousel-prev") ui.carouselIndex = (ui.carouselIndex - 1 + total) % total;
+      else ui.carouselIndex = (ui.carouselIndex + 1) % total;
+      store.emit();
+      return;
+    }
+    if (act === "play-embed-video") {
+      ui.videoPlaying = true;
+      store.emit();
+      return;
+    }
+    if (act === "stop-embed-video") {
+      ui.videoPlaying = false;
+      store.emit();
+      return;
+    }
+    if (act === "set-reminder-schedule-type" && ui.activeSheet?.type === "reminder") {
+      const nextType = d.scheduleType === "every_n_days" ? "every_n_days" : "once";
+      ui.reminderScheduleType = nextType;
+      ui.activeSheet.scheduleType = nextType;
+      if (nextType === "every_n_days" && !ui.activeSheet.repeatEveryDays) {
+        ui.activeSheet.repeatEveryDays = ui.reminderRepeatDays || 3;
+      }
+      store.emit();
+      return;
+    }
+    if (act === "step-reminder-repeat-days" && ui.activeSheet?.type === "reminder") {
+      const nextDays = Math.max(1, Math.min(365, (Number(ui.activeSheet.repeatEveryDays || 3)) + Number(d.delta || 1)));
+      ui.reminderRepeatDays = nextDays;
+      ui.activeSheet.repeatEveryDays = nextDays;
+      store.emit();
+      return;
+    }
+    if (act === "set-share-permission" && ui.activeSheet?.type === "invite") {
+      ui.sharePermission = d.role === "editor" ? "editor" : "viewer";
+      ui.shareSheetState = "loading";
+      store.emit();
+      const res = await apiClient.createFolderInvite(ui.activeSheet.folderId, ui.sharePermission);
+      ui.shareSheetState = res.ok ? "idle" : "error";
+      store.emit();
+      return;
+    }
+    if (act === "generate-share-link" && ui.activeSheet?.type === "invite") {
+      ui.shareSheetState = "loading";
+      store.emit();
+      const res = await apiClient.createFolderInvite(ui.activeSheet.folderId, ui.sharePermission || "viewer");
+      ui.shareSheetState = res.ok ? "idle" : "error";
+      store.emit();
+      return;
+    }
+  }
 
   // 1. Viewport & Inspector controls
   if (d.viewportSwitch) {
@@ -495,6 +820,7 @@ appEl.addEventListener("click", async (e) => {
     }
     if (d.quickJump === "inviteSheet") {
       if (store.navigate("folderDetail", { viewportMode: "mobile" })) {
+        ui.shareSheetState = "idle";
         store.openSheet({ type: "invite", folderId: ui.activeFolderId });
       }
       return;
@@ -569,7 +895,13 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.submitEmailLogin) {
-    const email = (ui.authEmail || data.user.email || "may@example.com").trim();
+    const email = (ui.authEmail || (api.useDevBypass ? data.user.email || "may@example.com" : "")).trim();
+    if (!email) {
+      ui.authError = "กรุณากรอกอีเมลก่อนดำเนินการต่อ";
+      store.emit();
+      store.showToast(ui.authError);
+      return;
+    }
     ui.authEmail = email;
     const authMode = getAuthMode(store.state);
     if (authMode === "supabase") {
@@ -610,8 +942,14 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.submitPasswordLogin) {
-    const email = (ui.authEmail || data.user.email || "may@example.com").trim();
-    const password = ui.authPassword || "password123";
+    const email = (ui.authEmail || (api.useDevBypass ? data.user.email || "may@example.com" : "")).trim();
+    const password = ui.authPassword || (api.useDevBypass ? "password123" : "");
+    if (!email || !password) {
+      ui.authError = "กรุณากรอกอีเมลและรหัสผ่านก่อนเข้าสู่ระบบ";
+      store.emit();
+      store.showToast(ui.authError);
+      return;
+    }
     const res = await apiClient.signInPassword(email, password);
     if (res.ok && hasValidSession(store.state)) {
       completePostAuthNavigation("home");
@@ -643,8 +981,12 @@ appEl.addEventListener("click", async (e) => {
   }
   if (d.acceptInvite) {
     const joined = await apiClient.acceptInvite(d.acceptInvite);
-    store.navigate("folderDetail", { activeFolderId: joined?.id || d.acceptInvite });
-    store.showToast(`เข้าร่วมโฟลเดอร์ "${joined?.name || ""}" สำเร็จ`);
+    if (!joined) {
+      store.showToast("ไม่สามารถเข้าร่วมโฟลเดอร์ได้ กรุณาตรวจสอบสิทธิ์หรือลองอีกครั้ง");
+      return;
+    }
+    store.navigate("folderDetail", { activeFolderId: joined.id || d.acceptInvite });
+    store.showToast(`เข้าร่วมโฟลเดอร์ "${joined.name || ""}" สำเร็จ`);
     return;
   }
 
@@ -669,7 +1011,11 @@ appEl.addEventListener("click", async (e) => {
   if (d.toggleFav) {
     const item = getLinkById(d.toggleFav);
     if (item) {
-      await apiClient.patchLink(item.id, { favorite: !item.favorite });
+      const updated = await apiClient.patchLink(item.id, { favorite: !item.favorite });
+      if (!updated) {
+        store.showToast("อัปเดตรายการชื่นชอบไม่สำเร็จ");
+        return;
+      }
       store.showToast(item.favorite ? "เพิ่มในรายการชื่นชอบแล้ว" : "นำออกจากรายการชื่นชอบ");
     }
     return;
@@ -710,7 +1056,11 @@ appEl.addEventListener("click", async (e) => {
   if (d.toggleStatusSheet) {
     const item = getLinkById(d.toggleStatusSheet);
     if (item) {
-      await apiClient.patchLink(item.id, { status: item.status === "read" ? "unread" : "read" });
+      const updated = await apiClient.patchLink(item.id, { status: item.status === "read" ? "unread" : "read" });
+      if (!updated) {
+        store.showToast("อัปเดตสถานะไม่สำเร็จ");
+        return;
+      }
       store.closeSheet();
     }
     return;
@@ -757,6 +1107,7 @@ appEl.addEventListener("click", async (e) => {
   }
   if (d.selectSaveFolder && ui.activeSheet?.type === "saveLink") {
     ui.activeSheet.draft.folderId = d.selectSaveFolder;
+    ui.folderPickerSheetOpen = false;
     store.emit();
     return;
   }
@@ -770,18 +1121,20 @@ appEl.addEventListener("click", async (e) => {
   }
   if (d.toggleDraftReminder && ui.activeSheet?.type === "saveLink") {
     ui.activeSheet.draft.reminder = ui.activeSheet.draft.reminder ? "" : "พรุ่งนี้ 18:00";
-    ui.activeSheet.draft.reminderDate = ui.activeSheet.draft.reminder ? "2026-11-12" : null;
+    ui.activeSheet.draft.reminderDate = ui.activeSheet.draft.reminder ? "2026-11-15" : null;
     store.emit();
     return;
   }
   if (d.submitSaveLink && ui.activeSheet?.type === "saveLink") {
     const draft = ui.activeSheet.draft;
     const created = await apiClient.createLink(draft);
+    if (!created) return;
     ui.activeLinkId = created.id;
     window.__lastSharedHighlightId = created.id;
     ui.simulatedSourceApp = null;
+    ui.addLinkExpanded = false;
     store.closeSheet();
-    store.navigate("home");
+    store.navigate("home", { viewportMode: ui.viewportMode === "web" ? "web" : "mobile" });
     store.showToast(`บันทึกลิงก์เข้าคอลเลกชันสำเร็จ! (${created.platform})`);
     return;
   }
@@ -803,28 +1156,6 @@ appEl.addEventListener("click", async (e) => {
     else store.showToast(`AI Error: ${res.error || "ไม่สำเร็จ"}`);
     return;
   }
-  if (d.removeTag) {
-    const item = getLinkById(d.linkId);
-    if (item) {
-      item.tags = item.tags.filter((t) => t !== d.removeTag);
-      store.emit();
-    }
-    return;
-  }
-  if (d.openAddTag) {
-    store.openSheet({ type: "addTag", linkId: d.openAddTag, value: "" });
-    return;
-  }
-  if (d.saveNewTag && ui.activeSheet?.type === "addTag") {
-    const raw = (ui.activeSheet.value || "").trim();
-    const item = getLinkById(d.saveNewTag);
-    if (raw && item) {
-      const formatted = raw.startsWith("#") ? raw : `#${raw}`;
-      if (!item.tags.includes(formatted)) item.tags.push(formatted);
-    }
-    store.closeSheet();
-    return;
-  }
   if (d.openReminder) {
     openReminderSheet(d.openReminder);
     return;
@@ -835,32 +1166,54 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.calMonth && ui.activeSheet?.type === "reminder") {
-    const months = ["ตุลาคม 2569", "พฤศจิกายน 2569", "ธันวาคม 2569"];
-    const cur = Math.max(0, months.indexOf(ui.activeSheet.monthLabel));
+    const months = [
+      { label: "ตุลาคม 2569", ym: "2026-10" },
+      { label: "พฤศจิกายน 2569", ym: "2026-11" },
+      { label: "ธันวาคม 2569", ym: "2026-12" },
+    ];
+    const cur = Math.max(0, months.findIndex((m) => m.label === ui.activeSheet.monthLabel));
     const next = Math.max(0, Math.min(months.length - 1, cur + Number(d.calMonth)));
-    ui.activeSheet.monthLabel = months[next];
+    ui.activeSheet.monthLabel = months[next].label;
+    ui.activeSheet.yearMonth = months[next].ym;
     store.emit();
     return;
   }
   if (d.clearReminder) {
-    await apiClient.patchLink(d.clearReminder, { reminder: null, reminderDate: null });
+    const res = await apiClient.deleteReminder(d.clearReminder);
+    if (res && !res.ok && store.state.api.mode === "live") {
+      store.showToast(res.error || "ลบการตั้งเตือนไม่สำเร็จ กรุณาลองอีกครั้ง");
+      return;
+    }
     store.closeSheet();
     store.showToast("ลบการตั้งเตือนแล้ว");
     return;
   }
   if (d.saveReminder && ui.activeSheet?.type === "reminder") {
-    const label = `${ui.activeSheet.day === 12 ? "พรุ่งนี้" : `วันที่ ${ui.activeSheet.day}`} ${ui.activeSheet.time}`;
-    await apiClient.patchLink(d.saveReminder, {
-      reminder: label,
-      reminderDate: `2026-11-${String(ui.activeSheet.day).padStart(2, "0")}`,
-      reminderTime: ui.activeSheet.time,
+    const scheduleType = ui.activeSheet.scheduleType || ui.reminderScheduleType || "once";
+    const repeatEveryDays = scheduleType === "every_n_days" ? Number(ui.activeSheet.repeatEveryDays || ui.reminderRepeatDays || 3) : null;
+    const ym = ui.activeSheet.yearMonth || "2026-11";
+    const dateStr = `${ym}-${String(ui.activeSheet.day || 15).padStart(2, "0")}`;
+    const res = await apiClient.saveReminder(d.saveReminder, {
+      scheduleType,
+      reminderDate: dateStr,
+      reminderTime: ui.activeSheet.time || "18:00",
+      repeatEveryDays,
     });
+    if (res && !res.ok && store.state.api.mode === "live") {
+      store.showToast(res.error || "ตั้งเตือนไม่สำเร็จ กรุณาลองอีกครั้ง");
+      return;
+    }
+    const label = scheduleType === "every_n_days" ? `ทุก ${repeatEveryDays} วัน ${ui.activeSheet.time}` : `วันที่ ${ui.activeSheet.day} · ${ui.activeSheet.time}`;
     store.closeSheet();
     store.showToast(`ตั้งเตือน ${label} เรียบร้อย`);
     return;
   }
   if (d.previewMarkRead) {
-    await apiClient.patchLink(d.previewMarkRead, { status: "read" });
+    const updated = await apiClient.patchLink(d.previewMarkRead, { status: "read" });
+    if (!updated) {
+      store.showToast("อัปเดตสถานะไม่สำเร็จ");
+      return;
+    }
     store.showToast("ทำเครื่องหมายว่าดูแล้ว");
     return;
   }
@@ -915,7 +1268,14 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.openInviteSheet) {
-    store.openSheet({ type: "invite", folderId: d.openInviteSheet });
+    const folderId = d.openInviteSheet;
+    ui.shareSheetState = "loading";
+    store.openSheet({ type: "invite", folderId });
+    const res = await apiClient.createFolderInvite(folderId, ui.sharePermission || "viewer").catch(() => ({ ok: false }));
+    if (ui.activeSheet?.type === "invite" && ui.activeSheet?.folderId === folderId) {
+      ui.shareSheetState = res.ok ? "idle" : "error";
+      store.emit();
+    }
     return;
   }
   if (d.copyInvite) {
@@ -1063,24 +1423,31 @@ appEl.addEventListener("click", async (e) => {
   }
   if (d.confirmLogout) {
     await apiClient.signOut();
-    store.navigate("login");
     return;
   }
 
   // 11. W1 Web & E1 Extension
   if (d.webScope) {
     ui.webScope = d.webScope;
+    ui.notificationScreenOpen = false;
+    ui.showNotifications = false;
     store.emit();
     return;
   }
   if (d.webFolder) {
     ui.webScope = "folder";
     ui.activeFolderId = d.webFolder;
+    ui.notificationScreenOpen = false;
+    ui.showNotifications = false;
     store.emit();
     return;
   }
   if (d.selectWebLink) {
     ui.activeLinkId = d.selectWebLink;
+    ui.carouselIndex = 0;
+    ui.videoPlaying = false;
+    ui.noteEditing = false;
+    ui.tagPopoverOpen = false;
     store.emit();
     return;
   }
@@ -1111,7 +1478,10 @@ appEl.addEventListener("click", async (e) => {
   }
   if (d.extToggleReminder) {
     ui.extensionDraft = ui.extensionDraft || { tags: ["#คาเฟ่"], note: "", folderId: data.folders[0]?.id, url: "https://www.tiktok.com/@minimal.ari/video/74009911", title: "คาเฟ่สายมินิมอลอารีย์", domain: "tiktok.com" };
-    ui.extensionDraft.reminder = ui.extensionDraft.reminder ? "" : "พรุ่งนี้ 18:00";
+    const enabled = !ui.extensionDraft.reminder;
+    ui.extensionDraft.reminder = enabled ? "พรุ่งนี้ 18:00" : "";
+    ui.extensionDraft.reminderDate = enabled ? "2026-11-15" : null;
+    ui.extensionDraft.reminderTime = enabled ? "18:00" : null;
     store.emit();
     return;
   }
@@ -1124,6 +1494,7 @@ appEl.addEventListener("click", async (e) => {
       note: "",
     };
     const created = await apiClient.createLink(ext);
+    if (!created) return;
     ui.activeLinkId = created.id;
     ui.viewportMode = "mobile";
     store.navigate("home");
@@ -1175,15 +1546,23 @@ appEl.addEventListener("click", async (e) => {
   if (d.tbTestAuth) {
     const act = d.tbTestAuth;
     if (act === "loginPassword") {
-      const email = ui.authEmail || data.user.email || "may@example.com";
-      const password = ui.authPassword || "password123";
+      const email = ui.authEmail || (api.useDevBypass ? data.user.email || "may@example.com" : "");
+      const password = ui.authPassword || (api.useDevBypass ? "password123" : "");
+      if (!email || !password) {
+        store.showToast("❌ กรุณากรอกอีเมลและรหัสผ่านจริงในหน้า Cloud");
+        return;
+      }
       const res = await apiClient.signInPassword(email, password);
       if (res.ok && hasValidSession(store.state)) {
         completePostAuthNavigation("home");
       }
       store.showToast(res.ok ? "🔑 Login รหัสผ่านสำเร็จ" : `❌ ${res.error}`);
     } else if (act === "magicLink") {
-      const email = ui.authEmail || data.user.email || "may@example.com";
+      const email = ui.authEmail || (api.useDevBypass ? data.user.email || "may@example.com" : "");
+      if (!email) {
+        store.showToast("❌ กรุณากรอกอีเมลจริงในหน้า Cloud");
+        return;
+      }
       const res = await apiClient.signInEmail(email);
       if (res.ok && hasValidSession(store.state)) {
         completePostAuthNavigation("home");
@@ -1342,6 +1721,17 @@ if (
 }
 store.subscribe(renderApp);
 renderApp();
+
+// Hydrate health and live backend workspace cleanly in background
+apiClient
+  .checkHealth()
+  .then((res) => {
+    if (res?.ok && store.state.data.user?.isAuthenticated) {
+      return apiClient.hydrateWorkspace();
+    }
+    return null;
+  })
+  .catch(() => {});
 
 // Hydrate & listen for live Supabase Auth session / OAuth / Magic-Link callbacks
 supabaseAuth

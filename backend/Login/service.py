@@ -18,6 +18,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import jwt
 from fastapi import HTTPException, status
@@ -133,6 +134,33 @@ class AuthService:
     def _generate_refresh_token(self) -> str:
         return "jsi_ref_" + secrets.token_urlsafe(32)
 
+    def _validate_redirect_url(self, redirect_to: str) -> str:
+        """Ensure OAuth redirect_to is http(s) without userinfo and points to an allowed host."""
+        cleaned = (redirect_to or "").strip()
+        try:
+            parsed = urlparse(cleaned)
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid redirect_to URL.") from e
+
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsafe redirect_to URL scheme or format.")
+
+        allowed_hosts = {"localhost", "127.0.0.1"}
+        app_url_host = urlparse(os.getenv("APP_URL", "").strip()).hostname
+        if app_url_host:
+            allowed_hosts.add(app_url_host.lower())
+        raw_cors = os.getenv("CORS_ALLOW_ORIGINS", "").strip()
+        if raw_cors and raw_cors != "*":
+            for origin in raw_cors.split(","):
+                cors_host = urlparse(origin.strip()).hostname
+                if cors_host:
+                    allowed_hosts.add(cors_host.lower())
+
+        if parsed.hostname.lower() not in allowed_hosts:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Disallowed redirect_to host.")
+
+        return cleaned
+
     async def register_user(self, req: RegisterRequest) -> AuthTokenResponse:
         """Register a new user with email and password."""
         email_clean = req.email.lower().strip()
@@ -152,10 +180,7 @@ class AuthService:
                         }
                     },
                 })
-                if resp.user:
-                    session = resp.session
-                    access_token = session.access_token if session else self._generate_jwt_token(resp.user.id, email_clean, display_name)
-                    refresh_token = session.refresh_token if session else self._generate_refresh_token()
+                if resp.user and resp.session:
                     user_profile = UserProfileResponse(
                         id=str(resp.user.id),
                         email=email_clean,
@@ -165,10 +190,21 @@ class AuthService:
                         timezone="Asia/Bangkok",
                     )
                     return AuthTokenResponse(
-                        access_token=access_token,
-                        refresh_token=refresh_token,
+                        access_token=resp.session.access_token,
+                        refresh_token=resp.session.refresh_token,
                         user=user_profile,
                     )
+                if resp.user:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Registration created. Please confirm your email before signing in.",
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Unable to complete registration.",
+                )
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error("Supabase sign_up error: %s", e)
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -230,6 +266,9 @@ class AuthService:
                         refresh_token=resp.session.refresh_token,
                         user=profile,
                     )
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.warning("Supabase password login failed: %s", e)
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
@@ -272,6 +311,8 @@ class AuthService:
                 )
             except Exception as e:
                 logger.warning("Supabase sign_in_with_otp warning: %s", e)
+                err_code = status.HTTP_429_TOO_MANY_REQUESTS if "rate" in str(e).lower() else status.HTTP_400_BAD_REQUEST
+                raise HTTPException(status_code=err_code, detail="Unable to send magic link right now.")
 
         # For dev/test mode & simulated app:
         # Create or find existing user record and issue token directly for instant testing
@@ -337,6 +378,9 @@ class AuthService:
                         refresh_token=resp.session.refresh_token,
                         user=profile,
                     )
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid native ID token.")
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error("Supabase native id_token auth failed: %s", e)
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
@@ -378,20 +422,33 @@ class AuthService:
                 detail=f"Unsupported OAuth provider: {provider}",
             )
 
+        safe_redirect = self._validate_redirect_url(redirect_to)
+
         if is_supabase_configured():
             try:
                 client = get_supabase_anon_client()
-                resp = client.auth.get_oauth_sign_in_url({
+                resp = client.auth.sign_in_with_oauth({
                     "provider": provider_clean,
-                    "options": {"redirect_to": redirect_to},
+                    "options": {"redirect_to": safe_redirect},
                 })
-                if resp and hasattr(resp, "url"):
+                if resp and hasattr(resp, "url") and resp.url:
                     return {"url": resp.url, "provider": provider_clean}
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Unable to generate OAuth sign-in URL.",
+                )
+            except HTTPException:
+                raise
             except Exception as e:
-                logger.warning("Supabase get_oauth_sign_in_url error: %s", e)
+                logger.warning("Supabase sign_in_with_oauth error: %s", e)
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Unable to generate OAuth sign-in URL.",
+                )
 
         # Local / dev fallback URL
-        dummy_url = f"{redirect_to}?code=jsi_oauth_dev_code_{provider_clean}"
+        sep = "&" if "?" in safe_redirect else "?"
+        dummy_url = f"{safe_redirect}{sep}code=jsi_oauth_dev_code_{provider_clean}"
         return {"url": dummy_url, "provider": provider_clean}
 
     async def exchange_oauth_code(self, code: str) -> AuthTokenResponse:
@@ -413,6 +470,9 @@ class AuthService:
                         refresh_token=resp.session.refresh_token,
                         user=profile,
                     )
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth authorization code.")
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error("Supabase exchange_code_for_session error: %s", e)
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -452,6 +512,9 @@ class AuthService:
                         refresh_token=resp.session.refresh_token,
                         user=profile,
                     )
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token.")
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.warning("Supabase refresh_session failed: %s", e)
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token.")

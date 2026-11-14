@@ -1,0 +1,63 @@
+services:
+  - type: web
+    name: just-save-it-api
+    runtime: python
+    plan: free
+    region: singapore
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: ENV
+        value: production
+      - key: ALLOW_DEV_AUTH_BYPASS
+        value: "false"
+      - key: ALLOW_DEV_WEBHOOK_BYPASS
+        value: "false"
+      - key: FREE_TIER_MONTHLY_AI_LIMIT
+        value: "50"
+      - key: GEMINI_MODEL
+        value: gemini-3.1-flash-lite
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-20b
+      - key: SUPABASE_STORAGE_BUCKET
+        value: thumbnails
+      - key: CORS_ALLOW_ORIGINS
+        value: "*"
+      - key: APP_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: INTERNAL_WEBHOOK_SECRET
+        sync: false
+
+  - type: web
+    name: just-save-it-web
+    runtime: static
+    rootDir: frontend
+    staticPublishPath: .
+    buildCommand: |
+      printf 'window.SHARELY_CONFIG = { apiBaseUrl: "https://%s" };\n' "$BACKEND_HOST" > config.js
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: BACKEND_HOST
+        fromService:
+          type: web
+          name: just-save-it-api
+          property: host

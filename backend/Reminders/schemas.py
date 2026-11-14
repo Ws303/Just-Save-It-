@@ -5,16 +5,44 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from Database.schemas import ReminderConfig
+from Database.schemas import ReminderConfig, parse_remind_time, validate_iana_timezone
 
 DEFAULT_SNOOZE_MINUTES = 60
 MAX_IOS_LOCAL_SLOTS = 64
 
 
 class ReminderUpsertRequest(ReminderConfig):
-    """PUT /api/reminders/{item_id} payload reusing Database.schemas.ReminderConfig."""
+    """PUT /api/reminders/{item_id} & POST /api/reminders payload reusing ReminderConfig."""
+
+    item_id: Optional[str] = None
+
+
+class ReminderPatchRequest(BaseModel):
+    """Partial PATCH /api/reminders/{item_id} payload allowing field-level updates."""
+
+    schedule_type: Optional[Literal["once", "every_n_days"]] = None
+    remind_at: Optional[datetime] = None
+    next_remind_at: Optional[datetime] = None
+    repeat_every_days: Optional[int] = Field(default=None, ge=1, le=365)
+    repeat_interval_days: Optional[int] = Field(default=None, ge=1, le=365)
+    remind_time: Optional[str] = None
+    timezone: Optional[str] = None
+    title_snapshot: Optional[str] = None
+    is_enabled: Optional[bool] = None
+
+    @field_validator("timezone")
+    @classmethod
+    def check_timezone(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return validate_iana_timezone(value)
+
+    @field_validator("remind_time")
+    @classmethod
+    def check_remind_time(cls, value: Optional[str]) -> Optional[str]:
+        return parse_remind_time(value)
 
 
 class SnoozeReminderRequest(BaseModel):
@@ -46,6 +74,7 @@ class ReminderRecordResponse(BaseModel):
     remind_time: Optional[str] = None
     timezone: str = "Asia/Bangkok"
     status: Literal["pending", "sent", "cancelled"] = "pending"
+    is_enabled: bool = True
     title_snapshot: Optional[str] = None
     last_triggered_at: Optional[datetime] = None
     sent_at: Optional[datetime] = None

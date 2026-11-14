@@ -25,12 +25,12 @@ SYSTEM_PROMPT = """คุณคือผู้ช่วยสรุปเนื�
 เป้าหมายของคุณคือสรุปเนื้อหาที่ได้รับให้เข้าใจง่ายและรวดเร็วที่สุดสำหรับผู้ใช้
 
 กฎเหล็ก:
-1. สรุปเป็นภาษาไทย 3 ข้อสั้นๆ (ขึ้นต้นด้วย '• ') อ่านจบได้ภายใน 5 วินาที กระชับ ตรงประเด็น
-2. แนะนำแท็กที่เกี่ยวข้อง 3-5 แท็ก (suggested_tags):
+1. สรุปเป็นภาษาไทย 3 ข้อสั้นๆ ในฟิลด์ `summary_th` (ขึ้นต้นด้วย '• ') อ่านจบได้ภายใน 5 วินาที กระชับ ตรงประเด็น
+2. แนะนำแท็กที่เกี่ยวข้อง 3-5 แท็ก (`suggested_tags`):
    - ต้องตรวจสอบ 'แท็กเดิมของผู้ใช้' (Existing Tags) ก่อนเสมอ หากมีความหมายใกล้เคียงให้เลือกใช้แท็กเดิมเพื่อไม่ให้แท็กซ้ำซ้อน
    - หากไม่มีแท็กเดิมที่ตรง ค่อยสร้างแท็กใหม่ที่สั้นกระชับ
-3. ระบุประเภทเนื้อหา (content_type): 'article' | 'video' | 'post' | 'product' | 'other'
-4. ตอบกลับเป็นรูปแบบ JSON ตาม Schema ที่กำหนดเท่านั้น ห้ามมีคำเกริ่นหรือคำลงท้ายเด็ดขาด
+3. ระบุประเภทเนื้อหา (`content_type`): 'article' | 'video' | 'post' | 'product' | 'other'
+4. ตอบกลับเป็น JSON ที่มีคีย์ `summary_th`, `suggested_tags`, `content_type` เท่านั้น ห้ามมีคำเกริ่นหรือคำลงท้ายเด็ดขาด
 """
 
 
@@ -112,9 +112,10 @@ def _parse_and_validate_json(raw_text: str) -> AISummaryOutput:
         raise ValueError(f"Failed to parse LLM JSON output: {raw_text[:200]}")
 
 
-async def _call_gemini_raw(prompt: str, api_key: str, model_name: str = "gemini-2.5-flash") -> AISummaryOutput:
+async def _call_gemini_raw(prompt: str, api_key: str, model_name: str = "gemini-3.1-flash-lite") -> AISummaryOutput:
     """Call Google Gemini generateContent API."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+    headers = {"x-goog-api-key": api_key}
     payload: Dict[str, Any] = {
         "system_instruction": {"parts": [{"text": _current_system_prompt()}]},
         "contents": [{"parts": [{"text": prompt}]}],
@@ -125,7 +126,7 @@ async def _call_gemini_raw(prompt: str, api_key: str, model_name: str = "gemini-
     }
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(url, json=payload)
+        resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
         candidates = data.get("candidates", [])
@@ -203,9 +204,9 @@ async def call_builtin_llm(prompt: str) -> Tuple[AISummaryOutput, str]:
         tuple[AISummaryOutput, str]: (output, "built-in:gemini-flash" or "built-in:groq-llama3")
     """
     gemini_key = os.getenv("GEMINI_API_KEY", "")
-    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
     groq_key = os.getenv("GROQ_API_KEY", "")
-    groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    groq_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
     # 1. Try Gemini Flash
     if gemini_key:
@@ -213,7 +214,7 @@ async def call_builtin_llm(prompt: str) -> Tuple[AISummaryOutput, str]:
             output = await _call_gemini_raw(prompt=prompt, api_key=gemini_key, model_name=gemini_model)
             return output, "built-in:gemini-flash"
         except Exception as e:
-            logger.warning("Gemini API call failed (%s); triggering automatic failover to Groq...", e)
+            logger.warning("Gemini API call failed (%s); triggering automatic failover to Groq...", type(e).__name__)
 
     # 2. Automatic Failover to Groq
     if groq_key:
@@ -226,7 +227,7 @@ async def call_builtin_llm(prompt: str) -> Tuple[AISummaryOutput, str]:
             )
             return output, "built-in:groq-llama3"
         except Exception as e:
-            logger.error("Groq failover call also failed: %s", e)
+            logger.error("Groq failover call also failed (%s).", type(e).__name__)
             raise e
 
     raise RuntimeError("No AI credentials available: GEMINI_API_KEY and GROQ_API_KEY are not configured on server.")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Literal, Optional
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 from Database.client import get_db
 from Login.auth_dep import get_current_user_id
@@ -13,6 +13,7 @@ from Reminders.schemas import (
     CronRemindersResponse,
     LocalSyncResponse,
     ReminderListResponse,
+    ReminderPatchRequest,
     ReminderRecordResponse,
     ReminderUpsertRequest,
     SnoozeReminderRequest,
@@ -21,6 +22,7 @@ from Reminders.service import (
     delete_reminder_for_user,
     get_ios_local_sync_payload,
     list_reminders_for_user,
+    patch_reminder_for_user,
     process_due_reminders_cron,
     snooze_reminder_for_user,
     upsert_reminder_for_user,
@@ -63,6 +65,30 @@ def ios_local_sync_endpoint(
     )
 
 
+@router.post("/api/reminders", response_model=ReminderRecordResponse, status_code=status.HTTP_201_CREATED)
+def create_reminder_endpoint(
+    req: ReminderUpsertRequest,
+    item_id: Optional[str] = Query(default=None),
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> ReminderRecordResponse:
+    """Create or upsert the authenticated user's reminder rule via POST /api/reminders."""
+    body_item_id = (req.item_id or "").strip()
+    query_item_id = (item_id or "").strip()
+    if body_item_id and query_item_id and body_item_id != query_item_id:
+        raise HTTPException(
+            status_code=getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422),
+            detail="Query item_id and body item_id must match when both are provided.",
+        )
+    target_item_id = body_item_id or query_item_id
+    if not target_item_id:
+        raise HTTPException(
+            status_code=getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422),
+            detail="item_id is required when creating a reminder via POST /api/reminders.",
+        )
+    return upsert_reminder_for_user(db, user_id, target_item_id, req)
+
+
 @router.put("/api/reminders/{item_id}", response_model=ReminderRecordResponse)
 def upsert_reminder_endpoint(
     item_id: str,
@@ -72,6 +98,17 @@ def upsert_reminder_endpoint(
 ) -> ReminderRecordResponse:
     """Create or update the authenticated user's reminder rule on an accessible item."""
     return upsert_reminder_for_user(db, user_id, item_id, req)
+
+
+@router.patch("/api/reminders/{item_id}", response_model=ReminderRecordResponse)
+def patch_reminder_endpoint(
+    item_id: str,
+    req: ReminderPatchRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> ReminderRecordResponse:
+    """Partial/compat update for the authenticated user's reminder rule on an accessible item."""
+    return patch_reminder_for_user(db, user_id, item_id, req)
 
 
 @router.post("/api/reminders/{item_id}/snooze", response_model=ReminderRecordResponse)

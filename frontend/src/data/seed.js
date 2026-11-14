@@ -54,7 +54,7 @@ export const AI_PROVIDER_PRESETS = [
     id: "Built-in Free (Server)",
     backendProvider: "built-in",
     baseUrl: "",
-    models: ["gemini-2.5-flash"],
+    models: ["gemini-3.1-flash-lite"],
     description: "Tier 1 · Built-in Free Key จากเซิร์ฟเวอร์ (backend/Ai)",
   },
 ];

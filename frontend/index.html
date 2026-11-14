@@ -1,8 +1,10 @@
+<!-- NOUS-SPEC: C1, C2, C3, C4, C5, C6, C7 | domain=ui | Figma 319:472 & 383:9129 | RichPreview 1A (358x186) | RecurringReminder 2B -->
 <!DOCTYPE html>
 <html lang="th">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <base href="/" />
   <title>Sharely — Interactive UI & Backend Testbed</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -10,11 +12,12 @@
     href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+Thai:wght@400;600;700&family=Nunito:wght@700;900&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="./styles/tokens.css" />
-  <link rel="stylesheet" href="./styles/app.css" />
+  <link rel="stylesheet" href="/styles/tokens.css" />
+  <link rel="stylesheet" href="/styles/app.css" />
 </head>
 <body>
   <div id="app"></div>
-  <script type="module" src="./src/main.js"></script>
+  <script src="/config.js"></script>
+  <script type="module" src="/src/main.js"></script>
 </body>
 </html>

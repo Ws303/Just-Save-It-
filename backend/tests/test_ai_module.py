@@ -227,6 +227,32 @@ def test_a1_schemas_validation():
     assert resp.engine_used == "cache"
 
 
+def test_a1b_ai_summary_output_normalizes_aliases_but_stays_strict():
+    """Verify LLM alias/list summary normalization without masking invalid schemas."""
+    parsed = AISummaryOutput.model_validate({
+        "summary": ["• ข้อ 1", "• ข้อ 2", "• ข้อ 3"],
+        "suggested_tags": ["AI", " ", "Tech"],
+        "content_type": "Article",
+    })
+    assert parsed.summary_th == "• ข้อ 1\n• ข้อ 2\n• ข้อ 3"
+    assert parsed.suggested_tags == ["AI", "Tech"]
+    assert parsed.content_type == "article"
+
+    with pytest.raises(Exception):
+        AISummaryOutput.model_validate({
+            "summary_th": "Valid summary",
+            "suggested_tags": ["a", "b"],
+            "content_type": "bogus_type",
+        })
+
+    for empty_payload in (
+        {"summary": ["  ", ""], "suggested_tags": ["a"], "content_type": "article"},
+        {"summary_th": "   ", "suggested_tags": ["a"], "content_type": "article"},
+    ):
+        with pytest.raises(Exception):
+            AISummaryOutput.model_validate(empty_payload)
+
+
 def test_a2_validate_safe_url_ssrf_guard():
     """A2: SSRF Guard blocks localhost, loopback, private IPs, and non-http(s)."""
     with pytest.raises(ValueError, match="SSRF Alert"):

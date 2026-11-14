@@ -2012,3 +2012,122 @@ async def test_c4_web_push_4kb_payload_cap_and_vapid_newline_normalization(herme
     )
     assert res.delivered is True
     assert 0 < captured_len < 4079
+
+
+def test_remediation_post_and_patch_reminders_contract(mock_db, test_client):
+    """Remediation: POST /api/reminders validates item_id mismatch (422), PATCH supports partial updates & is_enabled=False."""
+    owner_headers = make_auth_headers("usr-rem-patch")
+    item = _seed_item(mock_db, item_id="item-rem-patch", owner_id="usr-rem-patch", title="Check PATCH")
+
+    res_mismatch = test_client.post(
+        "/api/reminders?item_id=other-item-id",
+        json={
+            "item_id": item["id"],
+            "schedule_type": "once",
+            "remind_at": "2030-07-01T10:00:00Z",
+            "timezone": "Asia/Bangkok",
+        },
+        headers=owner_headers,
+    )
+    assert res_mismatch.status_code == 422
+
+    res_post = test_client.post(
+        "/api/reminders",
+        json={
+            "item_id": item["id"],
+            "schedule_type": "once",
+            "remind_at": "2030-07-01T10:00:00Z",
+            "remind_time": "17:00:00",
+            "timezone": "Asia/Bangkok",
+        },
+        headers=owner_headers,
+    )
+    assert res_post.status_code == 201
+    post_body = res_post.json()
+    assert post_body["is_enabled"] is True
+    assert post_body["status"] == "pending"
+
+    res_patch_time = test_client.patch(
+        f"/api/reminders/{item['id']}",
+        json={"remind_time": "19:30:00"},
+        headers=owner_headers,
+    )
+    assert res_patch_time.status_code == 200
+    assert res_patch_time.json()["remind_time"] == "19:30:00"
+    assert res_patch_time.json()["is_enabled"] is True
+    assert datetime.fromisoformat(res_patch_time.json()["remind_at"]) == datetime(2030, 7, 1, 12, 30, tzinfo=timezone.utc)
+
+    res_disable = test_client.patch(
+        f"/api/reminders/{item['id']}",
+        json={"is_enabled": False},
+        headers=owner_headers,
+    )
+    assert res_disable.status_code == 200
+    disable_body = res_disable.json()
+    assert disable_body["is_enabled"] is False
+    assert disable_body["status"] == "cancelled"
+
+
+def test_remediation_item_schemas_reject_unsafe_urls():
+    """Remediation: ItemCreateRequest & ItemUpdateRequest reject javascript:/data: URLs on media/thumbnail/embed fields."""
+    from pydantic import ValidationError
+    from Database.schemas import ItemCreateRequest, ItemUpdateRequest
+
+    with pytest.raises(ValidationError):
+        ItemCreateRequest(url="https://example.com/ok", thumbnail_url="javascript:alert(1)")
+    with pytest.raises(ValidationError):
+        ItemCreateRequest(url="https://example.com/ok", embed_url="data:text/html,<script>alert(1)</script>")
+    with pytest.raises(ValidationError):
+        ItemCreateRequest(url="https://example.com/ok", media_items=[{"media_url": "javascript:alert(2)"}])
+    with pytest.raises(ValidationError):
+        ItemUpdateRequest(thumbnail_url="vbscript:msgbox(1)")
+    with pytest.raises(ValidationError):
+        ItemUpdateRequest(embed_url="javascript:void(0)")
+
+
+def test_remediation_favorite_done_at_and_dedupe_reopen(mock_db):
+    """Remediation: is_favorite persists across list/update, done_at resets on reopen, and dedupe re-opens done items with reminder."""
+    from fastapi import HTTPException
+    from Database.repository import create_or_bump_item, list_and_search_items, update_item_for_user
+    from Database.schemas import ItemCreateRequest, ItemUpdateRequest, ReminderConfig
+
+    created = create_or_bump_item(
+        mock_db,
+        "usr-fav-1",
+        ItemCreateRequest(url="https://example.com/fav-cafe", title="Fav Cafe", is_favorite=True),
+    )
+    assert created["is_favorite"] is True
+
+    listed = list_and_search_items(mock_db, "usr-fav-1")
+    assert len(listed) == 1
+    assert listed[0]["is_favorite"] is True
+
+    done_row = update_item_for_user(mock_db, "usr-fav-1", created["id"], ItemUpdateRequest(status="done"))
+    assert done_row["status"] == "done"
+    assert done_row["done_at"] is not None
+
+    reopened = update_item_for_user(mock_db, "usr-fav-1", created["id"], ItemUpdateRequest(status="inbox"))
+    assert reopened["status"] == "inbox"
+    assert reopened["done_at"] is None
+
+    update_item_for_user(mock_db, "usr-fav-1", created["id"], ItemUpdateRequest(status="done"))
+
+    rem_cfg = ReminderConfig(schedule_type="once", remind_at=datetime(2030, 8, 1, 11, 0, tzinfo=timezone.utc))
+    with pytest.raises(HTTPException) as exc_409:
+        create_or_bump_item(
+            mock_db,
+            "usr-fav-1",
+            ItemCreateRequest(url="https://example.com/fav-cafe", status="done", reminder=rem_cfg),
+        )
+    assert exc_409.value.status_code == 409
+
+    bumped = create_or_bump_item(
+        mock_db,
+        "usr-fav-1",
+        ItemCreateRequest(url="https://example.com/fav-cafe", reminder=rem_cfg),
+    )
+    assert bumped["deduplicated"] is True
+    assert bumped["status"] == "inbox"
+    assert bumped["done_at"] is None
+    assert bumped["reminder"]["status"] == "pending"
+

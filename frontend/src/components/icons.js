@@ -12,6 +12,33 @@ export function escHtml(str) {
     .replaceAll("'", "&#39;");
 }
 
+export function safeHrefUrl(raw) {
+  if (!raw || typeof raw !== "string") return "#";
+  const trimmed = raw.trim();
+  if (!trimmed) return "#";
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {}
+  return "#";
+}
+
+export function safeImgUrl(raw) {
+  if (!raw || typeof raw !== "string") return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("./assets/") || trimmed.startsWith("/assets/")) return trimmed;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {}
+  return "";
+}
+
 export const icons = {
   cherry: (size = 18) => `
     <svg width="${size}" height="${size}" viewBox="0 0 15 19" fill="none" aria-hidden="true">

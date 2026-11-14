@@ -1,7 +1,7 @@
 /**
  * Shared UI primitives: Bottom Nav · Rounded, Filter Chips, Link Card, and Post Action Dialogs.
  */
-import { icons, escHtml } from "../components/icons.js";
+import { icons, escHtml, safeImgUrl } from "../components/icons.js";
 import { getFolderById } from "../state/store.js";
 
 export function renderBottomNav(activeTab) {
@@ -60,26 +60,109 @@ export function renderFilterChips(activeFilter, styleVariant = "home") {
   `;
 }
 
-export function renderLinkCard(item, { folderContextId = null, selected = false } = {}) {
+export function resolveItemThumbnail(item) {
+  return safeImgUrl(
+    item?.coverUrl ||
+      item?.imageUrl ||
+      (Array.isArray(item?.media_items) ? item.media_items[0] : "")
+  );
+}
+
+function renderCardActions({
+  safeId,
+  favorite,
+  actionsClass,
+  favClass,
+  kebabClass,
+  kebabStyle = "",
+  kebabSize = 16,
+  menuFolderAttr = "",
+  kebabTitle = "ตัวเลือกเพิ่มเติม",
+}) {
+  return `
+    <div class="${actionsClass}">
+      <button type="button" class="${favClass} ${favorite ? "active" : ""}" data-toggle-fav="${safeId}" title="ชื่นชอบ">
+        ${icons.cherry(18)}
+      </button>
+      <button type="button" class="${kebabClass}"${kebabStyle ? ` style="${kebabStyle}"` : ""} data-open-post-menu="${safeId}"${menuFolderAttr} title="${kebabTitle}">
+        ${icons.kebab(kebabSize)}
+      </button>
+    </div>`;
+}
+
+export function renderLinkCard(item, { folderContextId = null, selected = false, variant = "folder" } = {}) {
   const folder = getFolderById(item.folderId);
-  const statusLabel = item.status === "read" ? "ดูแล้ว" : "ยังไม่ได้ดู";
+  const isRead = item.status === "read";
+  const statusLabel = isRead ? "ดูแล้ว" : "ยังไม่ได้ดู";
+  const safeId = escHtml(item.id);
+  const thumbImg = resolveItemThumbnail(item);
+
+  if (variant === "figma-home") {
+    return `
+      <div class="figma-link-card" data-link-card="${safeId}">
+        <div class="figma-link-thumb" data-open-link="${safeId}">
+          ${thumbImg ? `<img src="${escHtml(thumbImg)}" alt="" />` : ""}
+        </div>
+        <div class="figma-link-main" data-open-link="${safeId}">
+          <div class="figma-link-platform">${escHtml(item.platform || "Web")}</div>
+          <div class="figma-link-title">${escHtml(item.title)}</div>
+          <div class="figma-link-meta">${escHtml(folder?.name || "ร้านกาแฟ")} · ${statusLabel}</div>
+        </div>
+        ${renderCardActions({
+          safeId,
+          favorite: item.favorite,
+          actionsClass: "figma-link-actions",
+          favClass: "cherry-btn",
+          kebabClass: "icon-btn",
+          kebabStyle: "width:30px;height:30px;color:#5c6269;",
+          kebabSize: 16,
+        })}
+      </div>
+    `;
+  }
+
+  if (variant === "pc-row") {
+    const code = (item?.platform || "WEB").slice(0, 3).toUpperCase();
+    return `
+      <div
+        class="pc-link-row ${isRead ? "is-read" : ""} ${selected ? "selected" : ""}"
+        data-select-web-link="${safeId}"
+      >
+        <div class="pc-link-thumb">${thumbImg ? `<img src="${escHtml(thumbImg)}" alt="" />` : `<span>${escHtml(code)}</span>`}</div>
+        <div class="pc-link-info">
+          <span class="pc-link-platform">${escHtml(item.platform || "Web")}</span>
+          <strong class="pc-link-title">${escHtml(item.title)}</strong>
+          <span class="pc-link-meta">${escHtml(folder?.name || "ทั่วไป")} · ${statusLabel}</span>
+        </div>
+        ${renderCardActions({
+          safeId,
+          favorite: item.favorite,
+          actionsClass: "pc-link-row-actions",
+          favClass: "figma-fav-icon",
+          kebabClass: "link-more-btn",
+          kebabSize: 17,
+        })}
+      </div>`;
+  }
+
   const folderLabel = folder ? folder.name : "ทั่วไป";
-  const isRecentlyShared = window.__lastSharedHighlightId === item.id || item.savedAgo === "เมื่อสักครู่";
+  const isRecentlyShared =
+    (typeof window !== "undefined" && window.__lastSharedHighlightId === item.id) || item.savedAgo === "เมื่อสักครู่";
   const isPinned = Boolean(item.pinned);
 
   return `
-    <div class="link-card ${selected ? "selected" : ""} ${isRecentlyShared ? "recently-shared" : ""}" data-link-card="${item.id}">
-      <div class="link-thumb" data-open-link="${item.id}">
+    <div class="link-card ${selected ? "selected" : ""} ${isRecentlyShared ? "recently-shared" : ""}" data-link-card="${safeId}">
+      <div class="link-thumb" data-open-link="${safeId}">
         ${
           folder?.cover
-            ? `<img src="${escHtml(folder.cover)}" alt="" style="opacity:0.38; position:absolute; inset:0;" />`
+            ? `<img src="${escHtml(safeImgUrl(folder.cover))}" alt="" style="opacity:0.38; position:absolute; inset:0;" />`
             : ""
         }
         <span style="position:relative; z-index:1; font-size:10.5px; color:#233642; background:rgba(255,255,255,0.86); padding:2px 6px; border-radius:6px;">
           ${escHtml(item.platform)}
         </span>
       </div>
-      <div class="link-body" data-open-link="${item.id}">
+      <div class="link-body" data-open-link="${safeId}">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
           <p class="link-platform" style="margin:0;">${escHtml(item.platform)}</p>
           ${isPinned ? `<span style="font-size:10px;font-weight:700;background:#111;color:#fff;padding:1px 6px;border-radius:4px;">📌 ปักหมุด</span>` : ""}
@@ -91,14 +174,17 @@ export function renderLinkCard(item, { folderContextId = null, selected = false 
           ${item.aiSummary ? `<span class="ai-badge-pill">AI</span>` : ""}
         </p>
       </div>
-      <div class="link-actions">
-        <button class="cherry-btn ${item.favorite ? "active" : ""}" data-toggle-fav="${item.id}" title="ชื่นชอบ">
-          ${icons.cherry(18)}
-        </button>
-        <button class="icon-btn" style="width:30px;height:30px;color:#5c6269;" data-open-post-menu="${item.id}" data-menu-folder="${folderContextId || ""}" title="เมนูโพสต์">
-          ${icons.kebab(16)}
-        </button>
-      </div>
+      ${renderCardActions({
+        safeId,
+        favorite: item.favorite,
+        actionsClass: "link-actions",
+        favClass: "cherry-btn",
+        kebabClass: "icon-btn",
+        kebabStyle: "width:30px;height:30px;color:#5c6269;",
+        kebabSize: 16,
+        menuFolderAttr: ` data-menu-folder="${escHtml(folderContextId || "")}"`,
+        kebabTitle: "เมนูโพสต์",
+      })}
     </div>
   `;
 }
@@ -121,19 +207,19 @@ export function renderPostMenuAndDialog(ui, links) {
           </div>
           <p class="tiny-hint" style="margin:0;">${escHtml(item.title)}</p>
           <div class="settings-card">
-            <button class="settings-row" data-open-link="${item.id}">
+            <button class="settings-row" data-open-link="${escHtml(item.id)}">
               <span>เปิดรายละเอียดลิงก์</span>
               ${icons.chevronRight(16)}
             </button>
-            <button class="settings-row" data-toggle-status-sheet="${item.id}">
+            <button class="settings-row" data-toggle-status-sheet="${escHtml(item.id)}">
               <span>${item.status === "read" ? "ทำเครื่องหมายว่ายังไม่ได้ดู" : "ทำเครื่องหมายว่าดูแล้ว"}</span>
               ${icons.check(16)}
             </button>
-            <button class="settings-row" data-trigger-ai-sheet="${item.id}">
+            <button class="settings-row" data-trigger-ai-sheet="${escHtml(item.id)}">
               <span>สรุปเนื้อหาด้วย AI</span>
               <span class="ai-badge-pill">AI</span>
             </button>
-            <button class="settings-row" style="color:var(--theme-accent-text);font-weight:700;" data-confirm-delete-post="${item.id}" data-delete-mode="${inFolder ? "removeFromFolder" : "delete"}" data-folder-id="${sheet.folderContextId || ""}">
+            <button class="settings-row" style="color:var(--theme-accent-text);font-weight:700;" data-confirm-delete-post="${escHtml(item.id)}" data-delete-mode="${inFolder ? "removeFromFolder" : "delete"}" data-folder-id="${escHtml(sheet.folderContextId || "")}">
               <span>${inFolder ? "นำออกจากโฟลเดอร์" : "ลบโพสต์"}</span>
               ${icons.close(16)}
             </button>
@@ -163,7 +249,7 @@ export function renderPostMenuAndDialog(ui, links) {
           </p>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;">
             <button class="btn-outline-pill" data-close-sheet="1">ยกเลิก</button>
-            <button class="btn-accent-pill lg" data-execute-delete-post="${item.id}" data-delete-mode="${sheet.mode}">
+            <button class="btn-accent-pill lg" data-execute-delete-post="${escHtml(item.id)}" data-delete-mode="${escHtml(sheet.mode)}">
               ${isRemove ? "นำออก" : "ลบโพสต์"}
             </button>
           </div>
