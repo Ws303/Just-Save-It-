@@ -361,8 +361,12 @@ export async function enqueueOfflineItem(
     return [];
   }
   const safeAll = Array.isArray(allRows) ? allRows : [];
-  const foreignRows = uid ? safeAll.filter((item) => Boolean(item?.user_id) && String(item.user_id).trim() !== uid) : [];
-  const ownCurrent = await loadOfflineQueue(uid);
+  const foreignRows = uid
+    ? safeAll.filter((item) => Boolean(item?.user_id) && String(item.user_id).trim() !== uid)
+    : safeAll.filter((item) => Boolean(item?.user_id));
+  const ownCurrent = uid
+    ? safeAll.filter((item) => Boolean(item?.user_id) && String(item.user_id).trim() === uid)
+    : safeAll.filter((item) => !item?.user_id);
   const entry: QueuedLinkPayload = {
     ...payload,
     user_id: uid || undefined,
@@ -420,6 +424,9 @@ export async function flushOfflineQueueWithSender(
   if (!queue.length) {
     if (foreignRemaining.length !== safeAll.length && _authGeneration === startGen) {
       const latestRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
+      if (_authGeneration !== startGen) {
+        return { flushed: 0, remaining: 0, dropped: 0, failed: [] };
+      }
       const safeLatest = Array.isArray(latestRows) ? latestRows : [];
       await setOfflineQueue(safeLatest.filter((item) => !removedKeys.has(getQueueEntryKey(item))));
     }
@@ -454,6 +461,9 @@ export async function flushOfflineQueueWithSender(
     return { flushed, remaining: remaining.length, dropped, failed: remaining };
   }
   const latestRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
+  if (_authGeneration !== startGen) {
+    return { flushed, remaining: remaining.length, dropped, failed: remaining };
+  }
   const safeLatest = Array.isArray(latestRows) ? latestRows : [];
   const nextQueue = safeLatest.filter((item) => {
     const itemUid = String(item?.user_id || "").trim();

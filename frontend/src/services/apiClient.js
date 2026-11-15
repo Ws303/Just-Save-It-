@@ -582,6 +582,7 @@ export const apiClient = {
   },
 
   async summarizeLink(itemId, opts = {}) {
+    const startKey = getAuthContextKey();
     const item = getLinkById(itemId);
     if (!item) return { ok: false, error: "ไม่พบ item_id ที่ต้องการ" };
 
@@ -639,6 +640,14 @@ export const apiClient = {
       },
     });
 
+    if (!isAuthContextCurrent(startKey)) {
+      return {
+        ...res,
+        ok: false,
+        aborted: true,
+        error: "สลับบัญชีระหว่างประมวลผล AI",
+      };
+    }
     store.state.api.isSummarizing = false;
 
     if (res.ok && res.data) {
@@ -1315,6 +1324,7 @@ export const apiClient = {
   },
 
   async saveReminder(itemId, { scheduleType = "once", remindAt, reminderDate, reminderTime = "18:00", repeatEveryDays = null }) {
+    const startKey = getAuthContextKey();
     const item = getLinkById(itemId);
     const prevRem = item
       ? {
@@ -1359,6 +1369,9 @@ export const apiClient = {
       skipUnauthRedirect: true,
       mockHandler: () => ({ status: 200, data: { ...body, status: "pending" } }),
     });
+    if (!isAuthContextCurrent(startKey)) {
+      return { ...res, ok: false, aborted: true };
+    }
     if (store.state.api.mode === "live" && !res.ok && item && prevRem) {
       Object.assign(item, prevRem);
       store.emit();
@@ -1372,6 +1385,7 @@ export const apiClient = {
   },
 
   async deleteReminder(itemId) {
+    const startKey = getAuthContextKey();
     const item = getLinkById(itemId);
     const prevRem = item
       ? {
@@ -1397,6 +1411,9 @@ export const apiClient = {
       skipUnauthRedirect: true,
       mockHandler: () => ({ status: 200, data: { deleted: true, item_id: itemId } }),
     });
+    if (!isAuthContextCurrent(startKey)) {
+      return { ...res, ok: false, aborted: true };
+    }
     if (store.state.api.mode === "live" && !res.ok && item && prevRem) {
       Object.assign(item, prevRem);
       store.emit();
@@ -1697,6 +1714,7 @@ export const apiClient = {
   },
 
   async acceptInvite(tokenOrFolderId) {
+    const startKey = getAuthContextKey();
     const folder = getFolderById(tokenOrFolderId) || (store.state.api.mode !== "live" ? store.state.data.folders[0] : null);
     const token = folder?.inviteSlug || String(tokenOrFolderId || "").trim();
     if (!token) return null;
@@ -1707,11 +1725,17 @@ export const apiClient = {
       skipUnauthRedirect: true,
       mockHandler: () => ({ status: 200, data: { joined_folder: folder?.id || token, role: "editor" } }),
     });
-    if (!res.ok && store.state.api.mode === "live") {
+    if (!isAuthContextCurrent(startKey)) {
+      return null;
+    }
+    if (!res.ok && (store.state.api.mode === "live" || res.stale)) {
       return null;
     }
     if (store.state.api.mode === "live" && store.state.api.bearerToken) {
       await this.hydrateWorkspace();
+      if (!isAuthContextCurrent(startKey)) {
+        return null;
+      }
       const joinedId = res.data?.folder_id || res.data?.joined_folder || folder?.id;
       const hydratedFolder = getFolderById(joinedId) || store.state.data.folders[0] || { id: joinedId, name: "โฟลเดอร์ที่เข้าร่วม" };
       return hydratedFolder;

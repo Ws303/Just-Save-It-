@@ -1170,3 +1170,92 @@ async def test_cycle3_me_transient_503_cached_yt_upgrade_and_async_oauth_offload
         await svc.list_api_tokens(uid)
     assert len(svc_tids) == 1
     assert svc_tids[0] != loop_tid
+
+
+@pytest.mark.asyncio
+async def test_cycle4_yt_upgrade_when_initial_platform_web(isolated_db):
+    """CHRIS Cycle 4 Finding 1: cached & live YouTube 'By ' upgrade works even when initial item platform is 'web'."""
+    from Database.repository import create_or_bump_item
+    from Database.schemas import ItemCreateRequest
+    from Unfurl.extractors import UnfurlResult
+    from Unfurl.service import enrich_item
+
+    uid = "ffffffff-ffff-4fff-8fff-fffffffffff2"
+    donor_uid = "dddddddd-dddd-4ddd-8ddd-ddddddddddd8"
+
+    # 1. Cached donor fast-path upgrades 'By ...' even when target row had platform='web'
+    donor = create_or_bump_item(
+        isolated_db,
+        donor_uid,
+        ItemCreateRequest(url="https://www.youtube.com/watch?v=c4cached1234", title="Donor YT"),
+    )
+    isolated_db.table("items").update(
+        {
+            "platform": "youtube",
+            "description": "Rich cached full YT notes",
+            "enrich_status": "unfurled",
+            "unfurled_at": "2026-11-16T01:00:00+00:00",
+        }
+    ).eq("id", donor["id"]).execute()
+
+    target_cached = create_or_bump_item(
+        isolated_db,
+        uid,
+        ItemCreateRequest(url="https://www.youtube.com/watch?v=c4cached1234", title="Target Cached"),
+    )
+    isolated_db.table("items").update(
+        {
+            "platform": "web",
+            "description": "By OldAuthorCached",
+            "enrich_status": "pending",
+        }
+    ).eq("id", target_cached["id"]).execute()
+
+    res_cached = await enrich_item(isolated_db, target_cached["id"], force_refresh=False)
+    assert res_cached["cached"] is True
+    assert res_cached["item"]["description"] == "Rich cached full YT notes"
+    assert res_cached["item"]["platform"] == "youtube"
+
+    # 2. Live extract path passes fetch_full_description=True on youtu.be even when initial item platform='web'
+    target_live = create_or_bump_item(
+        isolated_db,
+        uid,
+        ItemCreateRequest(url="https://youtu.be/c4live123456", title="Target Live"),
+    )
+    isolated_db.table("items").update(
+        {
+            "platform": "web",
+            "description": "By OldAuthorLive",
+            "enrich_status": "pending",
+        }
+    ).eq("id", target_live["id"]).execute()
+
+    seen_flags = []
+
+    async def _fake_extract(url, fetch_full_description=False):
+        seen_flags.append(fetch_full_description)
+        return UnfurlResult(
+            url=url,
+            canonical_url=url,
+            url_hash="h-c4",
+            title="Real Live YT Video",
+            description="Full live YT video breakdown",
+            image_url="https://i.ytimg.com/vi/c4live123456/hqdefault.jpg",
+            platform="youtube",
+            content_type="video",
+            embed_type="youtube",
+            embed_url="https://www.youtube-nocookie.com/embed/c4live123456",
+        )
+
+    async def _fake_cover(url, **_kw):
+        return url, False
+
+    with patch("Unfurl.service.extract_unfurl_metadata", side_effect=_fake_extract), patch(
+        "Unfurl.service.process_and_upload_cover", side_effect=_fake_cover
+    ):
+        res_live = await enrich_item(isolated_db, target_live["id"], force_refresh=False)
+
+    assert seen_flags == [True]
+    assert res_live["cached"] is False
+    assert res_live["item"]["description"] == "Full live YT video breakdown"
+    assert res_live["item"]["platform"] == "youtube"

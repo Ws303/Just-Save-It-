@@ -745,3 +745,274 @@ test("Frontend C-1 & H-3: dispatchRequest/mutations abort across account switch 
     globalThis.localStorage = origLocalStorage;
   }
 });
+
+test("Extension Cycle 4 [F-2/F-3]: guest 401 does not wipe subsequent sign-in & post-getStorage clearAuthSession aborts flush", async () => {
+  // Part A (Finding 2): signed-out 401 settling after sign-in preserves new session
+  const guestSandbox = (() => {
+    const storeMap = new Map();
+    const chromeMock = {
+      runtime: { lastError: null },
+      storage: {
+        local: {
+          get(keys, cb) {
+            const out = {};
+            const keyList = Array.isArray(keys) ? keys : typeof keys === "string" ? [keys] : Object.keys(keys || {});
+            for (const k of keyList) if (storeMap.has(k)) out[k] = storeMap.get(k);
+            cb(out);
+          },
+          set(values, cb) {
+            for (const [k, v] of Object.entries(values || {})) storeMap.set(k, structuredClone(v));
+            if (cb) cb();
+          },
+          remove(keys, cb) {
+            const keyList = Array.isArray(keys) ? keys : [keys];
+            for (const k of keyList) storeMap.delete(k);
+            if (cb) cb();
+          },
+        },
+      },
+    };
+    let resolveGuestReq;
+    const apiCode = fs.readFileSync(path.join(repoRoot, "extension", "api.js"), "utf8");
+    const sandbox = {
+      globalThis: {},
+      chrome: chromeMock,
+      URL,
+      Date,
+      Math,
+      console,
+      setTimeout,
+      clearTimeout,
+      fetch: async () =>
+        new Promise((r) => {
+          resolveGuestReq = r;
+        }),
+    };
+    sandbox.globalThis = sandbox;
+    sandbox.self = sandbox;
+    vm.runInNewContext(apiCode, sandbox, { filename: "extension/api.js" });
+    return { api: sandbox.JustSaveItApi, resolveGuestReq: () => resolveGuestReq };
+  })();
+
+  const guestPending = guestSandbox.api.apiRequest("/api/items", {
+    method: "POST",
+    body: { url: "https://guest.test/early" },
+  }).catch((e) => e);
+  await new Promise((r) => setTimeout(r, 15));
+  await guestSandbox.api.saveAuthSession({
+    access_token: "tok-signed-in",
+    refresh_token: "ref-signed-in",
+    user: { id: "user-signed-in", email: "in@example.com" },
+  });
+  guestSandbox.resolveGuestReq()(mockResp(401, { detail: "Not authenticated" }));
+  await guestPending;
+  const preserved = await guestSandbox.api.getSessionState();
+  assert.equal(preserved.accessToken, "tok-signed-in", "Guest 401 must not clear subsequent sign-in session");
+  assert.equal(preserved.user?.id, "user-signed-in");
+
+  // Part B (Finding 3): clearAuthSession during post-flush getStorage([OFFLINE_QUEUE]) aborts setStorage
+  let pauseNextQueueGet = false;
+  let pausedGetCallback = null;
+  let pausedSnapshot = null;
+  let queueWritesAfterClear = 0;
+  let trackWritesAfterClear = false;
+  let notifyGetPaused = null;
+  const getPausedPromise = new Promise((r) => {
+    notifyGetPaused = r;
+  });
+
+  const storeMapB = new Map();
+  const chromeMockB = {
+    runtime: { lastError: null },
+    storage: {
+      local: {
+        get(keys, cb) {
+          const out = {};
+          const keyList = Array.isArray(keys) ? keys : typeof keys === "string" ? [keys] : Object.keys(keys || {});
+          for (const k of keyList) if (storeMapB.has(k)) out[k] = structuredClone(storeMapB.get(k));
+          if (pauseNextQueueGet && keyList.length === 1 && keyList[0] === "jsi_offline_queue") {
+            pauseNextQueueGet = false;
+            pausedGetCallback = cb;
+            pausedSnapshot = out;
+            notifyGetPaused();
+            return;
+          }
+          cb(out);
+        },
+        set(values, cb) {
+          for (const [k, v] of Object.entries(values || {})) {
+            if (trackWritesAfterClear && k === "jsi_offline_queue") queueWritesAfterClear += 1;
+            storeMapB.set(k, structuredClone(v));
+          }
+          if (cb) cb();
+        },
+        remove(keys, cb) {
+          const keyList = Array.isArray(keys) ? keys : [keys];
+          for (const k of keyList) storeMapB.delete(k);
+          if (cb) cb();
+        },
+      },
+    },
+  };
+  const apiCodeB = fs.readFileSync(path.join(repoRoot, "extension", "api.js"), "utf8");
+  const sandboxB = {
+    globalThis: {},
+    chrome: chromeMockB,
+    URL,
+    Date,
+    Math,
+    console,
+    setTimeout,
+    clearTimeout,
+    fetch: async () => mockResp(200, {}),
+  };
+  sandboxB.globalThis = sandboxB;
+  sandboxB.self = sandboxB;
+  vm.runInNewContext(apiCodeB, sandboxB, { filename: "extension/api.js" });
+
+  await sandboxB.JustSaveItApi.saveAuthSession({
+    access_token: "tok-ext-f3",
+    refresh_token: "ref-ext-f3",
+    user: { id: "user-ext-f3", email: "f3@example.com" },
+  });
+  await sandboxB.JustSaveItApi.enqueueOfflineSave({ url: "https://f3.test/one", title: "F3 One" });
+
+  const flushPromise = sandboxB.JustSaveItApi.flushOfflineQueue(async () => {
+    pauseNextQueueGet = true;
+    return { ok: true };
+  });
+  await getPausedPromise;
+  await sandboxB.JustSaveItApi.clearAuthSession();
+  trackWritesAfterClear = true;
+  pausedGetCallback(pausedSnapshot);
+  await flushPromise;
+
+  assert.equal(queueWritesAfterClear, 0, "Cleared queue must not be written back after post-getStorage logout");
+  assert.equal(storeMapB.has(sandboxB.JustSaveItApi.STORAGE_KEYS.OFFLINE_QUEUE), false);
+});
+
+test("Frontend Cycle 4 [F-4]: summarizeLink, saveReminder, deleteReminder, and acceptInvite abort on account switch", async () => {
+  const { api: ls, map: lsMap } = createMemoryLocalStorage();
+  const origLocalStorage = globalThis.localStorage;
+  const origFetch = globalThis.fetch;
+  globalThis.localStorage = ls;
+
+  const seedA = () => {
+    store.applyAuthenticatedSession({
+      mode: "live",
+      accessToken: "jwt-a",
+      refreshToken: "ref-a",
+      user: { id: "user-a", email: "a@example.com", name: "User A" },
+    });
+    store.state.data.folders = [{ id: "fa", name: "Folder A", baseExternalCount: 0, inviteSlug: "inv-slug-a" }];
+    store.state.data.links = [
+      { id: "la", folderId: "fa", url: "https://a.com", title: "Link A", platform: "web", tags: [], aiSummary: null },
+    ];
+    store.state.data.freeQuotaRemaining = 5;
+    saveWorkspaceCache("user-a");
+  };
+
+  const switchToB = () => {
+    store.applyAuthenticatedSession({
+      mode: "live",
+      accessToken: "jwt-b",
+      refreshToken: "ref-b",
+      user: { id: "user-b", email: "b@example.com", name: "User B" },
+    });
+    store.state.data.folders = [{ id: "fb", name: "Folder B", baseExternalCount: 0 }];
+    store.state.data.links = [
+      { id: "lb", folderId: "fb", url: "https://b.com", title: "Link B", platform: "web", tags: [] },
+    ];
+    store.state.data.freeQuotaRemaining = 9;
+    store.rebuildNotificationsFromWorkspace();
+    saveWorkspaceCache("user-b");
+  };
+
+  try {
+    store.resetSeed();
+
+    // 1) summarizeLink
+    seedA();
+    let resolveSum;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("/api/ai/summarize")) {
+        return new Promise((r) => {
+          resolveSum = r;
+        });
+      }
+      return mockResp(200, {});
+    };
+    const pSum = apiClient.summarizeLink("la");
+    await new Promise((r) => setTimeout(r, 10));
+    switchToB();
+    store.state.api.isSummarizing = true; // Simulate User B starting their own summarize action
+    resolveSum(mockResp(200, { summary_th: "User A AI Summary", suggested_tags: ["#leak"], ai_quota: { remaining: 1 } }));
+    const sumOut = await pSum;
+    assert.equal(sumOut.aborted, true);
+    assert.equal(store.state.api.isSummarizing, true, "User A settle must not clear User B isSummarizing flag");
+    assert.equal(store.state.data.freeQuotaRemaining, 9, "User A AI quota must not overwrite User B");
+
+    // 2) saveReminder & deleteReminder
+    seedA();
+    let resolveSaveRem;
+    let resolveDelRem;
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.includes("/api/reminders/") && init.method === "PUT") {
+        return new Promise((r) => {
+          resolveSaveRem = r;
+        });
+      }
+      if (u.includes("/api/reminders/") && init.method === "DELETE") {
+        return new Promise((r) => {
+          resolveDelRem = r;
+        });
+      }
+      return mockResp(200, {});
+    };
+
+    const pSaveRem = apiClient.saveReminder("la", { reminderDate: "2026-12-01", reminderTime: "09:00" });
+    await new Promise((r) => setTimeout(r, 10));
+    switchToB();
+    const cacheBBefore = lsMap.get("sharely_workspace_cache_v1:user-b");
+    resolveSaveRem(mockResp(200, { item_id: "la", status: "pending" }));
+    const saveRemOut = await pSaveRem;
+    assert.equal(saveRemOut.aborted, true);
+    assert.equal(lsMap.get("sharely_workspace_cache_v1:user-b"), cacheBBefore);
+
+    seedA();
+    const pDelRem = apiClient.deleteReminder("la");
+    await new Promise((r) => setTimeout(r, 10));
+    switchToB();
+    const cacheBDelBefore = lsMap.get("sharely_workspace_cache_v1:user-b");
+    resolveDelRem(mockResp(500, { detail: "err" }));
+    const delRemOut = await pDelRem;
+    assert.equal(delRemOut.aborted, true);
+    assert.equal(lsMap.get("sharely_workspace_cache_v1:user-b"), cacheBDelBefore);
+
+    // 3) acceptInvite aborts across account switch without hydrating User B
+    seedA();
+    let resolveInvite;
+    let workspaceHits = 0;
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("/api/invites/") && u.endsWith("/accept")) {
+        return new Promise((r) => {
+          resolveInvite = r;
+        });
+      }
+      if (u.includes("/api/workspace")) workspaceHits += 1;
+      return mockResp(200, {});
+    };
+    const pInv = apiClient.acceptInvite("inv-slug-a");
+    await new Promise((r) => setTimeout(r, 10));
+    switchToB();
+    resolveInvite(mockResp(200, { folder_id: "fa", joined_folder: "fa" }));
+    const invOut = await pInv;
+    assert.equal(invOut, null);
+    assert.equal(workspaceHits, 0, "Stale User A acceptInvite must not trigger User B workspace hydrate");
+  } finally {
+    globalThis.fetch = origFetch;
+    globalThis.localStorage = origLocalStorage;
+  }
+});

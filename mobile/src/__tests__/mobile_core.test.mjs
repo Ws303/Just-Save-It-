@@ -726,3 +726,70 @@ test("Cycle 3 [C-2, H-2]: user:null OAuth isolation, guest loadCachedWorkspace f
     await clearSession();
   }
 });
+
+test("Cycle 4 [F-3]: signed-out enqueueOfflineItem preserves foreign rows & mid-flush account switch never clobbers User B", async () => {
+  const makeFakeJwt = (sub) => {
+    const h = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+    const p = Buffer.from(JSON.stringify({ sub })).toString("base64url");
+    return `${h}.${p}.sig`;
+  };
+  await clearSession();
+  try {
+    // Seed a foreign user's stamped offline item alongside signed-out state
+    const foreignEntry = {
+      url: "https://foreign.test/kept",
+      title: "Foreign User Item",
+      user_id: "mob-foreign-user",
+      client_id: "c-foreign-1",
+      queued_at: new Date().toISOString(),
+    };
+    await setOfflineQueue([foreignEntry]);
+
+    // While signed out (!uid), enqueueOfflineItem must retain mob-foreign-user's row
+    await enqueueOfflineItem({ url: "https://guest.test/new", title: "Guest Item" });
+    const foreignAfter = await loadOfflineQueue("mob-foreign-user");
+    assert.equal(foreignAfter.length, 1);
+    assert.equal(foreignAfter[0].url, "https://foreign.test/kept");
+    const guestAfter = await loadOfflineQueue("");
+    assert.equal(guestAfter.length, 1);
+    assert.equal(guestAfter[0].url, "https://guest.test/new");
+
+    // Account switch mid-flush must never resurrect User A remaining items or clobber User B queue
+    await clearSession();
+    await saveSession({
+      access_token: makeFakeJwt("mob-a-f3"),
+      refresh_token: "ref-a-f3",
+      user: { id: "mob-a-f3", email: "af3@mob.test" },
+    });
+    await setOfflineQueue([]);
+    await enqueueOfflineItem({ url: "https://a-f3.test/one", title: "A1" });
+    await enqueueOfflineItem({ url: "https://a-f3.test/two", title: "A2" });
+
+    let releaseSender;
+    const flushA = flushOfflineQueueWithSender(async () => {
+      await new Promise((r) => {
+        releaseSender = r;
+      });
+      return "ok";
+    });
+    await new Promise((r) => setTimeout(r, 15));
+
+    await saveSession({
+      access_token: makeFakeJwt("mob-b-f3"),
+      refresh_token: "ref-b-f3",
+      user: { id: "mob-b-f3", email: "bf3@mob.test" },
+    });
+    await enqueueOfflineItem({ url: "https://b-f3.test/only", title: "B Only" });
+
+    releaseSender();
+    await flushA;
+
+    const queueB = await loadOfflineQueue("mob-b-f3");
+    assert.equal(queueB.length, 1);
+    assert.equal(queueB[0].url, "https://b-f3.test/only");
+    const queueA = await loadOfflineQueue("mob-a-f3");
+    assert.equal(queueA.length, 0, "Switched-out User A queue must stay cleared");
+  } finally {
+    await clearSession();
+  }
+});

@@ -236,7 +236,10 @@ async def enrich_item(
 
     old_desc = str(item.get("description") or "").strip()
     old_plat = str(item.get("platform") or "").lower()
-    needs_yt_full_desc = old_plat == "youtube" and old_desc.startswith("By ")
+    canon_lower = canon_url.lower()
+    needs_yt_full_desc = (
+        old_plat == "youtube" or "youtube.com" in canon_lower or "youtu.be" in canon_lower
+    ) and old_desc.startswith("By ")
 
     # 1. Cross-user 7-day cache check
     if not force_refresh:
@@ -261,7 +264,7 @@ async def enrich_item(
             }
             if _should_replace_title(item, force_refresh=False) and cached_data["title"]:
                 updates["title"] = cached_data["title"]
-            cached_plat = str(old_plat or cached_data.get("platform") or "").lower()
+            cached_plat = str(cached_data.get("platform") or old_plat or "").lower()
             if _should_replace_description(old_desc, cached_data["description"], cached_plat):
                 updates["description"] = cached_data["description"]
 
@@ -314,7 +317,7 @@ async def enrich_item(
         }
         if _should_replace_title(item, force_refresh=force_refresh) and result.title:
             updates["title"] = result.title
-        effective_plat = str(old_plat or result.platform or "").lower()
+        effective_plat = str(result.platform or old_plat or "").lower()
         if _should_replace_description(
             old_desc, result.description, effective_plat, force_refresh=force_refresh
         ):

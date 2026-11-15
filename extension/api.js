@@ -148,6 +148,7 @@
     const nextUid = String(
       (authPayload && authPayload.user && authPayload.user.id) || parseJwtSub(authPayload && authPayload.access_token) || ""
     ).trim();
+    const nextHasSession = Boolean(nextUid || (authPayload && authPayload.access_token));
     if (prevHadSession && (!nextUid || !prevUid || prevUid !== nextUid)) {
       _sessionGeneration += 1;
       await removeStorage([
@@ -155,6 +156,8 @@
         STORAGE_KEYS.OFFLINE_QUEUE,
         STORAGE_KEYS.NOTIFIED_REMINDERS,
       ]);
+    } else if (!prevHadSession && nextHasSession) {
+      _sessionGeneration += 1;
     }
     await setStorage({
       [STORAGE_KEYS.ACCESS_TOKEN]: (authPayload && authPayload.access_token) || "",
@@ -332,7 +335,7 @@
     if (!response.ok) {
       if (response.status === 401 && requireAuth && _sessionGeneration === startGen) {
         const latestSession = await getSessionState();
-        if (!session.accessToken || latestSession.accessToken === session.accessToken) {
+        if (session.accessToken && latestSession.accessToken === session.accessToken && _sessionGeneration === startGen) {
           await clearAuthSession();
         }
       }
@@ -488,6 +491,9 @@
     if (!queue.length) {
       if (foreignRemaining.length !== allQueue.length && _sessionGeneration === startGen) {
         const latestRes = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE]);
+        if (_sessionGeneration !== startGen) {
+          return { flushed: 0, remaining: 0, failed: 0 };
+        }
         const latestAll = Array.isArray(latestRes[STORAGE_KEYS.OFFLINE_QUEUE])
           ? latestRes[STORAGE_KEYS.OFFLINE_QUEUE]
           : [];
@@ -542,6 +548,9 @@
       return { flushed, remaining: remaining.length, failed };
     }
     const latestStorage = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE]);
+    if (_sessionGeneration !== startGen) {
+      return { flushed, remaining: remaining.length, failed };
+    }
     const latestQueue = Array.isArray(latestStorage[STORAGE_KEYS.OFFLINE_QUEUE])
       ? latestStorage[STORAGE_KEYS.OFFLINE_QUEUE]
       : [];
