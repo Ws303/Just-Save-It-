@@ -23,39 +23,39 @@ export const FOLDER_NAME_SUGGESTIONS = [
 
 export const AI_PROVIDER_PRESETS = [
   {
+    id: "Built-in Free (Server)",
+    backendProvider: "built-in",
+    baseUrl: "",
+    models: ["gemini-3.1-flash-lite"],
+    description: "Tier 1 · Built-in Free Key จากเซิร์ฟเวอร์ (backend/Ai)",
+  },
+  {
     id: "OpenAI",
     backendProvider: "byok",
     baseUrl: "https://api.openai.com/v1",
-    models: ["GPT-4.1 mini", "GPT-4o mini"],
+    models: ["gpt-4.1-mini", "gpt-4o-mini"],
     description: "BYOK · OpenAI API (Header X-AI-Provider: byok)",
   },
   {
     id: "Anthropic",
     backendProvider: "byok",
     baseUrl: "https://api.anthropic.com/v1",
-    models: ["Claude Sonnet", "Claude Haiku"],
+    models: ["claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"],
     description: "BYOK · Anthropic Claude (Header X-AI-Provider: byok)",
   },
   {
     id: "Google Gemini",
     backendProvider: "byok",
     baseUrl: "https://generativelanguage.googleapis.com",
-    models: ["Gemini Flash", "Gemini Pro"],
+    models: ["gemini-2.5-flash", "gemini-2.5-pro"],
     description: "BYOK · Google Gemini (Header X-AI-Provider: byok)",
   },
   {
     id: "Custom Endpoint",
     backendProvider: "custom",
     baseUrl: "https://api.example.com/v1",
-    models: ["custom-model-a", "custom-model-b"],
+    models: ["llama3.2", "custom-model"],
     description: "Tier 3 · OpenAI-compatible Endpoint / Ollama / vLLM",
-  },
-  {
-    id: "Built-in Free (Server)",
-    backendProvider: "built-in",
-    baseUrl: "",
-    models: ["gemini-3.1-flash-lite"],
-    description: "Tier 1 · Built-in Free Key จากเซิร์ฟเวอร์ (backend/Ai)",
   },
 ];
 
@@ -114,12 +114,12 @@ export function createInitialSeed() {
       textSize: "normal", // normal | large
     },
     aiConfig: {
-      provider: "Custom Endpoint",
-      model: "",
-      endpointUrl: "https://api.example.com/v1",
-      keyless: false,
+      provider: "Built-in Free (Server)",
+      model: "gemini-3.1-flash-lite",
+      endpointUrl: "",
+      keyless: true,
       apiKey: "",
-      connected: false,
+      connected: true,
       lastTestedAt: null,
     },
     folders: [

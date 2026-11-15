@@ -23,6 +23,22 @@ function buildConfigKey(url, key) {
   return `${normalizeUrl(url)}::${String(key || "").trim()}`;
 }
 
+export function buildAuthRedirectUrl(runtimeWindow = typeof window !== "undefined" ? window : undefined) {
+  if (!runtimeWindow?.location) return "http://localhost:5173";
+  try {
+    const u = new URL(runtimeWindow.location.href);
+    const keep = new URLSearchParams();
+    for (const k of ["invite", "role", "qa"]) {
+      const v = u.searchParams.get(k);
+      if (v) keep.set(k, v);
+    }
+    const qs = keep.toString();
+    return `${u.origin}${u.pathname || "/"}${qs ? `?${qs}` : ""}`;
+  } catch {
+    return `${runtimeWindow.location.origin}${runtimeWindow.location.pathname || "/"}`;
+  }
+}
+
 export async function getSupabaseBrowserClient({ supabaseUrl, supabaseAnonKey } = {}) {
   const url = normalizeUrl(supabaseUrl);
   const anonKey = String(supabaseAnonKey || DEFAULT_SUPABASE_KEY).trim();
@@ -81,7 +97,7 @@ function extractUserSummary(user, claims = null) {
   };
 }
 
-async function fetchGoTrueJson({ supabaseUrl, supabaseAnonKey, path, method = "POST", body = null, accessToken = "" }) {
+async function fetchGoTrueJson({ supabaseUrl, supabaseAnonKey, path, method = "POST", body = null, accessToken = "", keepalive = false }) {
   const url = `${normalizeUrl(supabaseUrl)}/auth/v1${path}`;
   const anonKey = String(supabaseAnonKey || DEFAULT_SUPABASE_KEY).trim();
   const headers = {
@@ -96,6 +112,7 @@ async function fetchGoTrueJson({ supabaseUrl, supabaseAnonKey, path, method = "P
     method,
     headers,
     body: body !== null && method !== "GET" ? JSON.stringify(body) : undefined,
+    ...(keepalive ? { keepalive: true } : {}),
   });
   const text = await resp.text();
   let parsed = {};
@@ -268,7 +285,7 @@ export const supabaseAuth = {
 
   async signInWithMagicLink(config, { email }) {
     const cleanEmail = String(email || "").trim();
-    const redirectTo = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : undefined;
+    const redirectTo = typeof window !== "undefined" ? buildAuthRedirectUrl(window) : undefined;
     const client = await getSupabaseBrowserClient(config);
 
     if (client) {
@@ -286,14 +303,14 @@ export const supabaseAuth = {
       ...config,
       path: "/otp",
       method: "POST",
-      body: { email: cleanEmail, create_user: true },
+      body: { email: cleanEmail, create_user: true, ...(redirectTo ? { redirect_to: redirectTo } : {}) },
     });
     if (!res.ok) return res;
     return { ok: true, status: 200, data: { sent: true, email: cleanEmail, needs_email_confirmation: true } };
   },
 
   async signInWithGoogle(config) {
-    const redirectTo = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : "http://localhost:5173";
+    const redirectTo = typeof window !== "undefined" ? buildAuthRedirectUrl(window) : "http://localhost:5173";
     const client = await getSupabaseBrowserClient(config);
 
     if (client) {
@@ -309,6 +326,44 @@ export const supabaseAuth = {
 
     const url = `${normalizeUrl(config?.supabaseUrl)}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(redirectTo)}`;
     return { ok: true, status: 200, data: { provider: "google", url } };
+  },
+
+  async exchangeCodeForSession(config, code) {
+    const cleanCode = String(code || "").trim();
+    if (!cleanCode) return { ok: false, status: 400, error: "Missing authorization code" };
+    const client = await getSupabaseBrowserClient(config);
+    if (!client) {
+      return { ok: false, status: 503, error: "Supabase SDK unavailable for PKCE exchange" };
+    }
+    const existing = await client.auth.getSession();
+    if (existing?.data?.session?.access_token) {
+      const s = existing.data.session;
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          access_token: s.access_token,
+          refresh_token: s.refresh_token || "",
+          user: extractUserSummary(s.user),
+          claims: extractClaimsSummary(s.access_token),
+        },
+      };
+    }
+    const { data, error } = await client.auth.exchangeCodeForSession(cleanCode);
+    if (error || !data?.session?.access_token) {
+      return { ok: false, status: error?.status || 400, error: error?.message || "OAuth code exchange failed" };
+    }
+    const s = data.session;
+    return {
+      ok: true,
+      status: 200,
+      data: {
+        access_token: s.access_token,
+        refresh_token: s.refresh_token || "",
+        user: extractUserSummary(s.user),
+        claims: extractClaimsSummary(s.access_token),
+      },
+    };
   },
 
   async refreshSession(config, refreshToken = "") {
@@ -382,16 +437,28 @@ export const supabaseAuth = {
     };
   },
 
-  async updateEmail(config, email) {
+  async updateEmail(config, email, accessToken = "") {
+    const cleanEmail = String(email || "").trim();
     const client = await getSupabaseBrowserClient(config);
-    if (!client) return { ok: false, status: 503, error: "Supabase SDK unavailable" };
-    const { data, error } = await client.auth.updateUser({ email: String(email || "").trim() });
-    if (error) return { ok: false, status: error.status || 400, error: error.message };
-    return { ok: true, status: 200, data: { user: extractUserSummary(data?.user) } };
+    if (client) {
+      const { data, error } = await client.auth.updateUser({ email: cleanEmail });
+      if (error) return { ok: false, status: error.status || 400, error: error.message };
+      return { ok: true, status: 200, data: { user: extractUserSummary(data?.user) } };
+    }
+    if (accessToken) {
+      return fetchGoTrueJson({
+        ...config,
+        path: "/user",
+        method: "PUT",
+        body: { email: cleanEmail },
+        accessToken,
+      });
+    }
+    return { ok: false, status: 503, error: "Supabase SDK unavailable" };
   },
 
   async resetPasswordForEmail(config, email) {
-    const redirectTo = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : undefined;
+    const redirectTo = typeof window !== "undefined" ? buildAuthRedirectUrl(window) : undefined;
     const client = await getSupabaseBrowserClient(config);
     if (client) {
       const { error } = await client.auth.resetPasswordForEmail(String(email || "").trim(), { redirectTo });
@@ -402,15 +469,14 @@ export const supabaseAuth = {
       ...config,
       path: "/recover",
       method: "POST",
-      body: { email: String(email || "").trim() },
+      body: { email: String(email || "").trim(), ...(redirectTo ? { redirect_to: redirectTo } : {}) },
     });
   },
 
   async signOut(config, accessToken = "") {
     const client = await getSupabaseBrowserClient(config);
     if (client) {
-      await client.auth.signOut();
-      return { ok: true, status: 200, data: { logged_out: true } };
+      await client.auth.signOut({ scope: "local" }).catch(() => {});
     }
     if (accessToken) {
       await fetchGoTrueJson({
@@ -419,6 +485,7 @@ export const supabaseAuth = {
         method: "POST",
         body: {},
         accessToken,
+        keepalive: true,
       }).catch(() => {});
     }
     return { ok: true, status: 200, data: { logged_out: true } };

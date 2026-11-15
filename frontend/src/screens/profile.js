@@ -9,25 +9,22 @@
 import { icons, escHtml } from "../components/icons.js";
 import { THEME_OPTIONS } from "../data/seed.js";
 import { getAuthMode } from "../services/routeGuard.js";
+import { isQaModeEnabled } from "../state/store.js";
 import { renderBottomNav } from "./common.js";
 
-export function renderProfileScreen(state) {
+export function renderProfileBody(state) {
   const { user } = state.data;
-  const initial = (user.displayName || "ม").charAt(0);
+  const displayName = user.displayName || user.email?.split("@")[0] || "ผู้ใช้งาน";
+  const initial = displayName.trim().charAt(0).toUpperCase() || "U";
+  const isWeb = state.ui.viewportMode === "web";
 
   return `
-    <div class="screen-scroll with-nav-pad">
-      <div class="home-topbar">
-        <h1 class="brand-heading">โปรไฟล์</h1>
-      </div>
-
-      <div class="app-pad" style="display:flex;flex-direction:column;gap:16px;padding-top:4px;">
         <div class="settings-card">
-          <button class="settings-row" data-open-edit-nickname="1" style="padding:16px;">
+          <button type="button" class="settings-row" data-open-edit-nickname="1" style="padding:16px;">
             <div class="inline-flex-row" style="gap:14px;">
               <div class="profile-avatar-lg">${escHtml(initial)}</div>
               <div>
-                <div style="font-size:20px;font-weight:700;color:var(--ink-primary);">${escHtml(user.displayName)}</div>
+                <div style="font-size:20px;font-weight:700;color:var(--ink-primary);">${escHtml(displayName)}</div>
                 <div style="font-size:13.5px;color:var(--ink-secondary);">${escHtml(user.email)}</div>
               </div>
             </div>
@@ -46,12 +43,12 @@ export function renderProfileScreen(state) {
                   <div class="tiny-hint">รับการแจ้งเตือนเมื่อถึงเวลาที่ตั้งไว้</div>
                 </div>
               </div>
-              <button class="toggle-switch ${user.notificationsEnabled ? "on" : ""}" data-toggle-notif-setting="1" aria-label="เปิดปิดแจ้งเตือน">
+              <button type="button" class="toggle-switch ${user.notificationsEnabled ? "on" : ""}" data-toggle-notif-setting="1" aria-label="เปิดปิดแจ้งเตือน">
                 <span class="toggle-knob"></span>
               </button>
             </div>
 
-            <button class="settings-row" data-nav="ai">
+            <button type="button" class="settings-row" ${isWeb ? `data-pc-section="ai"` : `data-nav="ai"`}>
               <div class="inline-flex-row" style="gap:12px;">
                 <span style="color:var(--ink-secondary);display:inline-flex;">${icons.bot(20)}</span>
                 <div>
@@ -62,7 +59,7 @@ export function renderProfileScreen(state) {
               ${icons.chevronRight(17)}
             </button>
 
-            <button class="settings-row" data-go-screen="display">
+            <button type="button" class="settings-row" ${isWeb ? `data-pc-section="display"` : `data-go-screen="display"`}>
               <div class="inline-flex-row" style="gap:12px;">
                 <span style="color:var(--ink-secondary);display:inline-flex;">${icons.palette(20)}</span>
                 <div>
@@ -73,7 +70,7 @@ export function renderProfileScreen(state) {
               ${icons.chevronRight(17)}
             </button>
 
-            <button class="settings-row" data-go-screen="security">
+            <button type="button" class="settings-row" ${isWeb ? `data-pc-section="security"` : `data-go-screen="security"`}>
               <div class="inline-flex-row" style="gap:12px;">
                 <span style="color:var(--ink-secondary);display:inline-flex;">${icons.shield(20)}</span>
                 <div>
@@ -89,7 +86,7 @@ export function renderProfileScreen(state) {
         <div>
           <h2 class="section-title" style="margin-bottom:8px;">อื่น ๆ</h2>
           <div class="settings-card">
-            <button class="settings-row" data-go-screen="help">
+            <button type="button" class="settings-row" ${isWeb ? `data-pc-section="help"` : `data-go-screen="help"`}>
               <div class="inline-flex-row" style="gap:12px;">
                 <span style="color:var(--ink-secondary);display:inline-flex;">${icons.help(20)}</span>
                 <div style="font-size:15px;font-weight:700;">ศูนย์ช่วยเหลือและแจ้งปัญหา</div>
@@ -97,7 +94,7 @@ export function renderProfileScreen(state) {
               ${icons.chevronRight(17)}
             </button>
 
-            <button class="settings-row" data-open-export-csv="1">
+            <button type="button" class="settings-row" data-open-export-csv="1">
               <div class="inline-flex-row" style="gap:12px;">
                 <span style="color:var(--ink-secondary);display:inline-flex;">${icons.download(20)}</span>
                 <div>
@@ -110,10 +107,22 @@ export function renderProfileScreen(state) {
           </div>
         </div>
 
-        <button class="btn-logout" data-open-logout-dialog="1">
+        <button type="button" class="btn-logout" data-open-logout-dialog="1">
           ${icons.signout(18)}
           <span>ออกจากระบบ</span>
         </button>
+  `;
+}
+
+export function renderProfileScreen(state) {
+  return `
+    <div class="screen-scroll with-nav-pad">
+      <div class="home-topbar">
+        <h1 class="brand-heading">โปรไฟล์</h1>
+      </div>
+
+      <div class="app-pad" style="display:flex;flex-direction:column;gap:16px;padding-top:4px;">
+        ${renderProfileBody(state)}
       </div>
 
       ${renderBottomNav("profile")}
@@ -121,27 +130,19 @@ export function renderProfileScreen(state) {
   `;
 }
 
-export function renderDisplayScreen(state) {
+export function renderDisplayBody(state) {
   const { theme, textSize } = state.data.appearance;
   const activeThemeMeta = THEME_OPTIONS.find((t) => t.id === theme) || THEME_OPTIONS[0];
+  const doneAttr = state.ui.viewportMode === "web" ? `data-pc-section="profile"` : `data-nav="profile"`;
 
   return `
-    <div class="screen-scroll">
-      <div class="sub-topbar">
-        <div class="sub-topbar-left">
-          <button class="icon-btn" data-nav="profile">${icons.back(22)}</button>
-          <h1 style="margin:0;font-size:21px;font-weight:700;">การแสดงผล</h1>
-        </div>
-      </div>
-
-      <div class="app-pad" style="display:flex;flex-direction:column;gap:18px;">
         <div>
           <h2 class="section-title" style="margin-bottom:10px;">ขนาดตัวอักษร</h2>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-            <button class="btn-outline-pill" style="border-color:${textSize === "normal" ? "var(--theme-accent)" : "var(--border-input)"};background:${textSize === "normal" ? "var(--theme-soft)" : "#fff"};" data-set-text-size="normal">
+            <button type="button" class="btn-outline-pill" style="border-color:${textSize === "normal" ? "var(--theme-accent)" : "var(--border-input)"};background:${textSize === "normal" ? "var(--theme-soft)" : "#fff"};" data-set-text-size="normal">
               ปกติ
             </button>
-            <button class="btn-outline-pill" style="border-color:${textSize === "large" ? "var(--theme-accent)" : "var(--border-input)"};background:${textSize === "large" ? "var(--theme-soft)" : "#fff"};" data-set-text-size="large">
+            <button type="button" class="btn-outline-pill" style="border-color:${textSize === "large" ? "var(--theme-accent)" : "var(--border-input)"};background:${textSize === "large" ? "var(--theme-soft)" : "#fff"};" data-set-text-size="large">
               ใหญ่
             </button>
           </div>
@@ -151,7 +152,7 @@ export function renderDisplayScreen(state) {
           <h2 class="section-title" style="margin-bottom:2px;">ธีมสี</h2>
           ${THEME_OPTIONS.map(
             (opt) => `
-            <button class="theme-option-card ${theme === opt.id ? "active" : ""}" data-set-theme="${opt.id}">
+            <button type="button" class="theme-option-card ${theme === opt.id ? "active" : ""}" data-set-theme="${opt.id}">
               <div class="theme-swatch-badge" style="background:${opt.softBg};">
                 <span class="theme-swatch-dot" style="background:${opt.swatch};"></span>
               </div>
@@ -169,30 +170,43 @@ export function renderDisplayScreen(state) {
           <div style="font-size:14px;font-weight:700;color:var(--theme-swatch);margin-top:8px;">กลับมาดูลิงก์ที่บันทึกไว้</div>
         </div>
 
-        <button class="btn-accent-pill full48" data-nav="profile">เสร็จแล้ว</button>
+        <button type="button" class="btn-accent-pill full48" ${doneAttr}>เสร็จแล้ว</button>
+  `;
+}
+
+export function renderDisplayScreen(state) {
+  return `
+    <div class="screen-scroll">
+      <div class="sub-topbar">
+        <div class="sub-topbar-left">
+          <button type="button" class="icon-btn" data-nav="profile">${icons.back(22)}</button>
+          <h1 style="margin:0;font-size:21px;font-weight:700;">การแสดงผล</h1>
+        </div>
+      </div>
+
+      <div class="app-pad" style="display:flex;flex-direction:column;gap:18px;">
+        ${renderDisplayBody(state)}
       </div>
     </div>
   `;
 }
 
-export function renderSecurityScreen(state) {
+export function renderSecurityBody(state) {
   const authMode = getAuthMode(state);
   const claims = state.api.jwtClaims;
   return `
-    <div class="screen-scroll">
-      <div class="sub-topbar">
-        <div class="sub-topbar-left">
-          <button class="icon-btn" data-nav="profile">${icons.back(22)}</button>
-          <h1 style="margin:0;font-size:21px;font-weight:700;">บัญชีและความปลอดภัย</h1>
-        </div>
-      </div>
-
-      <div class="app-pad" style="display:flex;flex-direction:column;gap:16px;">
-        <div style="background:var(--bg-muted);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:4px;">
-          <strong style="font-size:13.5px;">สถานะเซสชัน (${escHtml(authMode.toUpperCase())})</strong>
-          <span class="tiny-hint">User ID (sub): ${escHtml(claims?.sub || state.data.user.id || "-")}</span>
-          <span class="tiny-hint">JWT Alg: ${escHtml(claims?.alg || (state.api.bearerToken ? "JWT" : "none"))}</span>
-        </div>
+        ${
+          isQaModeEnabled()
+            ? `<div style="background:var(--bg-muted);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:4px;">
+                 <strong style="font-size:13.5px;">สถานะเซสชัน (${escHtml(authMode.toUpperCase())})</strong>
+                 <span class="tiny-hint">User ID (sub): ${escHtml(claims?.sub || state.data.user.id || "-")}</span>
+                 <span class="tiny-hint">JWT Alg: ${escHtml(claims?.alg || (state.api.bearerToken ? "JWT" : "none"))}</span>
+               </div>`
+            : `<div style="background:var(--bg-muted);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:4px;">
+                 <strong style="font-size:13.5px;">สถานะความปลอดภัย</strong>
+                 <span class="tiny-hint">${state.data.user?.isAuthenticated ? "เข้าสู่ระบบและเชื่อมต่ออย่างปลอดภัยแล้ว" : "ยังไม่ได้เข้าสู่ระบบ"}</span>
+               </div>`
+        }
 
         <div>
           <strong style="font-size:15px;">อีเมลบัญชี</strong>
@@ -201,7 +215,7 @@ export function renderSecurityScreen(state) {
             <label class="field-label">อีเมลใหม่</label>
             <input class="field-input" type="email" placeholder="name@example.com" id="newEmailInput" />
           </div>
-          <button class="btn-outline-pill" style="width:100%;margin-top:10px;" data-update-account-email="1">
+          <button type="button" class="btn-outline-pill" style="width:100%;margin-top:10px;" data-update-account-email="1">
             บันทึกอีเมลใหม่
           </button>
         </div>
@@ -211,26 +225,32 @@ export function renderSecurityScreen(state) {
         <div style="display:flex;flex-direction:column;gap:10px;">
           <strong style="font-size:15px;">รหัสผ่าน</strong>
           <p class="tiny-hint" style="margin:0;">รับลิงก์ทางอีเมลเพื่อตั้งหรือเปลี่ยนรหัสผ่าน</p>
-          <button class="btn-accent-pill full48" data-send-password-reset="1">
+          <button type="button" class="btn-accent-pill full48" data-send-password-reset="1">
             ส่งลิงก์ตั้งรหัสผ่าน
           </button>
         </div>
+  `;
+}
+
+export function renderSecurityScreen(state) {
+  return `
+    <div class="screen-scroll">
+      <div class="sub-topbar">
+        <div class="sub-topbar-left">
+          <button type="button" class="icon-btn" data-nav="profile">${icons.back(22)}</button>
+          <h1 style="margin:0;font-size:21px;font-weight:700;">บัญชีและความปลอดภัย</h1>
+        </div>
+      </div>
+
+      <div class="app-pad" style="display:flex;flex-direction:column;gap:16px;">
+        ${renderSecurityBody(state)}
       </div>
     </div>
   `;
 }
 
-export function renderHelpScreen() {
+export function renderHelpBody() {
   return `
-    <div class="screen-scroll">
-      <div class="sub-topbar">
-        <div class="sub-topbar-left">
-          <button class="icon-btn" data-nav="profile">${icons.back(22)}</button>
-          <h1 style="margin:0;font-size:21px;font-weight:700;">ศูนย์ช่วยเหลือและแจ้งปัญหา</h1>
-        </div>
-      </div>
-
-      <div class="app-pad" style="display:flex;flex-direction:column;gap:16px;">
         <div style="background:var(--bg-muted);border-radius:14px;padding:14px;">
           <strong style="font-size:14.5px;display:block;margin-bottom:4px;">เปิดโพสต์ต้นฉบับไม่ได้ทำอย่างไร?</strong>
           <p class="tiny-hint" style="margin:0;line-height:1.55;">
@@ -251,7 +271,22 @@ export function renderHelpScreen() {
           <textarea class="note-textarea" placeholder="เล่าว่าเกิดอะไรขึ้น และเกิดในหน้าไหน" id="supportDetailInput"></textarea>
         </div>
 
-        <button class="btn-accent-pill full48" data-submit-support="1">ส่งรายงาน</button>
+        <button type="button" class="btn-accent-pill full48" data-submit-support="1">ส่งรายงาน</button>
+  `;
+}
+
+export function renderHelpScreen() {
+  return `
+    <div class="screen-scroll">
+      <div class="sub-topbar">
+        <div class="sub-topbar-left">
+          <button type="button" class="icon-btn" data-nav="profile">${icons.back(22)}</button>
+          <h1 style="margin:0;font-size:21px;font-weight:700;">ศูนย์ช่วยเหลือและแจ้งปัญหา</h1>
+        </div>
+      </div>
+
+      <div class="app-pad" style="display:flex;flex-direction:column;gap:16px;">
+        ${renderHelpBody()}
       </div>
     </div>
   `;
@@ -265,7 +300,7 @@ export function renderProfileSheets(state) {
   if (sheet.type === "editNickname") {
     return `
       <div class="modal-backdrop" data-close-sheet="1">
-        <div class="bottom-sheet" onclick="event.stopPropagation()">
+        <div class="bottom-sheet">
           <h3 style="margin:0;font-size:20px;">แก้ไขชื่อเล่น</h3>
           <div class="field-group">
             <label class="field-label">ชื่อเล่น</label>
@@ -282,12 +317,35 @@ export function renderProfileSheets(state) {
 
   // Sheet · ส่งออกข้อมูล CSV (128:465)
   if (sheet.type === "exportCsv") {
+    const selectedFolderId = state.ui.csvExportFolderId || "all";
+    const unreadOnly = Boolean(state.ui.csvExportUnreadOnly);
+    const matchingLinks = (state.data.links || []).filter((l) => {
+      if (selectedFolderId !== "all" && l.folderId !== selectedFolderId) return false;
+      if (unreadOnly && l.status === "read") return false;
+      return true;
+    });
+
     return `
       <div class="modal-backdrop" data-close-sheet="1">
-        <div class="bottom-sheet" onclick="event.stopPropagation()">
+        <div class="bottom-sheet">
           <h3 style="margin:0;font-size:20px;">ส่งออกข้อมูลที่บันทึกไว้</h3>
+          <div class="field-group">
+            <label class="field-label">เลือกโฟลเดอร์</label>
+            <select class="field-input" data-csv-folder="1">
+              <option value="all" ${selectedFolderId === "all" ? "selected" : ""}>ทุกโฟลเดอร์</option>
+              ${(state.data.folders || [])
+                .map(
+                  (f) => `<option value="${escHtml(f.id)}" ${selectedFolderId === f.id ? "selected" : ""}>${escHtml(f.name)}</option>`
+                )
+                .join("")}
+            </select>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--ink-primary);cursor:pointer;">
+            <input type="checkbox" data-csv-unread-only="1" ${unreadOnly ? "checked" : ""} />
+            <span>เฉพาะรายการที่ยังไม่ได้ดู</span>
+          </label>
           <div>
-            <strong style="font-size:15px;">รายการลิงก์ทั้งหมด (${state.data.links.length} รายการ)</strong>
+            <strong style="font-size:15px;">จำนวนที่จะส่งออก (${matchingLinks.length} รายการ)</strong>
             <p class="tiny-hint" style="margin:4px 0 0;">ไฟล์ CSV รวมชื่อโพสต์ URL โฟลเดอร์ แท็ก และโน้ต</p>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
@@ -303,7 +361,7 @@ export function renderProfileSheets(state) {
   if (sheet.type === "logoutDialog") {
     return `
       <div class="modal-backdrop center" data-close-sheet="1">
-        <div class="center-dialog" onclick="event.stopPropagation()">
+        <div class="center-dialog">
           <h3 style="margin:0;font-size:20px;">ออกจากระบบใช่ไหม?</h3>
           <p style="margin:0;font-size:13.5px;color:var(--ink-secondary);">
             คุณสามารถเข้าสู่ระบบใหม่ด้วย ${escHtml(state.data.user.email)} ได้ทุกเมื่อ

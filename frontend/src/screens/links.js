@@ -5,8 +5,8 @@
  * - Spec 1A Rich Preview inside fixed 358x186px (border-radius: 15px): fallback, single cover, multi-image carousel, allowlisted video iframe
  * - Spec 2B Reminder Bottom Sheet: 319:5142 + compact recurrence row (once / every_n_days)
  */
-import { icons, escHtml, safeHrefUrl, safeImgUrl } from "../components/icons.js";
-import { getFolderById, getLinkById } from "../state/store.js";
+import { icons, escHtml, safeHrefUrl, safeImgUrl, resolveMediaThumbUrl } from "../components/icons.js";
+import { getFolderById, getLinkById, buildMonthCalendarDays } from "../state/store.js";
 
 const EMBED_ALLOWLIST_RULES = [
   { hosts: ["youtube.com", "www.youtube.com", "m.youtube.com", "youtube-nocookie.com", "www.youtube-nocookie.com"], exact: false, check: (p) => p.startsWith("/embed/") },
@@ -64,7 +64,7 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
   const boxClass = options.desktop ? "figma-rich-preview-box is-desktop" : "figma-rich-preview-box";
   const safeEmbedUrl = resolveAllowlistedEmbedUrl(item?.embedUrl || item?.embed_url);
   const mediaImages = getPreviewMediaImages(item);
-  const singleCover = safeImgUrl(item?.coverUrl || item?.imageUrl || mediaImages[0] || "");
+  const singleCover = resolveMediaThumbUrl(item) || mediaImages[0] || "";
 
   // Case 1: Interactive video iframe on allowlisted domain
   if (safeEmbedUrl) {
@@ -189,7 +189,7 @@ export function renderLinkDetailModals(state, item) {
   if (ui.aiConfirmModalOpen || ui.aiSummaryStatus === "confirm") {
     return `
       <div class="modal-backdrop center figma-dialog-backdrop" data-action="close-ai-confirm">
-        <div class="figma-dialog-card" onclick="event.stopPropagation()" data-node-id="319:5253">
+        <div class="figma-dialog-card" data-node-id="319:5253">
           <h3 class="figma-dialog-title">ยืนยันการสรุปด้วย AI</h3>
           <div class="figma-ai-token-notice">
             ผู้ให้บริการ AI ที่คุณเชื่อมต่อจะประมวลผลเนื้อหาต้นฉบับ โดยใช้ Token ของคุณ และอาจมีค่าใช้จ่าย
@@ -206,7 +206,7 @@ export function renderLinkDetailModals(state, item) {
   if (ui.aiSummaryStatus === "loading") {
     return `
       <div class="modal-backdrop center figma-dialog-backdrop">
-        <div class="figma-dialog-card" onclick="event.stopPropagation()" data-node-id="319:5264">
+        <div class="figma-dialog-card" data-node-id="319:5264">
           <h3 class="figma-dialog-title">กำลังสรุปเนื้อหา…</h3>
           <p class="figma-dialog-sub">กำลังตรวจว่าเปิดอ่านต้นฉบับได้</p>
           <button type="button" class="figma-btn-outline-44 full" data-action="close-ai-confirm">ยกเลิก</button>
@@ -218,7 +218,7 @@ export function renderLinkDetailModals(state, item) {
   if (ui.aiSummaryStatus === "success") {
     return `
       <div class="modal-backdrop center figma-dialog-backdrop" data-action="close-ai-confirm">
-        <div class="figma-dialog-card" onclick="event.stopPropagation()" data-node-id="319:5271">
+        <div class="figma-dialog-card" data-node-id="319:5271">
           <h3 class="figma-dialog-title">สรุปจากต้นฉบับ</h3>
           <div class="figma-ai-result-box">
             ${escHtml(item.aiSummary || "สรุปเนื้อหาเรียบร้อยแล้ว")}
@@ -232,7 +232,7 @@ export function renderLinkDetailModals(state, item) {
   if (ui.aiSummaryStatus === "error") {
     return `
       <div class="modal-backdrop center figma-dialog-backdrop" data-action="close-ai-confirm">
-        <div class="figma-dialog-card" onclick="event.stopPropagation()" data-node-id="319:5279">
+        <div class="figma-dialog-card" data-node-id="319:5279">
           <h3 class="figma-dialog-title">สรุปไม่สำเร็จ</h3>
           <p class="figma-dialog-sub">เข้าถึงเนื้อหาต้นฉบับไม่ได้ จึงยังไม่มีสรุปให้แสดง</p>
           <div class="figma-dialog-actions">
@@ -247,7 +247,7 @@ export function renderLinkDetailModals(state, item) {
   if (ui.noteEditing) {
     return `
       <div class="modal-backdrop center figma-dialog-backdrop" data-action="cancel-note-edit">
-        <div class="figma-dialog-card" onclick="event.stopPropagation()" data-node-id="319:5120">
+        <div class="figma-dialog-card" data-node-id="319:5120">
           <h3 class="figma-dialog-title">แก้ไขโน้ต</h3>
           <textarea
             class="figma-modal-textarea"
@@ -267,7 +267,7 @@ export function renderLinkDetailModals(state, item) {
     const quickTags = ["#อ่านทีหลัง", "#คาเฟ่", "#เที่ยว", "#ไอเดีย", "#อาหาร"];
     return `
       <div class="modal-backdrop center figma-dialog-backdrop" data-action="toggle-tag-popover">
-        <div class="figma-dialog-card" onclick="event.stopPropagation()" data-node-id="319:5131">
+        <div class="figma-dialog-card" data-node-id="319:5131">
           <h3 class="figma-dialog-title">เพิ่มแท็ก</h3>
           <input
             type="text"
@@ -514,12 +514,13 @@ export function renderSavedPreviewScreen(state) {
 function renderExternalShareSheet(state, sheet) {
   const d = sheet.draft;
   const folders = state.data.folders || [];
-  const selectedFolderId = d.folderId || folders[0]?.id;
+  const selectedFolderId = d.folderId === undefined ? folders[0]?.id || null : d.folderId;
   const quickTags = ["#คาเฟ่", "#อารีย์", "#ญี่ปุ่น", "#อาหาร"];
+  const previewThumb = resolveMediaThumbUrl(d);
 
   return `
     <div class="modal-backdrop share-sheet-backdrop" data-close-sheet="1">
-      <div class="bottom-sheet figma-white-sheet" onclick="event.stopPropagation()" data-node-id="319:541">
+      <div class="bottom-sheet figma-white-sheet" data-node-id="319:541">
         <div class="figma-sheet-handle"></div>
         <div class="figma-ext-sheet-top">
           <h3 class="figma-sheet-h3">บันทึกลิงก์</h3>
@@ -535,7 +536,7 @@ function renderExternalShareSheet(state, sheet) {
 
         <div class="figma-ext-link-preview">
           <div class="figma-ext-link-thumb">
-            ${safeImgUrl(d.coverUrl) ? `<img src="${escHtml(safeImgUrl(d.coverUrl))}" alt="" />` : `<span>${escHtml((d.platform || "L").charAt(0))}</span>`}
+            ${previewThumb ? `<img src="${escHtml(previewThumb)}" alt="" />` : `<span>${escHtml((d.platform || "L").charAt(0))}</span>`}
           </div>
           <div class="figma-ext-link-info">
             <input
@@ -552,6 +553,11 @@ function renderExternalShareSheet(state, sheet) {
         <div class="figma-sheet-field">
           <span class="figma-sheet-label">โฟลเดอร์</span>
           <div class="figma-chip-wrap">
+            <button
+              type="button"
+              class="figma-pill-choice ${!selectedFolderId ? "selected" : ""}"
+              data-select-save-folder="__none__"
+            >ไม่ใส่โฟลเดอร์</button>
             ${folders
               .map((f) => {
                 const selected = selectedFolderId === f.id;
@@ -619,10 +625,15 @@ export function renderSaveAndReminderSheets(state) {
     const nestedPicker = state.ui.folderPickerSheetOpen
       ? `
       <div class="modal-backdrop figma-nested-backdrop" data-action="close-folder-picker-sheet">
-        <div class="bottom-sheet figma-white-sheet" onclick="event.stopPropagation()" data-node-id="319:4779">
+        <div class="bottom-sheet figma-white-sheet" data-node-id="319:4779">
           <div class="figma-sheet-handle" data-action="close-folder-picker-sheet"></div>
           <h3 class="figma-picker-title">เลือกโฟลเดอร์</h3>
           <div class="figma-picker-list">
+            <button
+              type="button"
+              class="figma-picker-option ${!d.folderId ? "selected" : ""}"
+              data-select-save-folder="__none__"
+            >ไม่ใส่โฟลเดอร์ (ยังไม่จัดหมวด)</button>
             ${folders
               .map((f) => {
                 const active = d.folderId === f.id;
@@ -645,7 +656,7 @@ export function renderSaveAndReminderSheets(state) {
     const nestedCreateFolder = state.ui.createFolderSheetOpen
       ? `
       <div class="modal-backdrop figma-nested-backdrop" data-action="close-create-folder-sheet">
-        <div class="bottom-sheet figma-white-sheet" onclick="event.stopPropagation()" data-node-id="319:4659">
+        <div class="bottom-sheet figma-white-sheet" data-node-id="319:4659">
           <div class="figma-sheet-handle" data-action="close-create-folder-sheet"></div>
           <h2 class="figma-add-sheet-title">สร้างโฟลเดอร์</h2>
 
@@ -693,7 +704,6 @@ export function renderSaveAndReminderSheets(state) {
       <div class="modal-backdrop share-sheet-backdrop" data-close-sheet="1">
         <div
           class="bottom-sheet figma-white-sheet ${isExpanded ? "is-expanded" : ""}"
-          onclick="event.stopPropagation()"
           data-node-id="${isExpanded ? "319:4791" : "319:4332"}"
         >
           <div
@@ -707,9 +717,12 @@ export function renderSaveAndReminderSheets(state) {
           <div class="figma-add-sheet-scroll">
             <div class="figma-add-sheet-head">
               <h2 class="figma-add-sheet-title">เพิ่มลิงก์</h2>
-              <button type="button" class="figma-add-expand-btn" data-action="toggle-add-link-expand">
-                ${isExpanded ? "ย่อแผง" : "ขยายแผง"}
-              </button>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <button type="button" class="figma-add-expand-btn" data-action="toggle-add-link-expand">
+                  ${isExpanded ? "ย่อแผง" : "ขยายแผง"}
+                </button>
+                <button type="button" class="figma-share-close-btn" data-close-sheet="1" aria-label="ปิด">×</button>
+              </div>
             </div>
 
             <div class="figma-sheet-field">
@@ -817,34 +830,36 @@ export function renderSaveAndReminderSheets(state) {
 
   // Reminder Bottom Sheet (Figma 319:5142 + Spec 2B Recurring Reminder Selector)
   if (sheet.type === "reminder") {
-    const daySelected = sheet.day || 14;
-    const days = Array.from({ length: 30 }, (_, i) => i + 1);
+    const cal = buildMonthCalendarDays(sheet.yearMonth);
+    const daySelected = Math.min(Number(sheet.day || 1), cal.days.length);
     const dows = ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"];
     const scheduleType = sheet.scheduleType || state.ui.reminderScheduleType || "once";
     const repeatDays = Number(sheet.repeatEveryDays || state.ui.reminderRepeatDays || 3);
 
     return `
       <div class="modal-backdrop" data-close-sheet="1">
-        <div class="bottom-sheet figma-reminder-sheet" onclick="event.stopPropagation()" data-node-id="319:5142">
+        <div class="bottom-sheet figma-reminder-sheet" data-node-id="319:5142">
           <div class="figma-sheet-handle"></div>
           <h3 class="figma-reminder-title">ตั้งเตือน</h3>
 
           <div class="figma-cal-month-row">
             <button type="button" class="figma-cal-nav-btn" data-cal-month="-1" aria-label="เดือนก่อนหน้า">${icons.back(18)}</button>
-            <strong class="figma-cal-month-label">${escHtml(sheet.monthLabel || "พฤศจิกายน 2569")}</strong>
+            <strong class="figma-cal-month-label">${escHtml(sheet.monthLabel || cal.monthLabel)}</strong>
             <button type="button" class="figma-cal-nav-btn" data-cal-month="1" aria-label="เดือนถัดไป">${icons.chevronRight(18)}</button>
           </div>
 
           <div class="figma-cal-grid">
             ${dows.map((d) => `<div class="figma-cal-dow">${d}</div>`).join("")}
-            ${days
+            ${Array.from({ length: cal.leadingEmpty }, () => `<span class="figma-cal-day empty" aria-hidden="true"></span>`).join("")}
+            ${cal.days
               .map(
-                (day) => `
+                (cell) => `
               <button
                 type="button"
-                class="figma-cal-day ${day < 11 ? "muted" : ""} ${day === daySelected ? "selected" : ""}"
-                data-select-cal-day="${day}"
-              >${day}</button>`
+                class="figma-cal-day ${cell.isPast ? "muted is-past" : ""} ${cell.isToday ? "is-today" : ""} ${cell.day === daySelected ? "selected" : ""}"
+                data-select-cal-day="${cell.day}"
+                ${cell.isPast ? `disabled aria-disabled="true"` : ""}
+              >${cell.day}</button>`
               )
               .join("")}
           </div>

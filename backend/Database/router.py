@@ -27,6 +27,7 @@ from .repository import (
     list_folders_for_user,
     list_tags_for_user,
     list_user_beta_feedback,
+    preview_folder_invite,
     register_device_for_user,
     remove_folder_member,
     revoke_folder_invite,
@@ -52,13 +53,16 @@ router = APIRouter(prefix="/api", tags=["Database CRUD & Export"])
 
 
 async def _run_local_enrichment(db: Any, item_id: str) -> None:
-    """Trigger Unfurl enrichment asynchronously in local dev mode (where pg_net is absent)."""
+    """Trigger Unfurl enrichment asynchronously unless webhook/another worker already enriched it."""
     try:
+        existing = db.table("items").select("enrich_status").eq("id", item_id).execute()
+        if existing.data and existing.data[0].get("enrich_status") in ("unfurled", "done"):
+            return
         from Unfurl.service import enrich_item
 
         await enrich_item(db, item_id)
     except Exception as exc:
-        _logger.warning("Local background enrichment failed for %s: %s", item_id, exc)
+        _logger.warning("Background enrichment failed for %s: %s", item_id, exc)
 
 
 @router.post("/items", status_code=status.HTTP_201_CREATED)
@@ -70,8 +74,13 @@ def create_item_endpoint(
 ) -> Dict[str, Any]:
     """Save or deduplicate a link immediately with enrich_status='pending'."""
     item = create_or_bump_item(db, user_id, req)
+    is_local_dev = getattr(db, "is_local_dev", False)
+    auto_cloud_enrich = (
+        os.getenv("AUTO_ENRICH_ON_CREATE", "true").strip().lower() != "false"
+        and not os.getenv("PYTEST_CURRENT_TEST")
+    )
     if (
-        getattr(db, "is_local_dev", False)
+        (is_local_dev or auto_cloud_enrich)
         and item.get("enrich_status") == "pending"
         and item.get("id")
         and os.getenv("DISABLE_LOCAL_BG_ENRICH", "").strip().lower() != "true"
@@ -186,6 +195,14 @@ def create_invite_endpoint(
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
     return create_folder_invite(db, user_id, folder_id, req)
+
+
+@router.get("/invites/{token}")
+def preview_invite_endpoint(
+    token: str,
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    return preview_folder_invite(db, token)
 
 
 @router.post("/invites/{token}/accept")

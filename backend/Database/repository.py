@@ -642,6 +642,25 @@ def delete_item_for_user(db: Any, user_id: str, item_id: str) -> Dict[str, Any]:
     return {"deleted": True, "item_id": item_id}
 
 
+def _attach_folder_member_counts(db: Any, folders: List[Dict[str, Any]]) -> None:
+    """Attach accurate non-owner collaborator counts onto folder dicts without N+1 queries."""
+    folder_ids = [f.get("id") for f in folders if f.get("id")]
+    if not folder_ids:
+        return
+    try:
+        mem_res = db.table("folder_members").select("folder_id, user_id, role").in_("folder_id", folder_ids).execute()
+    except Exception:
+        return
+    counts: Dict[str, int] = {}
+    for row in mem_res.data or []:
+        fid = row.get("folder_id")
+        if fid and row.get("role") != "owner":
+            counts[fid] = counts.get(fid, 0) + 1
+    for f in folders:
+        fid = f.get("id")
+        f["member_count"] = counts.get(fid, 0) if fid else 0
+
+
 def list_folders_for_user(db: Any, user_id: str) -> List[Dict[str, Any]]:
     owned = db.table("folders").select("*").eq("owner_id", user_id).execute()
     folders: List[Dict[str, Any]] = []
@@ -663,6 +682,7 @@ def list_folders_for_user(db: Any, user_id: str) -> List[Dict[str, Any]]:
             f["role"] = m.get("role")
             folders.append(f)
             seen.add(fid)
+    _attach_folder_member_counts(db, folders)
     return folders
 
 
@@ -671,7 +691,7 @@ def create_folder_for_user(db: Any, user_id: str, req: FolderCreateRequest) -> D
     if not clean_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Folder name cannot be blank.")
     now_iso = _now_iso()
-    payload = {
+    payload: Dict[str, Any] = {
         "owner_id": user_id,
         "name": clean_name,
         "emoji": req.emoji,
@@ -679,9 +699,19 @@ def create_folder_for_user(db: Any, user_id: str, req: FolderCreateRequest) -> D
         "created_at": now_iso,
         "updated_at": now_iso,
     }
-    res = db.table("folders").insert(payload).execute()
+    if req.cover_url:
+        payload["cover_url"] = req.cover_url
+    try:
+        res = db.table("folders").insert(payload).execute()
+    except Exception as exc:
+        if "cover_url" in payload and ("cover_url" in str(exc) or "PGRST204" in str(exc)):
+            payload.pop("cover_url", None)
+            res = db.table("folders").insert(payload).execute()
+        else:
+            raise
     row = dict(res.data[0]) if res.data else payload
     row["role"] = "owner"
+    row.setdefault("member_count", 0)
     return row
 
 
@@ -700,11 +730,22 @@ def update_folder_for_user(db: Any, user_id: str, folder_id: str, req: FolderUpd
         updates["name"] = clean_name
     if "emoji" in req.model_fields_set:
         updates["emoji"] = req.emoji
+    if "cover_url" in req.model_fields_set:
+        updates["cover_url"] = req.cover_url
     if not updates:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No folder fields to update.")
 
     updates["updated_at"] = _now_iso()
-    res = db.table("folders").update(updates).eq("id", folder_id).execute()
+    try:
+        res = db.table("folders").update(updates).eq("id", folder_id).execute()
+    except Exception as exc:
+        if "cover_url" in updates and ("cover_url" in str(exc) or "PGRST204" in str(exc)):
+            updates.pop("cover_url", None)
+            if len(updates) <= 1:
+                return dict(f_res.data[0])
+            res = db.table("folders").update(updates).eq("id", folder_id).execute()
+        else:
+            raise
     return dict(res.data[0]) if res.data else {**f_res.data[0], **updates}
 
 
@@ -741,7 +782,7 @@ def create_folder_invite(db: Any, user_id: str, folder_id: str, req: InviteCreat
     db.table("folder_invites").insert(payload).execute()
     db.table("folders").update({"is_shared": True, "updated_at": _now_iso()}).eq("id", folder_id).execute()
 
-    app_url = os.getenv("APP_URL", "https://app.justsaveit.com").rstrip("/")
+    app_url = os.getenv("APP_URL", "https://just-save-it-web.onrender.com").rstrip("/")
     return {
         "token": token,
         "folder_id": folder_id,
@@ -749,6 +790,71 @@ def create_folder_invite(db: Any, user_id: str, folder_id: str, req: InviteCreat
         "max_uses": req.max_uses,
         "expires_at": expires_at.isoformat(),
         "invite_url": f"{app_url}/invite/{token}",
+    }
+
+
+def preview_folder_invite(db: Any, invite_token: str) -> Dict[str, Any]:
+    """Return safe, non-PII folder metadata & validity status for an invite token landing page."""
+    clean_tok = (invite_token or "").strip()
+    if len(clean_tok) < 8 or len(clean_tok) > 128:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite not found.")
+
+    inv_res = db.table("folder_invites").select("*").eq("token", clean_tok).execute()
+    if not inv_res.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite not found.")
+
+    inv = inv_res.data[0]
+    valid = True
+    reason: Optional[str] = None
+    if inv.get("revoked_at") is not None:
+        valid = False
+        reason = "revoked"
+    else:
+        expires_dt = _parse_iso(inv.get("expires_at"))
+        if expires_dt is not None and expires_dt <= datetime.now(timezone.utc):
+            valid = False
+            reason = "expired"
+        else:
+            max_uses = inv.get("max_uses")
+            use_count = int(inv.get("use_count") or 0)
+            if max_uses is not None and use_count >= int(max_uses):
+                valid = False
+                reason = "max_uses_reached"
+
+    folder_id = inv.get("folder_id")
+    f_res = db.table("folders").select("*").eq("id", folder_id).execute()
+    if not f_res.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target folder not found.")
+    folder = f_res.data[0]
+
+    owner_id = folder.get("owner_id")
+    inviter_name = "สมาชิก Sharely"
+    if owner_id:
+        try:
+            prof_res = db.table("profiles").select("display_name").eq("id", owner_id).execute()
+            if prof_res.data and prof_res.data[0].get("display_name"):
+                inviter_name = str(prof_res.data[0]["display_name"]).strip()
+        except Exception:
+            pass
+
+    item_count = 0
+    try:
+        items_res = db.table("items").select("id").eq("folder_id", folder_id).execute()
+        item_count = len(items_res.data or [])
+    except Exception:
+        item_count = 0
+
+    return {
+        "token": clean_tok,
+        "valid": valid,
+        "reason": reason,
+        "folder_id": folder_id,
+        "folder_name": folder.get("name") or "โฟลเดอร์ที่แชร์",
+        "folder_emoji": folder.get("emoji") or "📁",
+        "folder_cover_url": folder.get("cover_url"),
+        "role": inv.get("role") or "viewer",
+        "inviter_name": inviter_name,
+        "item_count": item_count,
     }
 
 

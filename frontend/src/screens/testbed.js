@@ -8,8 +8,10 @@ import { escHtml } from "../components/icons.js";
 import { MCP_TOOLS_CATALOG } from "../data/seed.js";
 import { buildAiHeadersAndConfig } from "../services/apiClient.js";
 import { getAuthMode, hasValidSession } from "../services/routeGuard.js";
+import { isQaModeEnabled } from "../state/store.js";
 
 export function renderTestbedPanel(state) {
+  if (!isQaModeEnabled()) return "";
   const { api, data, ui } = state;
   const activeTab = ui.inspectorTab || "controls";
   const selectedLink = data.links.find((l) => l.id === ui.activeLinkId) || data.links[0];
@@ -123,7 +125,7 @@ function renderControlsTab(state, selectedLink, headers, preset) {
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
         <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="loginPassword" title="POST /api/auth/login or Supabase Sign In">
-          🔑 Login (may/pass)
+          🔑 Login (Test Account)
         </button>
         <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="magicLink" title="Magic Link OTP">
           ✉️ Magic Link
@@ -411,8 +413,8 @@ function renderMatrixTab(api) {
     { area: "backend/Login/", route: "POST /api/auth/* (Email/OAuth/Native/Tokens)", status: "Implemented (Phase 1)", mode: "Live + Mock" },
     { area: "backend/Ai/router.py", route: "POST /api/ai/summarize", status: "Implemented (3-Tier)", mode: "Live + Mock" },
     { area: "backend/Ai/mcp_server.py", route: "SSE /mcp (13 Tools)", status: "Implemented", mode: "Sim + Probe" },
-    { area: "backend/Database/", route: "POST /api/preview, /links, /folders", status: "Planned (.gitkeep)", mode: "Mock Simulated" },
-    { area: "backend/Database/", route: "/reminders & /invites & CSV Export", status: "Planned (.gitkeep)", mode: "Mock Simulated" },
+    { area: "backend/Database/", route: "POST /api/preview, /links, /folders", status: "Implemented", mode: "Live + Mock" },
+    { area: "backend/Database/", route: "/reminders & /invites & CSV Export", status: "Implemented", mode: "Live + Mock" },
   ];
 
   return `

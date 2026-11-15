@@ -39,6 +39,29 @@ export function safeImgUrl(raw) {
   return "";
 }
 
+export function resolveMediaThumbUrl(source) {
+  if (!source) return "";
+  if (typeof source === "string") return safeImgUrl(source);
+  if (typeof source === "object") {
+    const mediaArr = Array.isArray(source.media_items) ? source.media_items : [];
+    const firstMedia = mediaArr[0];
+    const nestedUrl =
+      typeof firstMedia === "string"
+        ? firstMedia
+        : firstMedia?.thumbnail_url || firstMedia?.thumb_url || firstMedia?.media_url || firstMedia?.url || "";
+    const candidate =
+      source.thumbnail_url ||
+      source.coverUrl ||
+      source.image_url ||
+      source.thumb_url ||
+      source.media_url ||
+      (source.media_type === "image" && source.url ? source.url : "") ||
+      nestedUrl;
+    return safeImgUrl(candidate);
+  }
+  return "";
+}
+
 export const icons = {
   cherry: (size = 18) => `
     <svg width="${size}" height="${size}" viewBox="0 0 15 19" fill="none" aria-hidden="true">

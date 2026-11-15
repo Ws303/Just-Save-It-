@@ -85,20 +85,38 @@ export function renderFolderDetailScreen(state) {
             ${escHtml(folder.name)}
           </h1>
         </div>
-        <button type="button" class="btn-outline-pill" style="height:36px;padding:0 14px;font-size:13px;" data-open-invite-sheet="${escHtml(folder.id)}">
-          เชิญเพื่อน
-        </button>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button type="button" class="icon-btn" style="width:34px;height:34px;" data-open-edit-folder="${escHtml(folder.id)}" title="แก้ไขโฟลเดอร์">
+            ${icons.pencil(15)}
+          </button>
+          <button type="button" class="btn-outline-pill" style="height:36px;padding:0 14px;font-size:13px;" data-open-invite-sheet="${escHtml(folder.id)}">
+            เชิญเพื่อน
+          </button>
+        </div>
       </div>
 
+      ${(() => {
+        const cached = state.ui.folderMembers?.[folder.id]?.members || [];
+        const userInitial = (state.data.user?.displayName || state.data.user?.email || "U")
+          .trim()
+          .charAt(0)
+          .toUpperCase() || "U";
+        const initials = cached.length
+          ? cached.slice(0, 3).map((m) => (m.display_name || m.email || m.user_id || "U").trim().charAt(0).toUpperCase())
+          : folder.sharedUsers?.length
+            ? folder.sharedUsers.slice(0, 3).map((u) => String(u).trim().charAt(0).toUpperCase())
+            : [userInitial];
+        const shareCount = Math.max(folder.sharedCount || 0, Math.max(0, cached.length - 1));
+        return `
       <div class="shared-bar">
         <div class="avatar-stack">
-          <div class="avatar-circle">${escHtml((folder.sharedUsers?.[0] || "ม").charAt(0))}</div>
-          <div class="avatar-circle">${escHtml((folder.sharedUsers?.[1] || "ต").charAt(0))}</div>
+          ${initials.map((ch) => `<div class="avatar-circle">${escHtml(ch)}</div>`).join("")}
         </div>
         <span style="font-size:13px;color:var(--ink-secondary);">
-          ${folder.sharedCount > 0 ? `แชร์กับ ${folder.sharedCount} คน` : "โฟลเดอร์ส่วนตัว · กดเชิญเพื่อนเพื่อแชร์"}
+          ${shareCount > 0 ? `แชร์กับ ${shareCount} คน` : "โฟลเดอร์ส่วนตัว · กดเชิญเพื่อนเพื่อแชร์"}
         </span>
-      </div>
+      </div>`;
+      })()}
 
       <div class="app-pad" style="display:flex;flex-direction:column;gap:13px;padding-top:4px;">
         <div class="search-box">
@@ -146,7 +164,7 @@ export function renderFolderSheets(state) {
     const isEdit = sheet.type === "editFolder";
     return `
       <div class="modal-backdrop" data-close-sheet="1">
-        <div class="bottom-sheet figma-white-sheet" onclick="event.stopPropagation()" data-node-id="319:4659">
+        <div class="bottom-sheet figma-white-sheet" data-node-id="319:4659">
           <div class="figma-sheet-handle"></div>
           <h3 class="figma-add-sheet-title" style="font-size:22px;">
             ${isEdit ? "แก้ไขโฟลเดอร์" : "สร้างโฟลเดอร์"}
@@ -189,6 +207,13 @@ export function renderFolderSheets(state) {
             <button type="button" class="figma-btn-outline-48" data-close-sheet="1">ยกเลิก</button>
             <button type="button" class="figma-btn-red-48" data-save-folder-sheet="1">${isEdit ? "บันทึก" : "สร้างโฟลเดอร์"}</button>
           </div>
+          ${
+            isEdit
+              ? `<button type="button" class="figma-btn-outline-48 full" style="color:var(--theme-accent-text);border-color:var(--theme-soft-border);" data-confirm-delete-folder="${escHtml(sheet.folderId)}">
+                   ลบโฟลเดอร์นี้
+                 </button>`
+              : ""
+          }
         </div>
       </div>
     `;
@@ -198,7 +223,7 @@ export function renderFolderSheets(state) {
   if (sheet.type === "pickCover") {
     return `
       <div class="modal-backdrop" data-close-sheet="1">
-        <div class="bottom-sheet figma-white-sheet" onclick="event.stopPropagation()">
+        <div class="bottom-sheet figma-white-sheet">
           <div class="figma-sheet-handle"></div>
           <h3 style="margin:0;font-size:20px;color:#142433;">เลือกรูปปก</h3>
           <p class="tiny-hint" style="margin:0;">${escHtml(sheet.returnSheet.nameDraft || "โฟลเดอร์")}</p>
@@ -209,7 +234,7 @@ export function renderFolderSheets(state) {
                 <button
                   type="button"
                   class="folder-card"
-                  style="padding:6px;border-color:${selected ? "#c91f26" : "#dbe0e3"};"
+                  style="padding:6px;border-color:${selected ? "var(--theme-accent)" : "#dbe0e3"};"
                   data-select-cover="${escHtml(c.src)}"
                 >
                   <div class="folder-cover-wrap" style="height:76px;">
@@ -238,11 +263,16 @@ export function renderFolderSheets(state) {
       folder.inviteUrl
     );
 
+    const memberBundle = state.ui.folderMembers?.[folder.id] || null;
+    const members = Array.isArray(memberBundle?.members) ? memberBundle.members : [];
+    const activeInvites = Array.isArray(memberBundle?.active_invites) ? memberBundle.active_invites : [];
+    const ownerId = memberBundle?.owner_id || folder.ownerId || "";
+    const isOwner = !memberBundle || memberBundle.caller_role === "owner";
+
     return `
       <div class="modal-backdrop" data-close-sheet="1">
         <div
           class="bottom-sheet figma-share-sheet"
-          onclick="event.stopPropagation()"
           data-node-id="${shareState === "loading" ? "319:3429" : shareState === "error" ? "319:3751" : "319:3107"}"
         >
           <div class="figma-share-header">
@@ -309,6 +339,61 @@ export function renderFolderSheets(state) {
           <p class="figma-share-footnote">
             คำเชิญสร้างลิงก์ผ่าน API พร้อมกำหนดสิทธิ์ (${sharePerm === "editor" ? "แก้ไขได้" : "ดูอย่างเดียว"})
           </p>
+
+          ${
+            members.length > 0 || activeInvites.length > 0
+              ? `
+            <div class="figma-sheet-field" style="width:100%;">
+              <span class="figma-share-label">สมาชิกที่เข้าร่วม (${members.length})</span>
+              <div class="figma-member-list">
+                ${members
+                  .map((m) => {
+                    const uid = m.user_id || m.userId || "";
+                    const isMemberOwner = uid === ownerId || m.role === "owner";
+                    const nextRole = m.role === "editor" ? "viewer" : "editor";
+                    const label = m.display_name || m.email || (uid ? `สมาชิก ${uid.slice(0, 6)}` : "สมาชิก");
+                    return `
+                      <div class="figma-member-row">
+                        <div class="figma-member-meta">
+                          <strong>${escHtml(label)}</strong>
+                          <span>${isMemberOwner ? "เจ้าของโฟลเดอร์" : m.role === "editor" ? "เพิ่มและแก้ไขได้" : "ดูอย่างเดียว"}</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:6px;">
+                          ${
+                            isOwner && !isMemberOwner && uid
+                              ? `
+                            <button type="button" class="btn-outline-pill" style="height:28px;padding:0 10px;font-size:11.5px;" data-change-member-role="${escHtml(uid)}" data-role="${nextRole}">
+                              สลับเป็น${nextRole === "editor" ? "แก้ไข" : "ดู"}
+                            </button>
+                            <button type="button" class="btn-outline-pill" style="height:28px;padding:0 10px;font-size:11.5px;color:var(--theme-accent-text);" data-remove-member="${escHtml(uid)}">
+                              นำออก
+                            </button>`
+                              : ""
+                          }
+                        </div>
+                      </div>`;
+                  })
+                  .join("")}
+                ${activeInvites
+                  .map(
+                    (inv) => `
+                  <div class="figma-member-row">
+                    <div class="figma-member-meta">
+                      <strong>ลิงก์คำเชิญ (${inv.role === "editor" ? "แก้ไขได้" : "ดูอย่างเดียว"})</strong>
+                      <span>${escHtml((inv.token || "").slice(0, 12))}…</span>
+                    </div>
+                    ${
+                      isOwner && inv.token
+                        ? `<button type="button" class="btn-outline-pill" style="height:28px;padding:0 10px;font-size:11.5px;color:var(--theme-accent-text);" data-revoke-invite="${escHtml(inv.token)}">ยกเลิกลิงก์</button>`
+                        : ""
+                    }
+                  </div>`
+                  )
+                  .join("")}
+              </div>
+            </div>`
+              : ""
+          }
         </div>
       </div>
     `;
@@ -320,7 +405,7 @@ export function renderFolderSheets(state) {
     if (!folder) return "";
     return `
       <div class="modal-backdrop" data-close-sheet="1">
-        <div class="bottom-sheet figma-share-sheet" onclick="event.stopPropagation()">
+        <div class="bottom-sheet figma-share-sheet">
           <div class="figma-sheet-handle"></div>
           <div class="figma-share-header">
             <h3 class="figma-share-title">แชร์คำเชิญ</h3>
@@ -352,7 +437,7 @@ export function renderFolderSheets(state) {
     );
     return `
       <div class="modal-backdrop" data-close-sheet="1">
-        <div class="bottom-sheet figma-share-sheet" onclick="event.stopPropagation()">
+        <div class="bottom-sheet figma-share-sheet">
           <div class="figma-sheet-handle"></div>
           <div class="figma-share-header">
             <h3 class="figma-share-title">ตัวอย่างข้อความเชิญ</h3>
@@ -361,12 +446,39 @@ export function renderFolderSheets(state) {
           <span style="font-size:13px;font-weight:700;color:#55596a;">ผ่าน ${escHtml(sheet.appName || "LINE")}</span>
           <div style="background:#f7f5f0;border-radius:12px;padding:12px;font-size:13px;width:100%;">
             <div>ชวนมาดูและช่วยกันเก็บลิงก์ในโฟลเดอร์ "${escHtml(folder.name)}" บน Sharely</div>
-            <div style="color:#c91f26;margin-top:4px;font-weight:600;word-break:break-all;">${escHtml(inviteUrl)}</div>
+            <div style="color:var(--theme-accent-text);margin-top:4px;font-weight:600;word-break:break-all;">${escHtml(inviteUrl)}</div>
           </div>
           <button type="button" class="figma-sheet-submit-btn" data-preview-recipient-invite="${escHtml(folder.id)}">
             ${icons.share(17)}
             <span>ดูหน้าที่ผู้รับจะเห็น</span>
           </button>
+        </div>
+      </div>
+    `;
+  }
+
+  if (sheet.type === "deleteFolderDialog") {
+    const folder = getFolderById(sheet.folderId);
+    if (!folder) return "";
+    const count = getFolderCount(folder);
+    return `
+      <div class="modal-backdrop center" data-close-sheet="1">
+        <div class="center-dialog">
+          <h3 style="margin:0;font-size:19px;color:var(--ink-primary);">ลบโฟลเดอร์นี้ไหม?</h3>
+          <p style="margin:0;font-size:14px;font-weight:600;color:var(--ink-primary);">${escHtml(folder.name)}</p>
+          <p style="margin:0;font-size:13px;color:var(--ink-secondary);">
+            ${
+              count > 0
+                ? `ลิงก์ทั้งหมด ${count} รายการในโฟลเดอร์นี้จะถูกย้ายไปที่ "ยังไม่จัดหมวด" และจะไม่ถูกลบ`
+                : "โฟลเดอร์นี้จะถูกลบออกอย่างถาวร"
+            }
+          </p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;">
+            <button type="button" class="btn-outline-pill" data-close-sheet="1">ยกเลิก</button>
+            <button type="button" class="btn-accent-pill lg" data-execute-delete-folder="${escHtml(folder.id)}">
+              ลบโฟลเดอร์
+            </button>
+          </div>
         </div>
       </div>
     `;

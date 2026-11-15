@@ -5,20 +5,22 @@
  */
 import { icons, escHtml } from "../components/icons.js";
 import { AI_PROVIDER_PRESETS } from "../data/seed.js";
+import { isQaModeEnabled } from "../state/store.js";
 import { renderBottomNav } from "./common.js";
 
-export function renderAiScreen(state) {
+export function renderAiPanelBody(state) {
   const cfg = state.data.aiConfig;
-  const preset = AI_PROVIDER_PRESETS.find((p) => p.id === cfg.provider) || AI_PROVIDER_PRESETS[3];
+  const preset = AI_PROVIDER_PRESETS.find((p) => p.id === cfg.provider) || AI_PROVIDER_PRESETS[0];
   const isCustom = preset.backendProvider === "custom";
   const isBuiltIn = preset.backendProvider === "built-in";
   const openMenu = state.ui.aiDropdown;
   const selectedModel = cfg.model || "";
   const firstLink = state.data.links[2] || state.data.links[0];
+  const quotaTotal = Math.max(1, Number(state.data.freeQuotaTotal ?? state.data.freeQuotaLimit ?? 50));
+  const quotaRemaining = Math.max(0, Number(state.data.freeQuotaRemaining ?? quotaTotal));
+  const quotaPct = Math.min(100, Math.max(0, Math.round((quotaRemaining / quotaTotal) * 100)));
 
   return `
-    <div class="screen-scroll with-nav-pad">
-      <div class="app-pad" style="display:flex;flex-direction:column;gap:14px;padding-top:20px;">
         <div class="ai-header-row">
           <div class="ai-icon-tile">${icons.bot(22)}</div>
           <h1 class="page-heading">เชื่อมต่อ AI</h1>
@@ -30,7 +32,7 @@ export function renderAiScreen(state) {
         <!-- Provider Dropdown (119:683) -->
         <div class="field-group">
           <label class="field-label">ผู้ให้บริการ AI</label>
-          <button class="select-trigger" data-toggle-ai-dropdown="provider">
+          <button type="button" class="select-trigger" data-toggle-ai-dropdown="provider">
             <span>${escHtml(cfg.provider)}</span>
             ${icons.chevronDown(18)}
           </button>
@@ -40,7 +42,7 @@ export function renderAiScreen(state) {
             <div class="dropdown-popover">
               ${AI_PROVIDER_PRESETS.map(
                 (p) => `
-                <button class="dropdown-option ${cfg.provider === p.id ? "active" : ""}" data-select-ai-provider="${escHtml(p.id)}">
+                <button type="button" class="dropdown-option ${cfg.provider === p.id ? "active" : ""}" data-select-ai-provider="${escHtml(p.id)}">
                   <span>${escHtml(p.id)}</span>
                   <span class="tiny-hint">${escHtml(p.backendProvider)}</span>
                 </button>`
@@ -53,7 +55,7 @@ export function renderAiScreen(state) {
         <!-- Model Dropdown (119:694..715) -->
         <div class="field-group">
           <label class="field-label">โมเดล</label>
-          <button class="select-trigger" data-toggle-ai-dropdown="model">
+          <button type="button" class="select-trigger" data-toggle-ai-dropdown="model">
             <span style="color:${selectedModel ? "var(--ink-primary)" : "var(--ink-secondary)"};">
               ${escHtml(selectedModel || "เลือกโมเดล")}
             </span>
@@ -66,7 +68,7 @@ export function renderAiScreen(state) {
               ${preset.models
                 .map(
                   (m) => `
-                <button class="dropdown-option ${selectedModel === m ? "active" : ""}" data-select-ai-model="${escHtml(m)}">
+                <button type="button" class="dropdown-option ${selectedModel === m ? "active" : ""}" data-select-ai-model="${escHtml(m)}">
                   <span>${escHtml(m)}</span>
                 </button>`
                 )
@@ -110,44 +112,78 @@ export function renderAiScreen(state) {
             <input
               class="field-input"
               type="password"
-              value="${escHtml(cfg.keyless ? "" : cfg.apiKey)}"
-              placeholder="${cfg.keyless ? "ไม่จำเป็นสำหรับโหมด Keyless" : "กรอก API Key ของคุณ"}"
-              ${cfg.keyless ? "disabled" : ""}
+              value="${escHtml(isCustom && cfg.keyless ? "" : cfg.apiKey)}"
+              placeholder="${isCustom && cfg.keyless ? "ไม่จำเป็นสำหรับโหมด Keyless" : "กรอก API Key ของคุณ"}"
+              ${isCustom && cfg.keyless ? "disabled" : ""}
               data-bind-ai-key="1"
             />
           </div>`
             : `
           <div class="ai-summary-card">
-            <strong style="font-size:13px;">Built-in Free Tier</strong>
-            <p class="tiny-hint" style="margin:4px 0 0;">
-              ใช้ Key ของเซิร์ฟเวอร์ (backend/.env GEMINI_API_KEY) โดยไม่ต้องส่ง X-AI-Key จากแอป
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+              <strong style="font-size:13px;">Built-in Free Tier</strong>
+              <span style="font-size:12px;font-weight:700;color:var(--theme-accent-text);">เหลือ ${quotaRemaining}/${quotaTotal} ครั้ง</span>
+            </div>
+            <div style="height:6px;border-radius:999px;background:var(--theme-soft);margin-top:8px;overflow:hidden;">
+              <div style="height:100%;width:${quotaPct}%;background:var(--theme-accent);border-radius:inherit;"></div>
+            </div>
+            <p class="tiny-hint" style="margin:6px 0 0;">
+              ใช้งานโมเดลฟรีจากเซิร์ฟเวอร์โดยไม่ต้องกรอก API Key ส่วนตัว (หรือเลือกผู้ให้บริการ BYOK ด้านบนเพื่อไม่จำกัดโควตา)
             </p>
           </div>`
         }
 
-        <button class="btn-accent-pill full48" data-save-ai-config="1">
-          เชื่อมต่อ AI
+        <button type="button" class="btn-accent-pill full48" data-save-ai-config="1" ${state.ui.aiTesting ? "disabled" : ""}>
+          ${state.ui.aiTesting ? "กำลังทดสอบการเชื่อมต่อ..." : "เชื่อมต่อและทดสอบ AI"}
         </button>
+        ${
+          !isBuiltIn && !isCustom
+            ? `<p class="tiny-hint" style="margin:0;">การทดสอบสำหรับ BYOK จะเรียกโมเดล 1 ครั้งสั้น ๆ เพื่อตรวจสอบ Key (อาจมีค่าใช้จ่ายเล็กน้อยจากผู้ให้บริการ)</p>`
+            : ""
+        }
+
+        ${
+          cfg.lastTestedAt
+            ? `
+          <div class="settings-card" style="padding:10px 12px;border-color:${cfg.connected ? "#bbf7d0" : "#fecaca"};background:${cfg.connected ? "#f0fdf4" : "#fef2f2"};">
+            <strong style="font-size:12.5px;color:${cfg.connected ? "#166534" : "#991b1b"};display:block;">
+              ${cfg.connected ? "✓ เชื่อมต่อ AI พร้อมใช้งาน" : `⚠️ ${escHtml(cfg.lastTestError || "ทดสอบการเชื่อมต่อไม่สำเร็จ")}`}
+            </strong>
+          </div>`
+            : ""
+        }
 
         ${
           firstLink
             ? `
           <div class="settings-card" style="padding:12px;background:var(--bg-muted);border-color:var(--border-divider);">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-              <strong style="font-size:13px;">ทดสอบเรียกใช้งานจริง</strong>
-              <span class="tag-badge ${state.api.mode === "live" ? "live" : "mock"}">
-                ${state.api.mode === "live" ? "LIVE API" : "MOCK MODE"}
-              </span>
+              <strong style="font-size:13px;">ทดสอบสรุปเนื้อหาจากลิงก์ล่าสุด</strong>
+              ${
+                isQaModeEnabled()
+                  ? `<span class="tag-badge ${state.api.mode === "live" ? "live" : "mock"}">
+                       ${state.api.mode === "live" ? "LIVE API" : "MOCK MODE"}
+                     </span>`
+                  : ""
+              }
             </div>
             <p class="tiny-hint" style="margin:0 0 8px;">
-              ทดสอบยิง <code>POST /api/ai/summarize</code> สำหรับ "${escHtml(firstLink.title)}"
+              ทดลองสรุป "${escHtml(firstLink.title)}"
             </p>
-            <button class="btn-outline-pill" style="width:100%;height:38px;font-size:13px;" data-run-ai-summarize="${escHtml(firstLink.id)}">
+            <button type="button" class="btn-outline-pill" style="width:100%;height:38px;font-size:13px;" data-run-ai-summarize="${escHtml(firstLink.id)}">
               ${state.api.isSummarizing ? "กำลังส่งคำขอ..." : "ทดสอบสรุปเนื้อหาทันที"}
             </button>
           </div>`
             : ""
         }
+  `;
+}
+
+export function renderAiScreen(state) {
+  return `
+    <div class="screen-scroll with-nav-pad">
+      <div class="app-pad" style="display:flex;flex-direction:column;gap:14px;padding-top:20px;">
+        ${renderAiPanelBody(state)}
       </div>
 
       ${renderBottomNav("ai")}

@@ -146,17 +146,31 @@ class AuthService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsafe redirect_to URL scheme or format.")
 
         allowed_hosts = {"localhost", "127.0.0.1"}
-        app_url_host = urlparse(os.getenv("APP_URL", "").strip()).hostname
-        if app_url_host:
-            allowed_hosts.add(app_url_host.lower())
+        raw_app_url = os.getenv("APP_URL", "").strip()
+        if raw_app_url:
+            for item in raw_app_url.split(","):
+                candidate = item.strip()
+                if not candidate:
+                    continue
+                parsed_app = urlparse(candidate if "://" in candidate else f"https://{candidate}")
+                if parsed_app.hostname:
+                    allowed_hosts.add(parsed_app.hostname.lower())
         raw_cors = os.getenv("CORS_ALLOW_ORIGINS", "").strip()
         if raw_cors and raw_cors != "*":
             for origin in raw_cors.split(","):
-                cors_host = urlparse(origin.strip()).hostname
+                candidate = origin.strip()
+                if not candidate:
+                    continue
+                cors_host = urlparse(candidate if "://" in candidate else f"https://{candidate}").hostname
                 if cors_host:
                     allowed_hosts.add(cors_host.lower())
 
         if parsed.hostname.lower() not in allowed_hosts:
+            logger.warning(
+                "Rejected OAuth redirect_to host '%s'; allowed hosts=%s (configure APP_URL or CORS_ALLOW_ORIGINS).",
+                parsed.hostname.lower(),
+                sorted(allowed_hosts),
+            )
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Disallowed redirect_to host.")
 
         return cleaned

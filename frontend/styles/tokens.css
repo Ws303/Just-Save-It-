@@ -8,10 +8,12 @@
 
   /* Core Ink & Surfaces */
   --bg-app: #ffffff;
+  --bg-pc-canvas: #faf9f8;
   --bg-muted: #f6f6f6;
-  --bg-chip: #eee;
+  --bg-chip: #eeeeee;
   --bg-thumb: #e3e3e3;
   --bg-login: linear-gradient(180deg, #fff8ee 0%, #f8eedf 100%);
+  --backdrop-scrim: rgba(23, 23, 33, 0.43);
 
   --ink-primary: #233642;
   --ink-strong: #222222;
@@ -26,14 +28,16 @@
   --border-input: #bbbbbb;
   --border-divider: #e8ebed;
 
-  /* Active Theme: Sharely (Default) */
+  /* Active Theme: Sharely (Default, Figma s1TUDdlD6kUjUhvp8or2up) */
   --theme-accent: #c72d2d;
-  --theme-accent-strong: #b80e23;
+  --theme-accent-strong: #be1429;
   --theme-accent-text: #a81c1c;
   --theme-swatch: #c52732;
   --theme-soft: #fcf0f0;
+  --theme-soft-border: #f3d2d7;
   --theme-preview-bg: #fdf0f1;
   --theme-lavender-pill: #cfc4f3;
+  --theme-hero-bg: linear-gradient(155deg, #be1429 0%, #9b0e20 100%);
 
   /* Radii */
   --radius-sm: 8px;
@@ -41,6 +45,7 @@
   --radius-lg: 15px;
   --radius-pill: 999px;
   --radius-sheet: 24px;
+  --radius-reminder-sheet: 20px;
   --radius-nav: 32px;
   --radius-device: 42px;
 
@@ -65,8 +70,10 @@
   --theme-accent-text: #822b61;
   --theme-swatch: #9b3976;
   --theme-soft: #fceef7;
+  --theme-soft-border: #ebc7de;
   --theme-preview-bg: #fceef7;
   --theme-lavender-pill: #eed2e5;
+  --theme-hero-bg: linear-gradient(155deg, #9b3976 0%, #6f1f51 100%);
 }
 
 /* Theme 3: คอลแลบแบรนด์ (Brand Collab sample theme from Figma 20 Profile · การแสดงผล) */
@@ -76,8 +83,10 @@
   --theme-accent-text: #0f5c53;
   --theme-swatch: #16756a;
   --theme-soft: #eaf7f4;
+  --theme-soft-border: #bfe3dc;
   --theme-preview-bg: #eaf7f4;
   --theme-lavender-pill: #ccebe5;
+  --theme-hero-bg: linear-gradient(155deg, #16756a 0%, #0d4a43 100%);
 }
 
 [data-text-size="large"] {

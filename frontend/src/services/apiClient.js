@@ -4,10 +4,10 @@
  * - Mock Mode: simulates exact contracts for backend/Ai, backend/Login, backend/Database & 13 MCP tools.
  */
 import { AI_PROVIDER_PRESETS, COVER_CHOICES } from "../data/seed.js";
-import { safeHrefUrl } from "../components/icons.js";
+import { safeHrefUrl, resolveMediaThumbUrl } from "../components/icons.js";
 import { store, generateUuid, inferPlatform, getFolderById, getLinkById, filterLinks, buildFolderInviteUrl } from "../state/store.js";
 import { getAuthMode } from "./routeGuard.js";
-import { extractClaimsSummary, supabaseAuth } from "./supabaseAuth.js";
+import { buildAuthRedirectUrl, extractClaimsSummary, supabaseAuth } from "./supabaseAuth.js";
 
 function formatRemindIsoInBangkok(remIso, fallbackTime = "18:00") {
   if (!remIso) return { date: null, time: fallbackTime };
@@ -60,7 +60,12 @@ export function mapBackendItemToUi(item, reminderMap = {}) {
   const rawTags = Array.isArray(item.tags) ? item.tags : Array.isArray(item.tag_names) ? item.tag_names : [];
   const tags = rawTags.map((t) => (String(t).startsWith("#") ? String(t) : `#${t}`));
   const mediaItems = Array.isArray(item.media_items) ? item.media_items.filter(Boolean) : [];
-  const coverUrl = item.thumbnail_url || item.image_url || mediaItems[0] || null;
+  const coverUrl = resolveMediaThumbUrl({
+    thumbnail_url: item.thumbnail_url,
+    image_url: item.image_url,
+    coverUrl: item.coverUrl,
+    media_items: mediaItems,
+  }) || null;
   const { platform: inferredPlat, domain } = inferPlatform(item.url || "");
   const rem = reminderMap[item.id] || item.reminder || (Array.isArray(item.reminders) ? item.reminders[0] : null);
   const remIso = rem?.remind_at || rem?.next_remind_at || item.remind_at || null;
@@ -71,7 +76,7 @@ export function mapBackendItemToUi(item, reminderMap = {}) {
 
   return {
     id: item.id,
-    folderId: item.folder_id || store.state.data.folders[0]?.id,
+    folderId: item.folder_id ?? null,
     platform: item.platform || inferredPlat,
     url: item.url,
     domain,
@@ -98,7 +103,7 @@ export function mapBackendItemToUi(item, reminderMap = {}) {
     reminderTime: remTime,
     scheduleType,
     repeatEveryDays,
-    sourceApp: item.platform || inferredPlat,
+    sourceApp: item.source_app || item.platform || inferredPlat,
   };
 }
 
@@ -127,8 +132,9 @@ function recordLog({ method, path, mode, status, durationMs, headers, requestBod
 
 export function buildAiHeadersAndConfig() {
   const cfg = store.state.data.aiConfig;
-  const preset = AI_PROVIDER_PRESETS.find((p) => p.id === cfg.provider) || AI_PROVIDER_PRESETS[3];
+  const preset = AI_PROVIDER_PRESETS.find((p) => p.id === cfg.provider) || AI_PROVIDER_PRESETS[0];
   const providerCode = preset.backendProvider; // "built-in" | "byok" | "custom"
+  const isCustomKeyless = providerCode === "custom" && Boolean(cfg.keyless);
 
   const headers = {
     "Content-Type": "application/json",
@@ -140,13 +146,13 @@ export function buildAiHeadersAndConfig() {
   }
 
   headers["X-AI-Provider"] = providerCode;
-  if (!cfg.keyless && cfg.apiKey) headers["X-AI-Key"] = cfg.apiKey;
+  if (!isCustomKeyless && providerCode !== "built-in" && cfg.apiKey) headers["X-AI-Key"] = cfg.apiKey;
   if (cfg.endpointUrl && providerCode === "custom") headers["X-AI-Base-Url"] = cfg.endpointUrl;
   if (cfg.model) headers["X-AI-Model"] = cfg.model;
 
   const aiConfigBody = {
     provider: providerCode,
-    api_key: !cfg.keyless && cfg.apiKey ? cfg.apiKey : null,
+    api_key: !isCustomKeyless && providerCode !== "built-in" && cfg.apiKey ? cfg.apiKey : null,
     base_url: providerCode === "custom" ? cfg.endpointUrl || null : null,
     model: cfg.model || preset.models[0] || null,
   };
@@ -182,6 +188,7 @@ async function dispatchRequest({
   mockHandler,
   skipAuthRefresh = false,
   skipUnauthRedirect = false,
+  keepalive = false,
 }) {
   const { mode, baseUrl, latencyMs } = store.state.api;
   const started = performance.now();
@@ -225,6 +232,7 @@ async function dispatchRequest({
   // Live HTTP Mode
   const performLiveFetch = async (reqHeaders) => {
     const fetchOpts = { method, headers: reqHeaders };
+    if (keepalive) fetchOpts.keepalive = true;
     if (body !== null && method !== "GET" && method !== "HEAD") {
       fetchOpts.body = JSON.stringify(body);
     }
@@ -395,7 +403,7 @@ export const apiClient = {
       if (saveToNote && res.data.summary_th) {
         const prefix = item.note ? `${item.note}\n\n` : "";
         if (!item.note?.includes(res.data.summary_th)) {
-          item.note = `${prefix}[AI สรุป]: ${res.data.summary_th}`;
+          item.note = `${prefix}[AI Summary]\n${res.data.summary_th}`;
         }
       }
       if (Array.isArray(res.data.suggested_tags)) {
@@ -404,9 +412,44 @@ export const apiClient = {
           if (!item.tags.includes(normalized)) item.tags.push(normalized);
         }
       }
+      if (res.data.ai_quota && typeof res.data.ai_quota.remaining === "number") {
+        store.state.data.freeQuotaRemaining = res.data.ai_quota.remaining;
+        if (typeof res.data.ai_quota.limit === "number") {
+          store.state.data.freeQuotaLimit = res.data.ai_quota.limit;
+          store.state.data.freeQuotaTotal = res.data.ai_quota.limit;
+        }
+      } else if (
+        !res.data.cached_from_db &&
+        preset?.backendProvider === "built-in" &&
+        typeof store.state.data.freeQuotaRemaining === "number" &&
+        store.state.data.freeQuotaRemaining > 0
+      ) {
+        store.state.data.freeQuotaRemaining -= 1;
+      }
+      store.rebuildNotificationsFromWorkspace();
     }
     store.emit();
     return res;
+  },
+
+  async testAiConnection() {
+    const { headers, aiConfigBody } = buildAiHeadersAndConfig();
+    return dispatchRequest({
+      method: "POST",
+      path: "/api/ai/test",
+      body: { ai_config: aiConfigBody },
+      customHeaders: headers,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({
+        status: 200,
+        data: {
+          ok: true,
+          provider: aiConfigBody.provider,
+          model: aiConfigBody.model,
+          engine_used: "mock-ai-test",
+        },
+      }),
+    });
   },
 
   async previewUrl(rawUrl) {
@@ -467,11 +510,23 @@ export const apiClient = {
       : Array.isArray(previewData.media_items)
         ? previewData.media_items
         : [];
-    const coverUrl = payload.thumbnail_url || payload.coverUrl || previewData.image_url || mediaItems[0] || null;
+    const coverUrl =
+      resolveMediaThumbUrl({
+        thumbnail_url: payload.thumbnail_url,
+        coverUrl: payload.coverUrl,
+        image_url: previewData.image_url,
+        media_items: mediaItems,
+      }) || null;
     const embedUrl = payload.embed_url || previewData.embed_url || null;
+    const embedType = payload.embed_type || previewData.embed_type || "none";
     const resolvedTitle = payload.title || previewData.title || `โพสต์ใหม่จาก ${platform}`;
     const resolvedStatus = mapUiStatusToBackend(payload.status || "unread");
-    const rawFolderId = payload.folderId || payload.folder_id || store.state.data.folders[0]?.id || null;
+    const rawFolderId =
+      payload.folderId !== undefined
+        ? payload.folderId
+        : payload.folder_id !== undefined
+          ? payload.folder_id
+          : store.state.data.folders[0]?.id || null;
     const isMockSeedFolder = String(rawFolderId || "").startsWith("f1a1000");
     const folderId = store.state.api.mode === "live" && isMockSeedFolder ? null : rawFolderId;
 
@@ -495,6 +550,7 @@ export const apiClient = {
       thumbnail_url: coverUrl,
       media_items: mediaItems,
       embed_url: embedUrl,
+      embed_type: embedType,
       platform: previewData.platform || platform,
       note: payload.user_note ?? payload.note ?? "",
       user_note: payload.user_note ?? payload.note ?? "",
@@ -565,10 +621,7 @@ export const apiClient = {
       iso: new Date().toISOString(),
     };
     store.state.ui.highlightLinkId = newItem.id;
-    if (typeof store.state.data.freeQuotaRemaining === "number" && store.state.data.freeQuotaRemaining > 0) {
-      store.state.data.freeQuotaRemaining -= 1;
-    }
-
+    store.rebuildNotificationsFromWorkspace();
     store.emit();
     return newItem;
   },
@@ -578,10 +631,6 @@ export const apiClient = {
     if (!item) return null;
     const prevSnapshot = { ...item, tags: Array.isArray(item.tags) ? [...item.tags] : [] };
     Object.assign(item, updates);
-    if (updates.status === "read" || updates.status === "done") {
-      item.reminder = null;
-      item.reminderDate = null;
-    }
     store.emit();
 
     const body = {};
@@ -593,7 +642,7 @@ export const apiClient = {
       body.user_note = noteVal;
     }
     if ("folderId" in updates || "folder_id" in updates) {
-      body.folder_id = updates.folder_id ?? updates.folderId;
+      body.folder_id = updates.folder_id !== undefined ? updates.folder_id : updates.folderId;
     }
     if ("status" in updates) {
       body.status = mapUiStatusToBackend(updates.status);
@@ -618,9 +667,12 @@ export const apiClient = {
     });
     if (store.state.api.mode === "live" && !res.ok) {
       Object.assign(item, prevSnapshot);
+      store.showToast(res.error || "อัปเดตรายการไม่สำเร็จ");
       store.emit();
       return null;
     }
+    store.rebuildNotificationsFromWorkspace();
+    store.emit();
     return item;
   },
 
@@ -641,9 +693,12 @@ export const apiClient = {
     if (store.state.api.mode === "live" && !res.ok) {
       store.state.data.links.splice(idx, 0, removed);
       if (folder) folder.baseExternalCount = (folder.baseExternalCount || 0) + 1;
+      store.showToast(res.error || "ลบโพสต์ไม่สำเร็จ");
       store.emit();
       return false;
     }
+    store.rebuildNotificationsFromWorkspace();
+    store.emit();
     return true;
   },
 
@@ -653,41 +708,164 @@ export const apiClient = {
     if (folderId) {
       const folder = getFolderById(folderId);
       if (!folder) return null;
+      const prev = { name: folder.name, emoji: folder.emoji, cover: folder.cover };
       folder.name = cleanName;
       folder.emoji = cleanEmoji;
       if (cover) folder.cover = cover;
       store.emit();
-      await dispatchRequest({
+      const res = await dispatchRequest({
         method: "PATCH",
         path: `/api/folders/${folderId}`,
-        body: { name: cleanName, emoji: cleanEmoji },
+        body: { name: cleanName, emoji: cleanEmoji, ...(cover ? { cover_url: cover } : {}) },
         skipUnauthRedirect: true,
         mockHandler: () => ({ status: 200, data: folder }),
       });
+      if (store.state.api.mode === "live" && !res.ok) {
+        Object.assign(folder, prev);
+        store.showToast(res.error || "แก้ไขโฟลเดอร์ไม่สำเร็จ");
+        store.emit();
+        return null;
+      }
+      store.rebuildNotificationsFromWorkspace();
       return folder;
     }
 
+    const resolvedCover = cover || "./assets/covers/project.png";
     const fallbackFolder = {
       id: generateUuid(),
       name: cleanName,
       emoji: cleanEmoji,
-      cover: cover || "./assets/covers/project.png",
+      cover: resolvedCover,
       sharedCount: 0,
       sharedUsers: [],
+      role: "owner",
       inviteSlug: `f-${Math.random().toString(36).slice(2, 7)}`,
       baseExternalCount: 0,
     };
     const res = await dispatchRequest({
       method: "POST",
       path: "/api/folders",
-      body: { name: cleanName, emoji: cleanEmoji },
+      body: { name: cleanName, emoji: cleanEmoji, cover_url: resolvedCover },
       skipUnauthRedirect: true,
       mockHandler: () => ({ status: 201, data: fallbackFolder }),
     });
-    const finalFolder = res.ok && res.data?.id ? { ...fallbackFolder, ...res.data } : fallbackFolder;
+    if (store.state.api.mode === "live" && !res.ok) {
+      store.showToast(res.error || "สร้างโฟลเดอร์ไม่สำเร็จ");
+      return null;
+    }
+    const finalFolder = res.ok && res.data?.id ? { ...fallbackFolder, ...res.data, cover: res.data.cover_url || resolvedCover } : fallbackFolder;
     store.state.data.folders.push(finalFolder);
+    store.rebuildNotificationsFromWorkspace();
     store.emit();
     return finalFolder;
+  },
+
+  async deleteFolder(folderId) {
+    const idx = store.state.data.folders.findIndex((f) => f.id === folderId);
+    if (idx === -1) return { ok: false, error: "ไม่พบโฟลเดอร์ที่ต้องการลบ" };
+    const [removed] = store.state.data.folders.splice(idx, 1);
+    const affectedLinkIds = [];
+    store.state.data.links.forEach((l) => {
+      if (l.folderId === folderId) {
+        affectedLinkIds.push(l.id);
+        l.folderId = null;
+      }
+    });
+    if (store.state.ui.activeFolderId === folderId) {
+      store.state.ui.activeFolderId = store.state.data.folders[0]?.id || null;
+    }
+    store.emit();
+    const res = await dispatchRequest({
+      method: "DELETE",
+      path: `/api/folders/${folderId}`,
+      body: null,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({ status: 200, data: { deleted: true, id: folderId } }),
+    });
+    if (store.state.api.mode === "live" && !res.ok) {
+      store.state.data.folders.splice(idx, 0, removed);
+      store.state.data.links.forEach((l) => {
+        if (affectedLinkIds.includes(l.id)) l.folderId = folderId;
+      });
+      store.state.ui.activeFolderId = folderId;
+      store.showToast(res.error || "ลบโฟลเดอร์ไม่สำเร็จ");
+      store.emit();
+      return res;
+    }
+    store.rebuildNotificationsFromWorkspace();
+    store.emit();
+    return res;
+  },
+
+  async listFolderMembers(folderId) {
+    return dispatchRequest({
+      method: "GET",
+      path: `/api/folders/${folderId}/members`,
+      body: null,
+      skipUnauthRedirect: true,
+      mockHandler: () => {
+        const folder = getFolderById(folderId);
+        return {
+          status: 200,
+          data: {
+            members: [
+              {
+                user_id: store.state.data.user.id,
+                display_name: store.state.data.user.displayName || "คุณ",
+                email: store.state.data.user.email || "",
+                role: folder?.role || "owner",
+              },
+              ...(folder?.sharedUsers || []).map((name, i) => ({
+                user_id: `mock-member-${i + 1}`,
+                display_name: typeof name === "string" ? name : name?.display_name || "สมาชิก",
+                role: "editor",
+              })),
+            ],
+            active_invites: folder?.inviteSlug
+              ? [{ token: folder.inviteSlug, role: "editor", expires_at: null }]
+              : [],
+          },
+        };
+      },
+    });
+  },
+
+  async updateFolderMemberRole(folderId, memberUserId, role) {
+    return dispatchRequest({
+      method: "PATCH",
+      path: `/api/folders/${folderId}/members/${memberUserId}`,
+      body: { role },
+      skipUnauthRedirect: true,
+      mockHandler: () => ({ status: 200, data: { user_id: memberUserId, role } }),
+    });
+  },
+
+  async removeFolderMember(folderId, memberUserId) {
+    return dispatchRequest({
+      method: "DELETE",
+      path: `/api/folders/${folderId}/members/${memberUserId}`,
+      body: null,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({ status: 200, data: { removed: true, user_id: memberUserId } }),
+    });
+  },
+
+  async revokeFolderInvite(folderId, token) {
+    const res = await dispatchRequest({
+      method: "DELETE",
+      path: `/api/folders/${folderId}/invites/${encodeURIComponent(token)}`,
+      body: null,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({ status: 200, data: { revoked: true, token } }),
+    });
+    if (res.ok) {
+      const f = getFolderById(folderId);
+      if (f && f.inviteSlug === token) {
+        f.inviteUrl = "";
+      }
+      store.emit();
+    }
+    return res;
   },
 
   async listReminders() {
@@ -761,7 +939,10 @@ export const apiClient = {
     if (store.state.api.mode === "live" && !res.ok && item && prevRem) {
       Object.assign(item, prevRem);
       store.emit();
+      return res;
     }
+    store.rebuildNotificationsFromWorkspace();
+    store.emit();
     return res;
   },
 
@@ -793,7 +974,10 @@ export const apiClient = {
     if (store.state.api.mode === "live" && !res.ok && item && prevRem) {
       Object.assign(item, prevRem);
       store.emit();
+      return res;
     }
+    store.rebuildNotificationsFromWorkspace();
+    store.emit();
     return res;
   },
 
@@ -826,7 +1010,18 @@ export const apiClient = {
 
   async hydrateWorkspace() {
     if (store.state.api.mode !== "live") return { ok: true, hydrated: false };
-    const [foldersRes, itemsRes, tagsRes, remindersRes] = await Promise.all([
+    const isAuthenticatedLive = Boolean(store.state.api.bearerToken);
+    if (!isAuthenticatedLive) {
+      return { ok: false, hydrated: false };
+    }
+    const [meRes, foldersRes, itemsRes, tagsRes, remindersRes] = await Promise.all([
+      dispatchRequest({
+        method: "GET",
+        path: "/api/auth/me",
+        body: null,
+        skipUnauthRedirect: true,
+        mockHandler: () => ({ status: 200, data: { user: store.state.data.user } }),
+      }),
       dispatchRequest({
         method: "GET",
         path: "/api/folders",
@@ -857,43 +1052,76 @@ export const apiClient = {
       }),
     ]);
 
+    if (!store.state.data.user?.isAuthenticated) {
+      return { ok: false, hydrated: false };
+    }
+
+    if (meRes?.ok && meRes.data) {
+      const m = meRes.data;
+      const prof = m.profile || {};
+      if (m.display_name || prof.display_name) {
+        store.state.data.user.displayName = m.display_name || prof.display_name;
+      }
+      if (m.email || prof.email) {
+        store.state.data.user.email = m.email || prof.email;
+      }
+      store.state.data.user.tier = m.tier || prof.tier || store.state.data.user.tier || "free";
+      if (prof.preferred_summary_language) {
+        store.state.data.aiConfig.language = prof.preferred_summary_language;
+      }
+      if (prof.default_timezone) {
+        store.state.data.user.timezone = prof.default_timezone;
+      }
+      if (m.ai_quota && typeof m.ai_quota.remaining === "number") {
+        const lim = m.ai_quota.limit ?? store.state.data.freeQuotaTotal ?? 20;
+        store.state.data.freeQuotaRemaining = m.ai_quota.remaining;
+        store.state.data.freeQuotaLimit = lim;
+        store.state.data.freeQuotaTotal = lim;
+        store.state.data.freeQuotaUsed = m.ai_quota.used ?? 0;
+      }
+    }
+
     const remMap = {};
     for (const rem of remindersRes?.data?.reminders || []) {
       if (rem?.item_id) remMap[rem.item_id] = rem;
     }
 
-    const isAuthenticatedLive = Boolean(store.state.api.bearerToken);
-    if (isAuthenticatedLive && !store.state.data.user?.isAuthenticated) {
-      return { ok: false, hydrated: false };
-    }
-    const hasBackendItems = itemsRes?.ok && Array.isArray(itemsRes.data?.items) && itemsRes.data.items.length > 0;
     const mapBackendFolder = (f, idx) => ({
-      cover: COVER_CHOICES[idx % COVER_CHOICES.length]?.src || "./assets/covers/coffee.png",
-      sharedCount: f.is_shared ? 2 : 0,
       sharedUsers: [],
-      inviteSlug: f.id.slice(0, 8),
+      inviteSlug: String(f.id || "").slice(0, 8),
       baseExternalCount: 0,
       ...f,
+      cover: f.cover_url || f.cover || COVER_CHOICES[idx % COVER_CHOICES.length]?.src || "./assets/covers/coffee.png",
+      sharedCount: f.member_count ?? f.sharedCount ?? (f.is_shared ? 2 : 0),
     });
 
-    if (hasBackendItems || isAuthenticatedLive) {
-      if (foldersRes?.ok && Array.isArray(foldersRes.data?.folders) && (isAuthenticatedLive || foldersRes.data.folders.length > 0)) {
-        store.state.data.folders = foldersRes.data.folders.map(mapBackendFolder);
+    if (foldersRes?.ok && Array.isArray(foldersRes.data?.folders)) {
+      store.state.data.folders = foldersRes.data.folders.map(mapBackendFolder);
+      if (!store.state.data.folders.some((f) => f.id === store.state.ui.activeFolderId)) {
+        store.state.ui.activeFolderId = store.state.data.folders[0]?.id || null;
       }
-      if (itemsRes?.ok && Array.isArray(itemsRes.data?.items)) {
-        store.state.data.links = itemsRes.data.items.map((row) => mapBackendItemToUi(row, remMap));
-        if (!store.state.data.links.some((l) => l.id === store.state.ui.activeLinkId)) {
-          store.state.ui.activeLinkId = store.state.data.links[0]?.id || null;
-        }
+    }
+
+    if (itemsRes?.ok && Array.isArray(itemsRes.data?.items)) {
+      const allRows = [...itemsRes.data.items];
+      let offset = allRows.length;
+      while (store.state.api.mode === "live" && allRows.length === offset && offset > 0 && offset < 500) {
+        const nextPage = await dispatchRequest({
+          method: "GET",
+          path: `/api/items?limit=100&offset=${offset}`,
+          body: null,
+          skipUnauthRedirect: true,
+          mockHandler: () => ({ status: 200, data: { items: [] } }),
+        });
+        const batch = nextPage?.ok && Array.isArray(nextPage.data?.items) ? nextPage.data.items : [];
+        if (batch.length === 0) break;
+        allRows.push(...batch);
+        if (batch.length < 100) break;
+        offset += 100;
       }
-    } else if (foldersRes?.ok && Array.isArray(foldersRes.data?.folders) && foldersRes.data.folders.length > 0) {
-      const existingIds = new Set(store.state.data.folders.map((f) => f.id));
-      const defaultLocalNames = new Set(["อ่านทีหลัง", "Tech & AI"]);
-      const extraFolders = foldersRes.data.folders
-        .filter((f) => f && !existingIds.has(f.id) && !defaultLocalNames.has(f.name))
-        .map((f, idx) => mapBackendFolder(f, store.state.data.folders.length + idx));
-      if (extraFolders.length > 0) {
-        store.state.data.folders = [...store.state.data.folders, ...extraFolders];
+      store.state.data.links = allRows.map((row) => mapBackendItemToUi(row, remMap));
+      if (!store.state.data.links.some((l) => l.id === store.state.ui.activeLinkId)) {
+        store.state.ui.activeLinkId = store.state.data.links[0]?.id || null;
       }
     }
 
@@ -901,6 +1129,7 @@ export const apiClient = {
       store.state.data.serverTags = tagsRes.data.tags;
     }
 
+    store.rebuildNotificationsFromWorkspace();
     store.emit();
     return {
       ok: Boolean(foldersRes?.ok || itemsRes?.ok),
@@ -909,25 +1138,66 @@ export const apiClient = {
     };
   },
 
-  async acceptInvite(folderId) {
-    const folder = getFolderById(folderId) || store.state.data.folders[0];
-    if (!folder) return null;
+  async previewInvite(token) {
+    const cleanToken = String(token || "").trim();
+    if (!cleanToken) return { ok: false, status: 400, error: "ไม่พบ Invite Token" };
+    return dispatchRequest({
+      method: "GET",
+      path: `/api/invites/${encodeURIComponent(cleanToken)}`,
+      body: null,
+      skipUnauthRedirect: true,
+      mockHandler: () => {
+        const matched = store.state.data.folders.find((f) => f.inviteSlug === cleanToken || f.id === cleanToken) || store.state.data.folders[0];
+        if (!matched) return { status: 404, data: { detail: "Invite not found" } };
+        return {
+          status: 200,
+          data: {
+            token: cleanToken,
+            valid: true,
+            folder_id: matched.id,
+            folder_name: matched.name,
+            folder_emoji: matched.emoji,
+            folder_cover_url: matched.cover,
+            role: "editor",
+            inviter_name: "เมย์",
+            item_count: (store.state.data.links || []).filter((l) => l.folderId === matched.id).length,
+          },
+        };
+      },
+    });
+  },
+
+  async acceptInvite(tokenOrFolderId) {
+    const folder = getFolderById(tokenOrFolderId) || (store.state.api.mode !== "live" ? store.state.data.folders[0] : null);
+    const token = folder?.inviteSlug || String(tokenOrFolderId || "").trim();
+    if (!token) return null;
     const res = await dispatchRequest({
       method: "POST",
-      path: `/api/invites/${folder.inviteSlug}/accept`,
+      path: `/api/invites/${encodeURIComponent(token)}/accept`,
       body: { user_id: store.state.data.user.id },
-      mockHandler: () => ({ status: 200, data: { joined_folder: folder.id, role: "editor" } }),
+      skipUnauthRedirect: true,
+      mockHandler: () => ({ status: 200, data: { joined_folder: folder?.id || token, role: "editor" } }),
     });
     if (!res.ok && store.state.api.mode === "live") {
       return null;
     }
-    if (!folder.sharedUsers.includes(store.state.data.user.displayName)) {
-      folder.sharedUsers.push(store.state.data.user.displayName);
-      folder.sharedCount = Math.max(folder.sharedCount + 1, folder.sharedUsers.length);
+    if (store.state.api.mode === "live" && store.state.api.bearerToken) {
+      await this.hydrateWorkspace();
+      const joinedId = res.data?.folder_id || res.data?.joined_folder || folder?.id;
+      const hydratedFolder = getFolderById(joinedId) || store.state.data.folders[0] || { id: joinedId, name: "โฟลเดอร์ที่เข้าร่วม" };
+      return hydratedFolder;
     }
-    store.state.data.user.isAuthenticated = true;
-    store.emit();
-    return folder;
+    if (folder) {
+      if (!folder.sharedUsers.includes(store.state.data.user.displayName)) {
+        folder.sharedUsers.push(store.state.data.user.displayName);
+        folder.sharedCount = Math.max((folder.sharedCount || 0) + 1, folder.sharedUsers.length);
+      }
+      store.state.data.user.isAuthenticated = true;
+      store.rebuildNotificationsFromWorkspace();
+      store.emit();
+      return folder;
+    }
+    return res.data || null;
   },
 
   async signInEmail(email) {
@@ -1179,11 +1449,45 @@ export const apiClient = {
     return res;
   },
 
+  async updateProfile({ displayName, preferredSummaryLanguage, defaultTimezone } = {}) {
+    const body = {};
+    if (displayName !== undefined) body.display_name = String(displayName).trim();
+    if (preferredSummaryLanguage !== undefined) body.preferred_summary_language = preferredSummaryLanguage;
+    if (defaultTimezone !== undefined) body.default_timezone = defaultTimezone;
+    if (body.display_name) {
+      store.state.data.user.displayName = body.display_name;
+    }
+    if (body.preferred_summary_language) {
+      store.state.data.aiConfig.language = body.preferred_summary_language;
+    }
+    if (body.default_timezone) {
+      store.state.data.user.timezone = body.default_timezone;
+    }
+    store.emit();
+    return dispatchRequest({
+      method: "PATCH",
+      path: "/api/auth/profile",
+      body,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({
+        status: 200,
+        data: {
+          id: store.state.data.user.id,
+          display_name: store.state.data.user.displayName,
+          profile: {
+            display_name: store.state.data.user.displayName,
+            preferred_summary_language: store.state.data.aiConfig.language,
+          },
+        },
+      }),
+    });
+  },
+
   async updateAccountEmail(email) {
     const clean = String(email || "").trim();
     const authMode = getAuthMode(store.state);
     if (authMode === "supabase") {
-      const res = await supabaseAuth.updateEmail(getSupabaseConfig(), clean);
+      const res = await supabaseAuth.updateEmail(getSupabaseConfig(), clean, store.state.api.bearerToken);
       if (res.ok) {
         store.state.data.user.email = clean;
         store.emit();
@@ -1293,9 +1597,10 @@ export const apiClient = {
       return res;
     }
 
+    const redirectTo = buildAuthRedirectUrl();
     const res = await dispatchRequest({
       method: "GET",
-      path: "/api/auth/oauth/google",
+      path: `/api/auth/oauth/google?redirect_to=${encodeURIComponent(redirectTo)}`,
       body: null,
       mockHandler: () => ({
         status: 200,
@@ -1308,33 +1613,96 @@ export const apiClient = {
     return res;
   },
 
-  async signOut() {
+  async exchangeOAuthCode(code) {
+    const cleanCode = String(code || "").trim();
+    if (!cleanCode) return { ok: false, status: 400, error: "ไม่พบ Authorization Code" };
     const authMode = getAuthMode(store.state);
     if (authMode === "supabase") {
-      const started = performance.now();
-      const res = await supabaseAuth.signOut(getSupabaseConfig(), store.state.api.bearerToken);
-      recordLog({
-        method: "POST",
-        path: "/auth/v1/logout",
-        mode: "supabase",
-        status: 200,
-        durationMs: performance.now() - started,
-        requestBody: null,
-        responseBody: res.data,
-      });
-      store.clearSession({ redirectToLogin: true });
-      return res;
+      const sbRes = await supabaseAuth.exchangeCodeForSession(getSupabaseConfig(), cleanCode);
+      if (sbRes.ok && sbRes.data?.access_token) {
+        store.applyAuthenticatedSession({
+          user: sbRes.data.user,
+          accessToken: sbRes.data.access_token,
+          refreshToken: sbRes.data.refresh_token || "",
+          claims: sbRes.data.claims,
+        });
+        return sbRes;
+      }
     }
-
     const res = await dispatchRequest({
       method: "POST",
-      path: "/api/auth/logout",
-      body: null,
+      path: "/api/auth/oauth/callback",
+      body: { code: cleanCode },
       skipUnauthRedirect: true,
-      mockHandler: () => ({ status: 200, data: { logged_out: true } }),
+      mockHandler: () => ({ status: 400, data: { detail: "OAuth code exchange not available in mock mode" } }),
     });
-    store.clearSession({ redirectToLogin: true });
+    if (res.ok && res.data?.access_token) {
+      store.applyAuthenticatedSession({
+        user: res.data.user,
+        accessToken: res.data.access_token,
+        refreshToken: res.data.refresh_token || "",
+        claims: extractClaimsSummary(res.data.access_token),
+      });
+    }
     return res;
+  },
+
+  async signOut() {
+    const authMode = getAuthMode(store.state);
+    const supaCfg = getSupabaseConfig();
+    const apiMode = store.state.api.mode;
+    const capturedToken = store.state.api.bearerToken?.trim() || "";
+    const authOverride = capturedToken ? { Authorization: `Bearer ${capturedToken}` } : {};
+
+    // Clear UI session immediately so slow cloud cold-starts never freeze the logout modal
+    store.clearSession({ redirectToLogin: true });
+
+    const remoteTasks = [];
+    if (apiMode === "live") {
+      remoteTasks.push(
+        dispatchRequest({
+          method: "POST",
+          path: "/api/auth/logout",
+          body: null,
+          customHeaders: authOverride,
+          skipAuthRefresh: true,
+          skipUnauthRedirect: true,
+          keepalive: true,
+          mockHandler: () => ({ status: 200, data: { logged_out: true } }),
+        }).catch(() => ({ ok: false }))
+      );
+    } else {
+      remoteTasks.push(
+        dispatchRequest({
+          method: "POST",
+          path: "/api/auth/logout",
+          body: null,
+          customHeaders: authOverride,
+          skipUnauthRedirect: true,
+          keepalive: true,
+          mockHandler: () => ({ status: 200, data: { logged_out: true } }),
+        }).catch(() => ({ ok: false }))
+      );
+    }
+
+    const supaTask = supabaseAuth.signOut(supaCfg, capturedToken).then((res) => {
+      if (authMode === "supabase") {
+        recordLog({
+          method: "POST",
+          path: "/auth/v1/logout",
+          mode: "supabase",
+          status: 200,
+          durationMs: 0,
+          requestBody: null,
+          responseBody: res.data,
+        });
+      }
+      return res;
+    });
+    remoteTasks.push(supaTask);
+
+    await Promise.race([Promise.allSettled(remoteTasks), sleep(250)]);
+    return { ok: true, status: 200, data: { logged_out: true } };
   },
 
   async submitFeedback({ category = "general", topic, message, detail, pageContext = null, contactEmail = null, allowContact = false }) {

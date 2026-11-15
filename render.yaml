@@ -26,9 +26,9 @@ services:
       - key: SUPABASE_STORAGE_BUCKET
         value: thumbnails
       - key: CORS_ALLOW_ORIGINS
-        value: "*"
+        value: "https://just-save-it-web.onrender.com"
       - key: APP_URL
-        sync: false
+        value: "https://just-save-it-web.onrender.com"
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
@@ -50,7 +50,11 @@ services:
     rootDir: frontend
     staticPublishPath: .
     buildCommand: |
-      printf 'window.SHARELY_CONFIG = { apiBaseUrl: "https://%s" };\n' "$BACKEND_HOST" > config.js
+      case "$BACKEND_HOST" in
+        *.*) RESOLVED_HOST="$BACKEND_HOST" ;;
+        *) RESOLVED_HOST="${BACKEND_HOST}.onrender.com" ;;
+      esac
+      printf 'window.SHARELY_CONFIG = { apiBaseUrl: "https://%s" };\n' "$RESOLVED_HOST" > config.js
     routes:
       - type: rewrite
         source: /*

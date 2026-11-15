@@ -12,7 +12,7 @@ supabase db push
 
 ## Apply Manually via Supabase Dashboard SQL Editor
 
-Run the files in strict numerical order (`0001` through `0006`):
+Run the files in strict numerical order (`0001` through `0007`), then reload the PostgREST schema cache (`NOTIFY pgrst, 'reload schema';`):
 
 1. `supabase/migrations/0001_extensions_and_types.sql`
 2. `supabase/migrations/0002_core_tables.sql`
@@ -20,6 +20,7 @@ Run the files in strict numerical order (`0001` through `0006`):
 4. `supabase/migrations/0004_functions_and_triggers.sql`
 5. `supabase/migrations/0005_rls_policies.sql`
 6. `supabase/migrations/0006_storage_realtime_and_cron.sql`
+7. `supabase/migrations/0007_ui_parity_fixes.sql` (additive `items.is_favorite` + partial index & `folders.cover_url` parity migration)
 
 All migrations are idempotent (`IF NOT EXISTS`, `CREATE OR REPLACE`, `DROP ... IF EXISTS`).
 

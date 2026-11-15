@@ -51,6 +51,20 @@ def _validate_http_url_optional(value: Optional[str], field_name: str = "url") -
     return cleaned
 
 
+def _validate_folder_cover_optional(value: Optional[str]) -> Optional[str]:
+    """Allow safe relative preset cover paths (./assets/covers/*.png) or clean HTTP(S) URLs."""
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith(("./assets/covers/", "/assets/covers/")):
+        if ".." in cleaned or any(ord(ch) < 0x20 or ch in (" ", "<", ">", '"', "'", "\\") for ch in cleaned):
+            raise ValueError("cover_url contains invalid characters.")
+        return cleaned
+    return _validate_http_url_optional(cleaned, "cover_url")
+
+
 def _normalize_media_items_input(raw_items: Optional[List[Any]]) -> Optional[List[str]]:
     """Normalize string or dict media items into <=5 trimmed HTTP(S) URLs."""
     if raw_items is None:
@@ -217,11 +231,29 @@ class ItemUpdateRequest(BaseModel):
 class FolderCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     emoji: Optional[str] = Field(default=None, max_length=16)
+    cover_url: Optional[str] = Field(default=None, max_length=512)
+    cover: Optional[str] = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def normalize_cover(self) -> "FolderCreateRequest":
+        raw = self.cover_url if self.cover_url is not None else self.cover
+        self.cover_url = _validate_folder_cover_optional(raw)
+        return self
 
 
 class FolderUpdateRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     emoji: Optional[str] = Field(default=None, max_length=16)
+    cover_url: Optional[str] = Field(default=None, max_length=512)
+    cover: Optional[str] = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def normalize_cover_update(self) -> "FolderUpdateRequest":
+        if "cover_url" in self.model_fields_set or "cover" in self.model_fields_set:
+            raw = self.cover_url if "cover_url" in self.model_fields_set else self.cover
+            self.cover_url = _validate_folder_cover_optional(raw)
+            self.model_fields_set.add("cover_url")
+        return self
 
 
 class InviteCreateRequest(BaseModel):

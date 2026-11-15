@@ -2,7 +2,7 @@
  * 11 / 11B / 12 / 13 / 14 Home Screen + 26 Notifications Screen
  * Matches Figma 319:871, 319:944, 319:915, 319:926, 319:935, and 357:784.
  */
-import { icons, escHtml, safeImgUrl } from "../components/icons.js";
+import { icons, escHtml, safeImgUrl, resolveMediaThumbUrl } from "../components/icons.js";
 import { filterLinks, getFolderById, getFolderCount } from "../state/store.js";
 import { renderBottomNav, renderLinkCard } from "./common.js";
 
@@ -73,7 +73,7 @@ export function renderNotificationsFullScreen(state) {
           อ่านทั้งหมด
         </button>
       </div>
-      <p class="figma-notif-subtitle">รวมแจ้งเตือนเตือนความจำและกิจกรรมที่เกี่ยวกับโฟลเดอร์ของคุณ</p>
+      <p class="figma-notif-subtitle">รวมแจ้งเตือนความจำและกิจกรรมที่เกี่ยวกับโฟลเดอร์ของคุณ</p>
 
       ${
         recent.length
@@ -90,6 +90,13 @@ export function renderNotificationsFullScreen(state) {
               <div class="figma-notif-section-label">ก่อนหน้านี้</div>
               ${earlier.map(renderNotifCard).join("")}
             </div>`
+          : ""
+      }
+      ${
+        !recent.length && !earlier.length
+          ? `<div class="ai-summary-card" style="text-align:center;color:var(--ink-secondary);margin-top:12px;">
+               ยังไม่มีการแจ้งเตือนใหม่
+             </div>`
           : ""
       }
     </div>
@@ -114,6 +121,9 @@ export function renderHomeScreen(state) {
       ? filteredLinks.slice(0, 2)
       : filteredLinks;
   const unreadNotifications = notifications.filter((n) => n.unread).length;
+  const resumeItem = links.find((l) => l.status !== "read") || links[0] || null;
+  const resumeThumb = resumeItem ? resolveMediaThumbUrl(resumeItem) : "";
+  const homeFolders = folders.filter((f) => f.name !== "ยังไม่จัดหมวด").slice(0, 4);
 
   const filterChips = [
     { id: "all", label: "ทั้งหมด" },
@@ -178,7 +188,11 @@ export function renderHomeScreen(state) {
               </button>
             </div>
             <div class="figma-resume-thumb">
-              ${icons.imagePlaceholder(22)}
+              ${
+                resumeThumb
+                  ? `<img src="${escHtml(resumeThumb)}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;" />`
+                  : icons.imagePlaceholder(22)
+              }
             </div>
           </div>`
             : ""
@@ -191,24 +205,36 @@ export function renderHomeScreen(state) {
           </div>
 
           <div class="figma-folder-grid">
-            ${folders
-              .filter((f) => f.name !== "ยังไม่จัดหมวด")
-              .slice(0, 4)
-              .map(
-                (f) => `
+            ${
+              homeFolders.length === 0
+                ? `<button type="button" class="figma-folder-card" data-open-create-folder="1" style="grid-column:1/-1;align-items:center;justify-content:center;padding:18px;gap:8px;">
+                     <span style="color:var(--theme-accent-text);">${icons.plus(22)}</span>
+                     <div class="figma-folder-card-name">สร้างโฟลเดอร์แรกของคุณ</div>
+                   </button>`
+                : homeFolders
+                    .map((f) => {
+                      const coverThumb =
+                        safeImgUrl(f.cover) ||
+                        links
+                          .filter((l) => l.folderId === f.id)
+                          .map((l) => resolveMediaThumbUrl(l))
+                          .find(Boolean) ||
+                        "./assets/covers/coffee.png";
+                      return `
               <button type="button" class="figma-folder-card" data-open-folder="${escHtml(f.id)}">
                 <div class="figma-folder-cover-wrap">
                   <img
-                    src="${escHtml(safeImgUrl(f.cover) || "./assets/covers/coffee.png")}"
+                    src="${escHtml(coverThumb)}"
                     alt=""
                     class="figma-folder-cover-img"
                   />
                 </div>
                 <div class="figma-folder-card-name">${escHtml(f.name)}</div>
                 <div class="figma-folder-card-count">${getFolderCount(f)} รายการ</div>
-              </button>`
-              )
-              .join("")}
+              </button>`;
+                    })
+                    .join("")
+            }
           </div>
         </div>
 

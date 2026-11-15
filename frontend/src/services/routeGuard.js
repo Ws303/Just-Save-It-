@@ -141,12 +141,14 @@ export function guardNavigation({
   const authenticated = hasValidSession(state, nowMs);
   const needsAuth = isProtectedScreen(nextScreen) || isProtectedViewport(nextViewport);
 
+  const fallbackViewport = nextViewport === "extension" ? "mobile" : nextViewport;
+
   if (needsAuth && !authenticated) {
     return {
       allowed: false,
       reason: "authentication_required",
       redirectScreen: "login",
-      redirectViewport: "mobile",
+      redirectViewport: fallbackViewport,
       intendedRoute: {
         screen: isProtectedScreen(nextScreen) ? nextScreen : "home",
         viewportMode: nextViewport,
@@ -154,12 +156,12 @@ export function guardNavigation({
     };
   }
 
-  if (authenticated && !allowGuestSwitch && GUEST_ONLY_SCREENS.includes(nextScreen) && nextViewport === "mobile") {
+  if (authenticated && !allowGuestSwitch && GUEST_ONLY_SCREENS.includes(nextScreen)) {
     return {
       allowed: false,
       reason: "already_authenticated",
       redirectScreen: "home",
-      redirectViewport: "mobile",
+      redirectViewport: fallbackViewport,
       intendedRoute: null,
     };
   }

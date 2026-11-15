@@ -1,7 +1,7 @@
 /**
  * Shared UI primitives: Bottom Nav · Rounded, Filter Chips, Link Card, and Post Action Dialogs.
  */
-import { icons, escHtml, safeImgUrl } from "../components/icons.js";
+import { icons, escHtml, safeImgUrl, resolveMediaThumbUrl } from "../components/icons.js";
 import { getFolderById } from "../state/store.js";
 
 export function renderBottomNav(activeTab) {
@@ -61,11 +61,7 @@ export function renderFilterChips(activeFilter, styleVariant = "home") {
 }
 
 export function resolveItemThumbnail(item) {
-  return safeImgUrl(
-    item?.coverUrl ||
-      item?.imageUrl ||
-      (Array.isArray(item?.media_items) ? item.media_items[0] : "")
-  );
+  return resolveMediaThumbUrl(item);
 }
 
 function renderCardActions({
@@ -106,7 +102,7 @@ export function renderLinkCard(item, { folderContextId = null, selected = false,
         <div class="figma-link-main" data-open-link="${safeId}">
           <div class="figma-link-platform">${escHtml(item.platform || "Web")}</div>
           <div class="figma-link-title">${escHtml(item.title)}</div>
-          <div class="figma-link-meta">${escHtml(folder?.name || "ร้านกาแฟ")} · ${statusLabel}</div>
+          <div class="figma-link-meta">${escHtml(folder?.name || "ยังไม่จัดหมวด")} · ${statusLabel}</div>
         </div>
         ${renderCardActions({
           safeId,
@@ -141,6 +137,7 @@ export function renderLinkCard(item, { folderContextId = null, selected = false,
           favClass: "figma-fav-icon",
           kebabClass: "link-more-btn",
           kebabSize: 17,
+          menuFolderAttr: folderContextId ? ` data-menu-folder="${escHtml(folderContextId)}"` : "",
         })}
       </div>`;
   }
@@ -154,7 +151,9 @@ export function renderLinkCard(item, { folderContextId = null, selected = false,
     <div class="link-card ${selected ? "selected" : ""} ${isRecentlyShared ? "recently-shared" : ""}" data-link-card="${safeId}">
       <div class="link-thumb" data-open-link="${safeId}">
         ${
-          folder?.cover
+          thumbImg
+            ? `<img src="${escHtml(thumbImg)}" alt="" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover;" />`
+            : folder?.cover
             ? `<img src="${escHtml(safeImgUrl(folder.cover))}" alt="" style="opacity:0.38; position:absolute; inset:0;" />`
             : ""
         }
@@ -199,7 +198,7 @@ export function renderPostMenuAndDialog(ui, links) {
     const inFolder = Boolean(sheet.folderContextId);
     return `
       <div class="modal-backdrop" data-close-sheet="1">
-        <div class="bottom-sheet" onclick="event.stopPropagation()">
+        <div class="bottom-sheet">
           <div class="sheet-handle"></div>
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <strong style="font-size:17px;">เมนูโพสต์</strong>
@@ -235,7 +234,7 @@ export function renderPostMenuAndDialog(ui, links) {
     const isRemove = sheet.mode === "removeFromFolder";
     return `
       <div class="modal-backdrop center" data-close-sheet="1">
-        <div class="center-dialog" onclick="event.stopPropagation()">
+        <div class="center-dialog">
           <h3 style="margin:0;font-size:19px;color:var(--ink-primary);">
             ${isRemove ? "นำออกจากโฟลเดอร์?" : "ลบโพสต์นี้ไหม?"}
           </h3>

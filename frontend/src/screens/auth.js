@@ -7,7 +7,7 @@
  */
 import { icons, escHtml, safeImgUrl } from "../components/icons.js";
 import { getAuthMode } from "../services/routeGuard.js";
-import { getFolderById, getFolderCount } from "../state/store.js";
+import { getFolderById, getFolderCount, isQaModeEnabled } from "../state/store.js";
 
 function renderAuthBanner(state) {
   const { authError, postAuthRedirect } = state.ui;
@@ -31,10 +31,12 @@ function renderAuthBanner(state) {
       </div>`
     : "";
 
-  const modeBadge = `<div style="font-size:11.5px;color:var(--ink-secondary);display:flex;align-items:center;gap:6px;">
+  const modeBadge = isQaModeEnabled()
+    ? `<div style="font-size:11.5px;color:var(--ink-secondary);display:flex;align-items:center;gap:6px;">
     <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${authMode === "supabase" ? "#10b981" : authMode === "backend" ? "#3b82f6" : "#f59e0b"};"></span>
     <span>Auth Provider: <strong>${escHtml(modeLabel)}</strong></span>
-  </div>`;
+  </div>`
+    : "";
 
   return `${modeBadge}${redirectNote}${errNote}`;
 }
@@ -202,11 +204,6 @@ export function renderLoginScreen(state) {
           <span>${isSignup ? "สมัครด้วย Google" : "ดำเนินการต่อด้วย Google"}</span>
         </button>
 
-        <button class="figma-oauth-btn apple" data-oauth-google="${isInviteAuth ? "invite" : "app"}">
-          <span style="font-size:17px;line-height:1;"></span>
-          <span>${isSignup ? "สมัครด้วย Apple" : "ดำเนินการต่อด้วย Apple"}</span>
-        </button>
-
         <div class="figma-auth-footer">
           <span>${isSignup ? "มีบัญชีอยู่แล้ว?" : "ยังไม่มีบัญชี?"}</span>
           <button class="figma-inline-link" data-action="set-auth-mode" data-mode="${isSignup ? "login" : "signup"}">
@@ -272,13 +269,28 @@ export function renderCheckEmailScreen(state) {
 }
 
 export function renderInviteLandingScreen(state) {
-  const folder = getFolderById(state.ui.inviteFolderId || state.ui.activeFolderId) || state.data.folders[0];
-  const count = getFolderCount(folder);
-  const isLoggedIn = state.data.user.isAuthenticated;
+  const preview = state.ui.invitePreview || null;
+  const folder = getFolderById(state.ui.inviteFolderId || state.ui.activeFolderId) || state.data.folders[0] || null;
+  const folderId = preview?.folder_id || folder?.id || state.ui.inviteFolderId || "";
+  const folderName = preview?.folder_name || folder?.name || "โฟลเดอร์ที่แชร์";
+  const folderCover = preview?.folder_cover_url || folder?.cover || "";
+  const folderEmoji = preview?.folder_emoji || folder?.emoji || "📁";
+  const count = preview ? Number(preview.item_count || 0) : folder ? getFolderCount(folder) : 0;
+  const inviterName = preview?.inviter_name || (folder && state.data.user?.isAuthenticated ? state.data.user.displayName : "เพื่อนของคุณ");
+  const isInvalidInvite = Boolean(preview && preview.valid === false);
+  const invalidReasonMap = {
+    revoked: "ลิงก์คำเชิญนี้ถูกยกเลิกโดยเจ้าของโฟลเดอร์แล้ว",
+    expired: "ลิงก์คำเชิญนี้หมดอายุแล้ว",
+    max_uses_reached: "ลิงก์คำเชิญนี้ถูกใช้งานครบตามจำนวนที่กำหนดแล้ว",
+  };
+  const invalidMessage = invalidReasonMap[preview?.reason] || "ลิงก์คำเชิญไม่ถูกต้องหรือหมดอายุแล้ว";
+  const roleLabel = preview?.role === "editor" ? "เพิ่มและแก้ไขลิงก์ได้" : "เปิดดูลิงก์ในโฟลเดอร์ได้";
+  const isLoggedIn = Boolean(state.data.user?.isAuthenticated);
+  const safeCover = safeImgUrl(folderCover);
 
   return `
     <div class="screen-scroll">
-      <div class="app-pad" style="display:flex;flex-direction:column;gap:18px;min-height:844px;">
+      <div class="app-pad" style="display:flex;flex-direction:column;gap:18px;min-height:100%;">
         <div style="display:flex;align-items:center;justify-content:space-between;">
           <span class="brand-heading" style="font-size:25px;">Sharely</span>
           <span class="tb-pill-badge" style="border:none;">
@@ -289,19 +301,31 @@ export function renderInviteLandingScreen(state) {
         <div>
           <h2 style="margin:0 0 5px;font-size:24px;">คำเชิญเข้าโฟลเดอร์</h2>
           <p style="margin:0;font-size:14px;color:var(--ink-secondary);">
-            ${escHtml(state.data.user.displayName)}ชวนคุณเข้าร่วมโฟลเดอร์${escHtml(folder.name)}
+            ${escHtml(inviterName)} ชวนคุณเข้าร่วมโฟลเดอร์ "${escHtml(folderName)}"
           </p>
         </div>
 
+        ${
+          isInvalidInvite
+            ? `<div style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:12px;padding:12px;font-size:13px;font-weight:600;">
+                 ⚠️ ${escHtml(invalidMessage)}
+               </div>`
+            : ""
+        }
+
         <div class="settings-card" style="border-color:var(--border-divider);">
-          <div style="height:148px;overflow:hidden;background:var(--bg-thumb);">
-            <img src="${escHtml(safeImgUrl(folder.cover))}" alt="" style="width:100%;height:100%;object-fit:cover;" />
+          <div style="height:148px;overflow:hidden;background:var(--bg-thumb);display:flex;align-items:center;justify-content:center;">
+            ${
+              safeCover
+                ? `<img src="${escHtml(safeCover)}" alt="" style="width:100%;height:100%;object-fit:cover;" />`
+                : `<span style="font-size:44px;">${escHtml(folderEmoji)}</span>`
+            }
           </div>
           <div style="padding:13px;">
-            <h3 style="margin:0 0 6px;font-size:20px;">${escHtml(folder.name)}</h3>
+            <h3 style="margin:0 0 6px;font-size:20px;">${escHtml(folderName)}</h3>
             <p style="margin:0;font-size:13px;color:var(--ink-secondary);display:flex;align-items:center;gap:7px;">
               ${icons.people(17)}
-              <span>${count} ลิงก์ · แชร์กับ ${Math.max(folder.sharedCount, 2)} คน</span>
+              <span>${count} ลิงก์ · สิทธิ์: ${escHtml(roleLabel)}</span>
             </p>
           </div>
         </div>
@@ -314,19 +338,94 @@ export function renderInviteLandingScreen(state) {
           </div>
           <div class="inline-flex-row" style="font-size:13px;">
             <span style="color:var(--theme-accent-text);display:inline-flex;">${icons.check(17)}</span>
-            <span>เพิ่มลิงก์ให้เพื่อนในโฟลเดอร์ดูได้</span>
+            <span>${preview?.role === "viewer" ? "ติดตามการอัปเดตลิงก์ใหม่ร่วมกับเพื่อน" : "เพิ่มลิงก์ให้เพื่อนในโฟลเดอร์ดูได้"}</span>
           </div>
         </div>
 
         <div style="margin-top:auto;display:flex;flex-direction:column;gap:8px;">
-          <button class="btn-accent-pill full48" data-accept-invite="${escHtml(folder.id)}">
-            เข้าร่วมโฟลเดอร์
+          <button
+            type="button"
+            class="btn-accent-pill full48"
+            data-accept-invite="${escHtml(folderId)}"
+            ${isInvalidInvite ? "disabled" : ""}
+          >
+            ${isLoggedIn ? "เข้าร่วมโฟลเดอร์" : "เข้าสู่ระบบเพื่อเข้าร่วมโฟลเดอร์นี้"}
           </button>
-          <button class="link-more-btn" style="text-decoration:none;color:var(--ink-secondary);font-weight:400;" data-go-screen="login" data-auth-ctx="invite">
-            ${isLoggedIn ? "สลับบัญชีก่อนเข้าร่วมโฟลเดอร์" : "เข้าสู่ระบบเพื่อเข้าร่วมโฟลเดอร์นี้"}
-          </button>
+          ${
+            isLoggedIn
+              ? `<button type="button" class="link-more-btn" style="text-decoration:none;color:var(--ink-secondary);font-weight:400;" data-go-screen="login" data-auth-ctx="invite">
+                   สลับบัญชีก่อนเข้าร่วมโฟลเดอร์
+                 </button>`
+              : ""
+          }
         </div>
       </div>
+    </div>
+  `;
+}
+
+export function renderWebAuthView(state) {
+  const screen = state.ui.screen;
+  const preview = state.ui.invitePreview || null;
+  const invFolder = preview || getFolderById(state.ui.inviteFolderId || state.ui.activeFolderId) || null;
+  const invCover = safeImgUrl(preview?.folder_cover_url || invFolder?.cover || "");
+  const isInvite = screen === "inviteLanding" || state.ui.authContext === "invite";
+
+  const rightBody =
+    screen === "inviteLanding"
+      ? renderInviteLandingScreen(state)
+      : screen === "checkEmail"
+        ? renderCheckEmailScreen(state)
+        : renderLoginScreen(state);
+
+  return `
+    <div class="pc-auth-shell" data-node-id="390:572">
+      <section class="pc-auth-hero">
+        <div class="pc-auth-hero-brand">
+          <span class="pc-auth-hero-logo-badge">${icons.bookmarkSolid(22)}</span>
+          <span>Sharely</span>
+        </div>
+
+        <div class="pc-auth-hero-copy">
+          <h1>เซฟไว้ก่อน<br />ค่อยกลับมาดู</h1>
+          <p>
+            เก็บรวบรวมลิงก์ โพสต์ และไอเดียสำคัญจาก TikTok, Instagram, X และเว็บโปรดไว้ในที่เดียว พร้อมสรุปด้วย AI และแชร์โฟลเดอร์กับเพื่อน
+          </p>
+          <div class="pc-auth-hero-highlights">
+            <span class="pc-auth-hero-pill">${icons.bookmarkSolid(15)}<span>เก็บไว้อ่านทีหลัง</span></span>
+            <span class="pc-auth-hero-pill">${icons.people(15)}<span>แชร์โฟลเดอร์ร่วมกัน</span></span>
+            <span class="pc-auth-hero-pill">${icons.bot(15)}<span>สรุปด้วย AI</span></span>
+          </div>
+        </div>
+
+        <div class="pc-auth-hero-foot">
+          Sharely Web &amp; Mobile · ซิงก์อัตโนมัติบนคลาวด์
+        </div>
+      </section>
+
+      <section class="pc-auth-form-col">
+        <div class="pc-auth-card">
+          ${
+            isInvite && preview && screen !== "inviteLanding"
+              ? `
+            <div class="pc-invite-preview-banner">
+              <div class="pc-invite-preview-thumb">
+                ${
+                  invCover
+                    ? `<img src="${escHtml(invCover)}" alt="" />`
+                    : `<span>${escHtml(preview.folder_emoji || "📁")}</span>`
+                }
+              </div>
+              <div style="min-width:0;">
+                <strong style="display:block;font-size:14px;color:var(--ink-primary);">เข้าร่วม "${escHtml(preview.folder_name || "โฟลเดอร์ที่แชร์")}"</strong>
+                <span style="font-size:12.5px;color:var(--ink-secondary);">คำเชิญจาก ${escHtml(preview.inviter_name || "เพื่อนของคุณ")}</span>
+              </div>
+            </div>`
+              : ""
+          }
+          ${rightBody}
+        </div>
+      </section>
     </div>
   `;
 }

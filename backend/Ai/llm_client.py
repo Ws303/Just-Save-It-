@@ -12,9 +12,11 @@ import logging
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
+import urllib.parse
 
 import httpx
 
+from .content_extractor import validate_safe_url
 from .schemas import AIConfig, AISummaryOutput
 
 logger = logging.getLogger("just_save_it.ai")
@@ -160,7 +162,7 @@ async def _call_openai_compatible_raw(
         "response_format": {"type": "json_object"},
     }
 
-    async with httpx.AsyncClient(timeout=25.0) as client:
+    async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
         resp = await client.post(endpoint, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
@@ -189,12 +191,34 @@ async def _call_anthropic_raw(
         "temperature": 0.2,
     }
 
-    async with httpx.AsyncClient(timeout=25.0) as client:
+    async with httpx.AsyncClient(timeout=25.0, follow_redirects=False) as client:
         resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
         raw_text = data["content"][0]["text"]
         return _parse_and_validate_json(raw_text)
+
+
+MODEL_DISPLAY_ALIASES: Dict[str, str] = {
+    "gpt-4.1 mini": "gpt-4.1-mini",
+    "gpt-4.1-mini": "gpt-4.1-mini",
+    "gpt-4o mini": "gpt-4o-mini",
+    "gpt-4o-mini": "gpt-4o-mini",
+    "gpt-4o": "gpt-4o",
+    "claude sonnet": "claude-sonnet-4-20250514",
+    "claude haiku": "claude-3-5-haiku-20241022",
+    "gemini flash": "gemini-2.5-flash",
+    "gemini pro": "gemini-2.5-pro",
+}
+
+
+def resolve_upstream_model_id(model_name: Optional[str], default: str = "gpt-4o-mini") -> str:
+    """Normalize human-friendly UI labels (e.g. 'GPT-4.1 mini') to upstream API model IDs."""
+    cleaned = (model_name or "").strip()
+    if not cleaned:
+        return default
+    alias = MODEL_DISPLAY_ALIASES.get(cleaned.lower())
+    return alias if alias else cleaned
 
 
 async def call_builtin_llm(prompt: str) -> Tuple[AISummaryOutput, str]:
@@ -233,6 +257,40 @@ async def call_builtin_llm(prompt: str) -> Tuple[AISummaryOutput, str]:
     raise RuntimeError("No AI credentials available: GEMINI_API_KEY and GROQ_API_KEY are not configured on server.")
 
 
+def validate_ai_base_url(
+    base_url: Optional[str],
+    *,
+    allow_default_local: bool = False,
+) -> Optional[str]:
+    """Validate user-supplied AI endpoint URL against SSRF in production.
+
+    Permits explicit loopback addresses (e.g. Ollama) only when ENV=development.
+    """
+    env = os.getenv("ENV", "production").strip().lower()
+    raw = (base_url or "").strip()
+    if not raw:
+        if allow_default_local:
+            if env == "development":
+                return "http://localhost:11434/v1"
+            raise ValueError("Custom AI endpoint requires an explicit public http(s) base_url in production.")
+        return None
+
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+        raise ValueError("Invalid AI base_url scheme or hostname.")
+    if parsed.username or parsed.password:
+        raise ValueError("AI base_url must not contain embedded credentials.")
+
+    host_lower = parsed.hostname.lower()
+    if host_lower in ("169.254.169.254", "metadata.google.internal") or host_lower.startswith("169.254."):
+        raise ValueError(f"SSRF Alert: Target hostname '{parsed.hostname}' is not permitted.")
+
+    if env == "development" and host_lower in ("localhost", "127.0.0.1", "::1"):
+        return raw.rstrip("/")
+
+    return validate_safe_url(raw).rstrip("/")
+
+
 async def call_byok_or_custom_llm(prompt: str, config: AIConfig) -> Tuple[AISummaryOutput, str]:
     """Tier 2 & Tier 3: Call LLM with user-provided API key or custom endpoint (Ollama/vLLM).
 
@@ -244,8 +302,8 @@ async def call_byok_or_custom_llm(prompt: str, config: AIConfig) -> Tuple[AISumm
     """
     # ===== Tier 3: Custom / Local Endpoint (Keyless or Bearer) =====
     if config.provider == "custom":
-        base_url = config.base_url or "http://localhost:11434/v1"
-        model = config.model or "llama3.2"
+        base_url = validate_ai_base_url(config.base_url, allow_default_local=True) or "http://localhost:11434/v1"
+        model = resolve_upstream_model_id(config.model, default="llama3.2")
         output = await _call_openai_compatible_raw(
             prompt=prompt,
             base_url=base_url,
@@ -261,17 +319,21 @@ async def call_byok_or_custom_llm(prompt: str, config: AIConfig) -> Tuple[AISumm
 
     # Provider routing for BYOK
     # In BYOK, user can specify specific model or provider
-    model = config.model or "gpt-4o-mini"
+    model = resolve_upstream_model_id(config.model, default="gpt-4o-mini")
+    validated_base = validate_ai_base_url(config.base_url, allow_default_local=False) if config.base_url else None
+    base_hint = (validated_base or "").lower()
 
-    if "gemini" in model.lower():
-        output = await _call_gemini_raw(prompt=prompt, api_key=api_key, model_name=model)
-        return output, f"byok:gemini/{model}"
+    if "gemini" in model.lower() or "generativelanguage.googleapis.com" in base_hint:
+        gemini_model = model if "gemini" in model.lower() else "gemini-2.5-flash"
+        output = await _call_gemini_raw(prompt=prompt, api_key=api_key, model_name=gemini_model)
+        return output, f"byok:gemini/{gemini_model}"
 
-    if "claude" in model.lower() or "anthropic" in model.lower():
-        output = await _call_anthropic_raw(prompt=prompt, api_key=api_key, model_name=model)
-        return output, f"byok:anthropic/{model}"
+    if "claude" in model.lower() or "anthropic" in model.lower() or "anthropic.com" in base_hint:
+        claude_model = model if "claude" in model.lower() else "claude-3-5-haiku-20241022"
+        output = await _call_anthropic_raw(prompt=prompt, api_key=api_key, model_name=claude_model)
+        return output, f"byok:anthropic/{claude_model}"
 
-    base_url = config.base_url or "https://api.openai.com/v1"
+    base_url = validated_base or "https://api.openai.com/v1"
     output = await _call_openai_compatible_raw(
         prompt=prompt,
         base_url=base_url,

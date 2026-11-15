@@ -62,20 +62,46 @@ class AIConfig(BaseModel):
         x_ai_model: Optional[str] = None,
     ) -> "AIConfig":
         """Resolve AIConfig tier from incoming HTTP request headers."""
-        if x_ai_base_url and x_ai_base_url.strip():
+        raw_provider = (x_ai_provider or "").strip().lower()
+        cleaned_key = x_ai_key.strip() if x_ai_key and x_ai_key.strip() else None
+        cleaned_base = (
+            x_ai_base_url.strip().rstrip("/")
+            if x_ai_base_url and x_ai_base_url.strip()
+            else None
+        )
+        cleaned_model = x_ai_model.strip() if x_ai_model and x_ai_model.strip() else None
+
+        if raw_provider == "custom":
             return cls(
                 provider="custom",
-                base_url=x_ai_base_url.strip().rstrip("/"),
-                api_key=x_ai_key.strip() if x_ai_key else None,
-                model=x_ai_model.strip() if x_ai_model else "llama3.2",
+                base_url=cleaned_base,
+                api_key=cleaned_key,
+                model=cleaned_model or "llama3.2",
             )
-        if x_ai_key and x_ai_key.strip():
+        if raw_provider in ("byok", "openai", "gemini", "anthropic", "openrouter", "groq"):
             return cls(
                 provider="byok",
-                api_key=x_ai_key.strip(),
-                model=x_ai_model.strip() if x_ai_model else None,
+                base_url=cleaned_base,
+                api_key=cleaned_key,
+                model=cleaned_model,
             )
-        return cls(provider="built-in")
+        if raw_provider in ("built-in", "builtin"):
+            return cls(provider="built-in", model=cleaned_model)
+
+        if cleaned_base:
+            return cls(
+                provider="custom",
+                base_url=cleaned_base,
+                api_key=cleaned_key,
+                model=cleaned_model or "llama3.2",
+            )
+        if cleaned_key:
+            return cls(
+                provider="byok",
+                api_key=cleaned_key,
+                model=cleaned_model,
+            )
+        return cls(provider="built-in", model=cleaned_model)
 
 
 class SummarizeRequest(BaseModel):

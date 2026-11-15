@@ -2,7 +2,18 @@
  * Application Entrypoint, Event Dispatcher & Focus-Preserving Renderer for Sharely Test Web App.
  */
 import { AI_PROVIDER_PRESETS, COVER_CHOICES, FOLDER_NAME_SUGGESTIONS } from "./data/seed.js";
-import { store, inferPlatform, getFolderById, getLinkById } from "./state/store.js";
+import {
+  store,
+  inferPlatform,
+  getFolderById,
+  getLinkById,
+  isQaModeEnabled,
+  resolveDefaultViewportMode,
+  getBangkokTodayIso,
+  formatThaiMonthYear,
+  getDaysInMonth,
+  stepYearMonth,
+} from "./state/store.js";
 import { apiClient } from "./services/apiClient.js";
 import {
   getAuthMode,
@@ -113,14 +124,14 @@ function renderSimulatedHostApp(appName) {
 
 function renderViewportContent(state) {
   const isAuthScreen = ["login", "emailLogin", "checkEmail", "inviteLanding"].includes(state.ui.screen);
-  if (state.ui.viewportMode === "web" && !isAuthScreen) {
+  if (state.ui.viewportMode === "web") {
     return `
       ${renderWebView(state)}
       ${state.ui.activeSheet ? `<div class="pc-modal-portal">${[renderPostMenuAndDialog(state.ui, state.data.links), renderFolderSheets(state), renderSaveAndReminderSheets(state), renderProfileSheets(state)].join("")}</div>` : ""}
-      ${state.ui.toast ? `<div class="toast-banner">${escHtml(state.ui.toast)}</div>` : ""}
+      ${state.ui.toast ? `<div class="toast-banner pc-toast-banner">${escHtml(state.ui.toast)}</div>` : ""}
     `;
   }
-  if (state.ui.viewportMode === "extension") {
+  if (state.ui.viewportMode === "extension" && isQaModeEnabled()) {
     return renderExtensionPopup(state);
   }
 
@@ -131,11 +142,12 @@ function renderViewportContent(state) {
     renderProfileSheets(state),
   ].join("");
 
-  const hostAppBackdrop = state.ui.simulatedSourceApp ? renderSimulatedHostApp(state.ui.simulatedSourceApp) : "";
+  const hostAppBackdrop =
+    isQaModeEnabled() && state.ui.simulatedSourceApp ? renderSimulatedHostApp(state.ui.simulatedSourceApp) : "";
 
   return `
-    <div class="phone-bezel">
-      <main class="phone-frame" aria-label="Just Save It App Preview">
+    <div class="phone-bezel ${isQaModeEnabled() ? "qa-bezel" : "responsive-mobile"}">
+      <main class="phone-frame" aria-label="Just Save It">
         ${hostAppBackdrop}
         ${renderActiveMobileScreen(state)}
         ${sheetsHtml}
@@ -163,8 +175,17 @@ function renderApp() {
     }
   }
 
-  const scrollPhone = appEl.querySelector(".screen-scroll")?.scrollTop || 0;
-  const scrollInspector = appEl.querySelector(".tb-ins-body")?.scrollTop || 0;
+  const scrollSelectors = [
+    ".screen-scroll",
+    ".tb-ins-body",
+    ".pc-main",
+    ".pc-sidebar",
+    ".figma-detail-scroll",
+    ".figma-add-sheet-scroll",
+    ".bottom-sheet",
+    ".pc-modal-portal",
+  ];
+  const savedScrolls = scrollSelectors.map((sel) => appEl.querySelector(sel)?.scrollTop || 0);
 
   const healthDotClass =
     state.api.mode === "mock"
@@ -192,10 +213,8 @@ function renderApp() {
     { id: "inviteSheet", label: "24 Share", protected: true },
   ];
 
-  const isCollapsed = state.ui.qaPanelCollapsed !== false;
-  const showQaToggle =
-    typeof window !== "undefined" &&
-    (window.location.search.includes("qa=1") || window.location.hash.includes("qa"));
+  const showQaToggle = isQaModeEnabled();
+  const isCollapsed = !showQaToggle || state.ui.qaPanelCollapsed !== false;
 
   appEl.innerHTML = isCollapsed
     ? `
@@ -276,11 +295,10 @@ function renderApp() {
       </div>
     `;
 
-  const phoneScrollEl = appEl.querySelector(".screen-scroll");
-  if (phoneScrollEl) phoneScrollEl.scrollTop = scrollPhone;
-
-  const insScrollEl = appEl.querySelector(".tb-ins-body");
-  if (insScrollEl) insScrollEl.scrollTop = scrollInspector;
+  scrollSelectors.forEach((sel, idx) => {
+    const el = appEl.querySelector(sel);
+    if (el && savedScrolls[idx]) el.scrollTop = savedScrolls[idx];
+  });
 
   if (focusInfo) {
     const target = appEl.querySelector(focusInfo.selector);
@@ -299,7 +317,10 @@ function renderApp() {
 
 function openSaveSheet(prefill = {}) {
   const state = store.state;
-  const folderId = prefill.folderId || state.ui.activeFolderId || state.data.folders[0]?.id;
+  const folderId =
+    prefill.folderId !== undefined
+      ? prefill.folderId
+      : state.ui.activeFolderId || state.data.folders[0]?.id || null;
   const url = prefill.url || "";
   const { platform, domain } = inferPlatform(url || "https://www.instagram.com/reel/SharelyDemo");
 
@@ -323,8 +344,11 @@ function openSaveSheet(prefill = {}) {
       platform: prefill.platform || platform,
       domain: prefill.domain || domain,
       title: prefill.title || "",
+      description: prefill.description || "",
       coverUrl: prefill.coverUrl || null,
       media_items: prefill.media_items || [],
+      embed_url: prefill.embed_url || null,
+      embed_type: prefill.embed_type || "none",
       folderId,
       pinned: Boolean(prefill.pinned),
       showAdvanced: false,
@@ -343,20 +367,18 @@ function openSaveSheet(prefill = {}) {
 function openReminderSheet(linkId) {
   const item = getLinkById(linkId) || store.state.data.links[0];
   if (!item) return;
-  const ym = item.reminderDate ? item.reminderDate.slice(0, 7) : "2026-11";
-  const monthLabels = {
-    "2026-10": "ตุลาคม 2569",
-    "2026-11": "พฤศจิกายน 2569",
-    "2026-12": "ธันวาคม 2569",
-  };
+  const todayIso = getBangkokTodayIso();
+  const ym = item.reminderDate ? item.reminderDate.slice(0, 7) : todayIso.slice(0, 7);
+  const rawDay = Number(item.reminderDate?.slice(8, 10)) || Number(todayIso.slice(8, 10)) || 1;
+  const day = Math.min(rawDay, getDaysInMonth(ym));
   store.state.ui.reminderScheduleType = item.scheduleType || "once";
   store.state.ui.reminderRepeatDays = item.repeatEveryDays || 3;
   store.openSheet({
     type: "reminder",
     linkId: item.id,
-    day: Number(item.reminderDate?.slice(8, 10)) || 15,
-    monthLabel: monthLabels[ym] || "พฤศจิกายน 2569",
-    yearMonth: monthLabels[ym] ? ym : "2026-11",
+    day,
+    monthLabel: formatThaiMonthYear(ym),
+    yearMonth: ym,
     time: item.reminderTime || "18:00",
     scheduleType: item.scheduleType || "once",
     repeatEveryDays: item.repeatEveryDays || 3,
@@ -490,35 +512,108 @@ appEl.addEventListener("change", (e) => {
     store.emit();
   } else if (el.dataset.toggleSeen) {
     apiClient.patchLink(el.dataset.toggleSeen, { status: el.checked ? "read" : "unread" });
+  } else if (el.dataset.csvFolder !== undefined) {
+    store.state.ui.csvExportFolderId = el.value || "all";
+    store.emit();
+  } else if (el.dataset.csvUnreadOnly !== undefined) {
+    store.state.ui.csvExportUnreadOnly = el.checked;
+    store.emit();
   }
 });
+
+const PENDING_INVITE_STORAGE_KEY = "sharely_pending_invite_v1";
+
+function savePendingInvite(token, role = "viewer") {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (token) {
+      localStorage.setItem(PENDING_INVITE_STORAGE_KEY, JSON.stringify({ token, role }));
+    } else {
+      localStorage.removeItem(PENDING_INVITE_STORAGE_KEY);
+    }
+  } catch {}
+}
+
+function loadPendingInvite() {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(PENDING_INVITE_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
 
 function completePostAuthNavigation(fallbackScreen = "home") {
   if (store.state.api.mode === "live") {
     apiClient.hydrateWorkspace().catch(() => {});
   }
+  const activeVp = store.state.ui.viewportMode === "web" ? "web" : "mobile";
   const redirect = store.state.ui.postAuthRedirect;
   store.state.ui.postAuthRedirect = null;
-  if (store.state.ui.authContext === "invite") {
-    store.navigate("inviteLanding", { viewportMode: "mobile" });
+  if (store.state.ui.authContext === "invite" || store.state.ui.pendingInviteToken) {
+    store.navigate("inviteLanding", { viewportMode: activeVp, allowGuestSwitch: true });
     return;
   }
   if (redirect && redirect.screen) {
     store.navigate(redirect.screen, {
-      viewportMode: redirect.viewportMode || "mobile",
+      viewportMode: redirect.viewportMode || activeVp,
       activeFolderId: redirect.activeFolderId ?? store.state.ui.activeFolderId,
       activeLinkId: redirect.activeLinkId ?? store.state.ui.activeLinkId,
     });
     return;
   }
-  store.navigate(fallbackScreen, { viewportMode: "mobile" });
+  store.navigate(fallbackScreen, { viewportMode: activeVp });
+}
+
+const PASSIVE_DATASET_KEYS = new Set([
+  "testid",
+  "id",
+  "index",
+  "role",
+  "deleteMode",
+  "folderId",
+  "menuFolder",
+  "filterScope",
+  "authCtx",
+  "shareApp",
+  "forceRefresh",
+  "fallback",
+  "emoji",
+  "tag",
+  "scheduleType",
+  "delta",
+]);
+
+function findInteractiveTarget(startEl) {
+  let cur = startEl;
+  while (cur && cur !== appEl) {
+    if (cur.dataset) {
+      const actionKeys = Object.keys(cur.dataset).filter(
+        (k) =>
+          !k.startsWith("bind") &&
+          !PASSIVE_DATASET_KEYS.has(k) &&
+          k !== "searchInput" &&
+          k !== "editNote"
+      );
+      if (actionKeys.length > 0) {
+        if (cur.classList?.contains("modal-backdrop") && startEl !== cur) {
+          cur = cur.parentElement;
+          continue;
+        }
+        return cur;
+      }
+    }
+    cur = cur.parentElement;
+  }
+  return null;
 }
 
 // =========================================================
 // DELEGATED CLICK HANDLERS
 // =========================================================
 appEl.addEventListener("click", async (e) => {
-  const target = e.target.closest("[data-action],[data-viewport-switch],[data-toggle-inspector],[data-ins-tab],[data-quick-jump],[data-nav],[data-go-screen],[data-open-folder],[data-open-edit-folder],[data-open-link],[data-open-preview],[data-toggle-auth-mode],[data-oauth-google],[data-submit-email-login],[data-submit-signup],[data-submit-password-login],[data-simulate-magic-link],[data-check-supabase-session],[data-accept-invite],[data-toggle-notifs],[data-mark-notifs-read],[data-filter-chip],[data-toggle-fav],[data-open-post-menu],[data-close-sheet],[data-close-host-app],[data-toggle-pin-link],[data-toggle-save-advanced],[data-sim-share-preset],[data-sim-custom-share],[data-toggle-host-backdrop],[data-toggle-status-sheet],[data-trigger-ai-sheet],[data-confirm-delete-post],[data-execute-delete-post],[data-open-save-sheet],[data-run-unfurl],[data-select-save-folder],[data-toggle-save-tag],[data-toggle-draft-reminder],[data-submit-save-link],[data-toggle-video-play],[data-toggle-seen],[data-run-ai-summarize],[data-open-reminder],[data-cal-month],[data-select-cal-day],[data-clear-reminder],[data-save-reminder],[data-preview-mark-read],[data-preview-step],[data-open-create-folder],[data-suggest-folder-name],[data-open-pick-cover],[data-select-cover],[data-back-to-folder-edit],[data-save-folder-sheet],[data-open-invite-sheet],[data-copy-invite],[data-open-invite-apps],[data-open-invite-preview],[data-preview-recipient-invite],[data-toggle-ai-dropdown],[data-select-ai-provider],[data-select-ai-model],[data-toggle-ai-keyless],[data-save-ai-config],[data-open-edit-nickname],[data-save-nickname],[data-toggle-notif-setting],[data-set-text-size],[data-set-theme],[data-update-account-email],[data-send-password-reset],[data-submit-support],[data-open-export-csv],[data-download-csv],[data-open-logout-dialog],[data-confirm-logout],[data-web-scope],[data-web-folder],[data-select-web-link],[data-ext-unfurl],[data-ext-folder],[data-ext-tag],[data-ext-toggle-reminder],[data-ext-submit],[data-set-api-mode],[data-set-auth-provider],[data-ping-health],[data-tb-test-auth],[data-sim-share-intent],[data-sim-open-invite],[data-export-json-state],[data-reset-seed],[data-clear-logs],[data-run-mcp-tool]");
+  const target = findInteractiveTarget(e.target);
   if (!target) return;
 
   const d = target.dataset;
@@ -528,6 +623,7 @@ appEl.addEventListener("click", async (e) => {
   if (d.action) {
     const act = d.action;
     if (act === "toggle-qa-panel") {
+      if (!isQaModeEnabled()) return;
       ui.qaPanelCollapsed = !(ui.qaPanelCollapsed !== false);
       ui.inspectorVisible = !ui.qaPanelCollapsed;
       store.emit();
@@ -541,30 +637,39 @@ appEl.addEventListener("click", async (e) => {
     if (act === "open-notifications") {
       ui.notificationScreenOpen = true;
       ui.showNotifications = true;
+      if (ui.viewportMode === "web") ui.pcSection = "notifications";
       store.emit();
       return;
     }
     if (act === "close-notifications") {
       ui.notificationScreenOpen = false;
       ui.showNotifications = false;
+      if (ui.viewportMode === "web" && ui.pcSection === "notifications") ui.pcSection = "home";
       store.emit();
       return;
     }
     if (act === "mark-all-notifications-read") {
-      data.notifications.forEach((n) => (n.unread = false));
+      store.markAllNotificationsRead();
       store.showToast("อ่านแจ้งเตือนทั้งหมดแล้ว");
       return;
     }
     if (act === "open-notification-item") {
       const n = data.notifications.find((item) => item.id === d.id);
-      if (n) n.unread = false;
+      store.markNotificationRead(d.id);
       ui.notificationScreenOpen = false;
       ui.showNotifications = false;
       if (n?.linkId) {
-        store.navigate("linkDetail", { activeLinkId: n.linkId });
+        store.navigate("linkDetail", {
+          activeLinkId: n.linkId,
+          viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
+        });
       } else if (n?.folderId) {
-        store.navigate("folderDetail", { activeFolderId: n.folderId });
+        store.navigate("folderDetail", {
+          activeFolderId: n.folderId,
+          viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
+        });
       } else {
+        if (ui.viewportMode === "web") ui.pcSection = "home";
         store.emit();
       }
       return;
@@ -591,7 +696,13 @@ appEl.addEventListener("click", async (e) => {
         store.emit();
         return;
       }
-      await apiClient.sendPasswordReset(email);
+      const res = await apiClient.sendPasswordReset(email);
+      if (res && !res.ok) {
+        ui.authError = res.error || "ส่งลิงก์ตั้งรหัสผ่านไม่สำเร็จ";
+        store.emit();
+        store.showToast(ui.authError);
+        return;
+      }
       ui.authMode = "login";
       store.showToast(`ส่งลิงก์ตั้งรหัสผ่านใหม่ไปที่ ${email} แล้ว`);
       store.navigate("checkEmail", { allowGuestSwitch: true });
@@ -649,14 +760,15 @@ appEl.addEventListener("click", async (e) => {
     }
     if (act === "create-folder-inline") {
       const name = (ui.inlineFolderName || "").trim() || "โฟลเดอร์ใหม่";
-      const created = await apiClient.saveFolder({ name, emoji: ui.inlineFolderEmoji || "📁" });
-      ui.createFolderSheetOpen = false;
-      ui.folderPickerSheetOpen = false;
-      if (ui.activeSheet?.type === "saveLink" && created) {
-        ui.activeSheet.draft.folderId = created.id;
-      }
-      store.showToast(`สร้างโฟลเดอร์ "${name}" แล้ว`);
-      return;
+    const created = await apiClient.saveFolder({ name, emoji: ui.inlineFolderEmoji || "📁" });
+    if (!created) return;
+    ui.createFolderSheetOpen = false;
+    ui.folderPickerSheetOpen = false;
+    if (ui.activeSheet?.type === "saveLink") {
+      ui.activeSheet.draft.folderId = created.id;
+    }
+    store.showToast(`สร้างโฟลเดอร์ "${name}" แล้ว`);
+    return;
     }
     if (act === "open-ai-confirm") {
       ui.aiConfirmModalOpen = true;
@@ -794,10 +906,13 @@ appEl.addEventListener("click", async (e) => {
 
   // 1. Viewport & Inspector controls
   if (d.viewportSwitch) {
+    if (!isQaModeEnabled()) return;
+    ui.qaViewportLocked = true;
     store.setViewport(d.viewportSwitch, d.goScreen ? { screen: d.goScreen } : {});
     return;
   }
   if (d.toggleInspector) {
+    if (!isQaModeEnabled()) return;
     ui.inspectorVisible = !ui.inspectorVisible;
     store.emit();
     return;
@@ -813,20 +928,20 @@ appEl.addEventListener("click", async (e) => {
       return;
     }
     if (d.quickJump === "reminderSheet") {
-      if (store.navigate("linkDetail", { viewportMode: "mobile" })) {
+      if (store.navigate("linkDetail", { viewportMode: ui.viewportMode === "web" ? "web" : "mobile" })) {
         openReminderSheet(ui.activeLinkId);
       }
       return;
     }
     if (d.quickJump === "inviteSheet") {
-      if (store.navigate("folderDetail", { viewportMode: "mobile" })) {
+      if (store.navigate("folderDetail", { viewportMode: ui.viewportMode === "web" ? "web" : "mobile" })) {
         ui.shareSheetState = "idle";
         store.openSheet({ type: "invite", folderId: ui.activeFolderId });
       }
       return;
     }
     store.navigate(d.quickJump, {
-      viewportMode: "mobile",
+      viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
       allowGuestSwitch: ["login", "emailLogin", "checkEmail", "inviteLanding"].includes(d.quickJump),
     });
     return;
@@ -834,19 +949,31 @@ appEl.addEventListener("click", async (e) => {
 
   // 2. Navigation
   if (d.nav) {
-    store.navigate(d.nav, { viewportMode: "mobile" });
+    store.navigate(d.nav, { viewportMode: ui.viewportMode === "web" ? "web" : "mobile" });
+    return;
+  }
+  if (d.pcSection) {
+    const allowed = store.navigate(d.pcSection === "favorite" ? "home" : d.pcSection === "notifications" ? "home" : d.pcSection, {
+      viewportMode: "web",
+      allowGuestSwitch: ["login", "emailLogin", "checkEmail", "inviteLanding"].includes(d.pcSection),
+    });
+    if (allowed) {
+      ui.pcSection = d.pcSection;
+      ui.notificationScreenOpen = d.pcSection === "notifications";
+      store.emit();
+    }
     return;
   }
   if (d.goScreen) {
     if (d.authCtx) ui.authContext = d.authCtx;
     else ui.authContext = "app";
     store.navigate(d.goScreen, {
+      viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
       allowGuestSwitch: ui.authContext === "invite" || ["login", "emailLogin", "checkEmail"].includes(d.goScreen),
     });
     return;
   }
   if (d.openEditFolder) {
-    e.stopPropagation();
     const folder = getFolderById(d.openEditFolder);
     if (folder) {
       store.openSheet({
@@ -859,16 +986,37 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.openFolder) {
-    store.navigate("folderDetail", { activeFolderId: d.openFolder });
+    store.navigate("folderDetail", {
+      activeFolderId: d.openFolder,
+      viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
+    });
     return;
   }
   if (d.openLink) {
-    store.navigate("linkDetail", { activeLinkId: d.openLink });
+    store.navigate("linkDetail", {
+      activeLinkId: d.openLink,
+      prevPcSection: ui.pcSection && ui.pcSection !== "linkDetail" ? ui.pcSection : ui.prevPcSection || "home",
+      viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
+    });
+    return;
+  }
+  if (d.linkNav) {
+    const curList = data.links || [];
+    const idx = curList.findIndex((l) => l.id === ui.activeLinkId);
+    if (curList.length > 0 && idx >= 0) {
+      const nextIdx = (idx + Number(d.linkNav) + curList.length) % curList.length;
+      store.navigate("linkDetail", {
+        activeLinkId: curList[nextIdx].id,
+        viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
+      });
+    }
     return;
   }
   if (d.openPreview) {
-    ui.viewportMode = "mobile";
-    store.navigate("savedPreview", { previewIndex: 0 });
+    store.navigate("savedPreview", {
+      previewIndex: 0,
+      viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
+    });
     return;
   }
 
@@ -880,14 +1028,15 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.oauthGoogle) {
+    if (ui.pendingInviteToken) savePendingInvite(ui.pendingInviteToken, ui.pendingInviteRole || "viewer");
     const res = await apiClient.signInGoogle();
     if (!res.ok) {
       store.showToast(res.error || "ไม่รองรับ Google OAuth ในการตั้งค่านี้");
       return;
     }
     if (res.data?.url && !res.isMock) {
-      store.showToast("กำลังเปิดหน้าต่าง Google OAuth...");
-      window.open(res.data.url, "_blank", "noopener,noreferrer");
+      store.showToast("กำลังเปลี่ยนเส้นทางไปยัง Google OAuth...");
+      window.location.assign(res.data.url);
       return;
     }
     completePostAuthNavigation(d.oauthGoogle === "invite" ? "inviteLanding" : "home");
@@ -920,9 +1069,16 @@ appEl.addEventListener("click", async (e) => {
   if (d.submitSignup) {
     const email = (ui.authEmail || "").trim();
     const password = ui.authPassword || "";
+    const confirmPw = ui.authPasswordConfirm ?? "";
     const displayName = (ui.authDisplayName || "").trim();
     if (!email || !password || password.length < 8) {
       ui.authError = "กรุณากรอกอีเมลและรหัสผ่านอย่างน้อย 8 ตัวอักษร";
+      store.emit();
+      store.showToast(ui.authError);
+      return;
+    }
+    if (ui.authMode === "signup" && confirmPw !== password) {
+      ui.authError = "รหัสผ่านและการยืนยันรหัสผ่านไม่ตรงกัน";
       store.emit();
       store.showToast(ui.authError);
       return;
@@ -980,12 +1136,34 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.acceptInvite) {
-    const joined = await apiClient.acceptInvite(d.acceptInvite);
-    if (!joined) {
-      store.showToast("ไม่สามารถเข้าร่วมโฟลเดอร์ได้ กรุณาตรวจสอบสิทธิ์หรือลองอีกครั้ง");
+    const tokenOrFolder = ui.pendingInviteToken || d.acceptInvite;
+    if (!hasValidSession(store.state) && store.state.api.mode === "live") {
+      savePendingInvite(tokenOrFolder, ui.pendingInviteRole || "viewer");
+      ui.postAuthRedirect = {
+        screen: "inviteLanding",
+        viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
+      };
+      ui.authContext = "invite";
+      store.navigate("login", {
+        allowGuestSwitch: true,
+        viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
+      });
+      store.showToast("กรุณาเข้าสู่ระบบก่อนเพื่อเข้าร่วมโฟลเดอร์");
       return;
     }
-    store.navigate("folderDetail", { activeFolderId: joined.id || d.acceptInvite });
+    const joined = await apiClient.acceptInvite(tokenOrFolder);
+    if (!joined) {
+      store.showToast("ไม่สามารถเข้าร่วมโฟลเดอร์ได้ กรุณาตรวจสอบสิทธิ์หรือลิงก์คำเชิญ");
+      return;
+    }
+    ui.pendingInviteToken = null;
+    ui.invitePreview = null;
+    ui.authContext = "app";
+    savePendingInvite(null);
+    store.navigate("folderDetail", {
+      activeFolderId: joined.id || d.acceptInvite,
+      viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
+    });
     store.showToast(`เข้าร่วมโฟลเดอร์ "${joined.name || ""}" สำเร็จ`);
     return;
   }
@@ -997,7 +1175,7 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.markNotifsRead) {
-    data.notifications.forEach((n) => (n.unread = false));
+    store.markAllNotificationsRead();
     ui.showNotifications = false;
     store.emit();
     return;
@@ -1066,8 +1244,15 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.triggerAiSheet) {
-    store.navigate("linkDetail", { activeLinkId: d.triggerAiSheet });
-    await apiClient.summarizeLink(d.triggerAiSheet);
+    store.closeSheet();
+    store.navigate("linkDetail", {
+      activeLinkId: d.triggerAiSheet,
+      prevPcSection: ui.pcSection && ui.pcSection !== "linkDetail" ? ui.pcSection : ui.prevPcSection || "home",
+      viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
+    });
+    ui.aiConfirmModalOpen = true;
+    ui.aiSummaryStatus = "confirm";
+    store.emit();
     return;
   }
   if (d.confirmDeletePost) {
@@ -1080,9 +1265,20 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.executeDeletePost) {
-    await apiClient.deleteLink(d.executeDeletePost);
+    if (d.deleteMode === "removeFromFolder") {
+      const updated = await apiClient.patchLink(d.executeDeletePost, { folderId: null });
+      if (!updated) return;
+      store.closeSheet();
+      store.showToast("นำโพสต์ออกจากโฟลเดอร์แล้ว");
+      return;
+    }
+    const ok = await apiClient.deleteLink(d.executeDeletePost);
+    if (!ok) return;
     store.closeSheet();
-    store.showToast(d.deleteMode === "removeFromFolder" ? "นำโพสต์ออกจากโฟลเดอร์แล้ว" : "ลบโพสต์เรียบร้อย");
+    if (ui.screen === "linkDetail" && ui.activeLinkId === d.executeDeletePost) {
+      store.navigate("home", { viewportMode: ui.viewportMode === "web" ? "web" : "mobile" });
+    }
+    store.showToast("ลบโพสต์เรียบร้อย");
     return;
   }
 
@@ -1096,17 +1292,23 @@ appEl.addEventListener("click", async (e) => {
     const res = await apiClient.previewUrl(ui.activeSheet.draft.url);
     if (res.ok && res.data) {
       ui.activeSheet.draft.title = res.data.title || ui.activeSheet.draft.title;
+      ui.activeSheet.draft.description = res.data.description || ui.activeSheet.draft.description || "";
       ui.activeSheet.draft.platform = res.data.platform || ui.activeSheet.draft.platform;
       ui.activeSheet.draft.domain = res.data.domain || ui.activeSheet.draft.domain;
+      ui.activeSheet.draft.media_items = Array.isArray(res.data.media_items) ? res.data.media_items : [];
+      ui.activeSheet.draft.coverUrl = res.data.image_url || res.data.media_items?.[0] || ui.activeSheet.draft.coverUrl;
+      ui.activeSheet.draft.embed_url = res.data.embed_url || null;
+      ui.activeSheet.draft.embed_type = res.data.embed_type || "none";
       if (res.data.suggested_tags?.length) ui.activeSheet.draft.tags = [...res.data.suggested_tags];
+      store.emit();
       store.showToast("ดึงข้อมูลตัวอย่างลิงก์แล้ว");
     } else {
-      store.showToast("ไม่สามารถดึงข้อมูลจาก Live /api/preview ได้");
+      store.showToast(res.error || "ไม่สามารถดึงข้อมูลจาก /api/preview ได้");
     }
     return;
   }
   if (d.selectSaveFolder && ui.activeSheet?.type === "saveLink") {
-    ui.activeSheet.draft.folderId = d.selectSaveFolder;
+    ui.activeSheet.draft.folderId = d.selectSaveFolder === "__none__" ? null : d.selectSaveFolder;
     ui.folderPickerSheetOpen = false;
     store.emit();
     return;
@@ -1120,8 +1322,9 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.toggleDraftReminder && ui.activeSheet?.type === "saveLink") {
-    ui.activeSheet.draft.reminder = ui.activeSheet.draft.reminder ? "" : "พรุ่งนี้ 18:00";
-    ui.activeSheet.draft.reminderDate = ui.activeSheet.draft.reminder ? "2026-11-15" : null;
+    const todayIso = getBangkokTodayIso();
+    ui.activeSheet.draft.reminder = ui.activeSheet.draft.reminder ? "" : `${todayIso} 18:00`;
+    ui.activeSheet.draft.reminderDate = ui.activeSheet.draft.reminder ? todayIso : null;
     store.emit();
     return;
   }
@@ -1166,15 +1369,11 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.calMonth && ui.activeSheet?.type === "reminder") {
-    const months = [
-      { label: "ตุลาคม 2569", ym: "2026-10" },
-      { label: "พฤศจิกายน 2569", ym: "2026-11" },
-      { label: "ธันวาคม 2569", ym: "2026-12" },
-    ];
-    const cur = Math.max(0, months.findIndex((m) => m.label === ui.activeSheet.monthLabel));
-    const next = Math.max(0, Math.min(months.length - 1, cur + Number(d.calMonth)));
-    ui.activeSheet.monthLabel = months[next].label;
-    ui.activeSheet.yearMonth = months[next].ym;
+    const curYm = ui.activeSheet.yearMonth || getBangkokTodayIso().slice(0, 7);
+    const nextYm = stepYearMonth(curYm, Number(d.calMonth || 1));
+    ui.activeSheet.yearMonth = nextYm;
+    ui.activeSheet.monthLabel = formatThaiMonthYear(nextYm);
+    ui.activeSheet.day = Math.min(Number(ui.activeSheet.day || 1), getDaysInMonth(nextYm));
     store.emit();
     return;
   }
@@ -1262,20 +1461,88 @@ appEl.addEventListener("click", async (e) => {
       name: cleanName,
       cover: ui.activeSheet.coverDraft,
     });
-    if (saved) ui.activeFolderId = saved.id;
+    if (!saved) return;
+    ui.activeFolderId = saved.id;
     store.closeSheet();
     store.showToast("บันทึกโฟลเดอร์เรียบร้อย");
+    return;
+  }
+  if (d.confirmDeleteFolder) {
+    store.openSheet({
+      type: "deleteFolderDialog",
+      folderId: d.confirmDeleteFolder,
+    });
+    return;
+  }
+  if (d.executeDeleteFolder) {
+    const res = await apiClient.deleteFolder(d.executeDeleteFolder);
+    if (!res?.ok && store.state.api.mode === "live") return;
+    store.closeSheet();
+    store.navigate("folders", { viewportMode: ui.viewportMode === "web" ? "web" : "mobile" });
+    store.showToast("ลบโฟลเดอร์เรียบร้อย");
     return;
   }
   if (d.openInviteSheet) {
     const folderId = d.openInviteSheet;
     ui.shareSheetState = "loading";
     store.openSheet({ type: "invite", folderId });
-    const res = await apiClient.createFolderInvite(folderId, ui.sharePermission || "viewer").catch(() => ({ ok: false }));
+    const [res, membersRes] = await Promise.all([
+      apiClient.createFolderInvite(folderId, ui.sharePermission || "viewer").catch(() => ({ ok: false })),
+      apiClient.listFolderMembers(folderId).catch(() => ({ ok: false })),
+    ]);
+    if (membersRes?.ok && membersRes.data) {
+      ui.folderMembers = ui.folderMembers || {};
+      ui.folderMembers[folderId] = membersRes.data;
+    }
     if (ui.activeSheet?.type === "invite" && ui.activeSheet?.folderId === folderId) {
       ui.shareSheetState = res.ok ? "idle" : "error";
       store.emit();
     }
+    return;
+  }
+  if (d.changeMemberRole && ui.activeSheet?.folderId) {
+    const res = await apiClient.updateFolderMemberRole(ui.activeSheet.folderId, d.changeMemberRole, d.role || "editor");
+    if (res.ok) {
+      const m = await apiClient.listFolderMembers(ui.activeSheet.folderId).catch(() => null);
+      if (m?.ok && m.data) {
+        ui.folderMembers = ui.folderMembers || {};
+        ui.folderMembers[ui.activeSheet.folderId] = m.data;
+      }
+      store.showToast("อัปเดตสิทธิ์สมาชิกแล้ว");
+    } else {
+      store.showToast(res.error || "อัปเดตสิทธิ์ไม่สำเร็จ");
+    }
+    store.emit();
+    return;
+  }
+  if (d.removeMember && ui.activeSheet?.folderId) {
+    const res = await apiClient.removeFolderMember(ui.activeSheet.folderId, d.removeMember);
+    if (res.ok) {
+      const m = await apiClient.listFolderMembers(ui.activeSheet.folderId).catch(() => null);
+      if (m?.ok && m.data) {
+        ui.folderMembers = ui.folderMembers || {};
+        ui.folderMembers[ui.activeSheet.folderId] = m.data;
+      }
+      store.showToast("นำสมาชิกออกจากโฟลเดอร์แล้ว");
+    } else {
+      store.showToast(res.error || "ลบสมาชิกไม่สำเร็จ");
+    }
+    store.emit();
+    return;
+  }
+  if (d.revokeInvite && ui.activeSheet?.folderId) {
+    const res = await apiClient.revokeFolderInvite(ui.activeSheet.folderId, d.revokeInvite);
+    if (res.ok) {
+      const m = await apiClient.listFolderMembers(ui.activeSheet.folderId).catch(() => null);
+      if (m?.ok && m.data) {
+        ui.folderMembers = ui.folderMembers || {};
+        ui.folderMembers[ui.activeSheet.folderId] = m.data;
+      }
+      store.showToast("เพิกถอนลิงก์คำเชิญแล้ว");
+    } else {
+      store.showToast(res.error || "เพิกถอนลิงก์ไม่สำเร็จ");
+    }
+    store.emit();
     return;
   }
   if (d.copyInvite) {
@@ -1311,6 +1578,9 @@ appEl.addEventListener("click", async (e) => {
     data.aiConfig.provider = d.selectAiProvider;
     data.aiConfig.model = preset?.models[0] || "";
     data.aiConfig.endpointUrl = preset?.baseUrl || "";
+    data.aiConfig.keyless = preset?.backendProvider === "built-in";
+    data.aiConfig.connected = preset?.backendProvider === "built-in";
+    data.aiConfig.lastTestError = null;
     ui.aiDropdown = null;
     store.emit();
     return;
@@ -1327,10 +1597,20 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.saveAiConfig) {
-    data.aiConfig.connected = true;
-    data.aiConfig.lastTestedAt = new Date().toISOString();
+    ui.aiTesting = true;
     store.emit();
-    store.showToast(`บันทึกการเชื่อมต่อ ${data.aiConfig.provider} แล้ว`);
+    const res = await apiClient.testAiConnection();
+    ui.aiTesting = false;
+    data.aiConfig.connected = Boolean(res.ok);
+    data.aiConfig.lastTestedAt = new Date().toISOString();
+    data.aiConfig.lastTestError = res.ok ? "" : res.error || "เชื่อมต่อไม่สำเร็จ";
+    store.save();
+    store.emit();
+    store.showToast(
+      res.ok
+        ? `ทดสอบและเชื่อมต่อ ${data.aiConfig.provider} สำเร็จ`
+        : `ทดสอบการเชื่อมต่อไม่สำเร็จ: ${res.error || "ตรวจสอบ API Key / Endpoint"}`
+    );
     return;
   }
 
@@ -1341,13 +1621,22 @@ appEl.addEventListener("click", async (e) => {
   }
   if (d.saveNickname && ui.activeSheet?.type === "editNickname") {
     const val = (ui.activeSheet.value || "").trim();
-    if (val) data.user.displayName = val;
+    if (!val) {
+      store.showToast("กรุณากรอกชื่อที่ต้องการแสดง");
+      return;
+    }
+    const res = await apiClient.updateProfile({ displayName: val });
+    if (store.state.api.mode === "live" && !res?.ok) {
+      store.showToast(res?.error || "อัปเดตชื่อเล่นไม่สำเร็จ");
+      return;
+    }
     store.closeSheet();
     store.showToast("อัปเดตชื่อเล่นเรียบร้อย");
     return;
   }
   if (d.toggleNotifSetting) {
     data.user.notificationsEnabled = !data.user.notificationsEnabled;
+    store.save();
     store.emit();
     store.showToast(data.user.notificationsEnabled ? "เปิดการแจ้งเตือนแล้ว" : "ปิดการแจ้งเตือนแล้ว");
     return;
@@ -1381,11 +1670,15 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.submitSupport) {
-    const topic = document.getElementById("supportTopicInput")?.value?.trim() || "รายงานจาก Web Testbed";
-    const detail = document.getElementById("supportDetailInput")?.value?.trim() || "ทดสอบการส่งรายงาน";
-    await apiClient.submitSupportReport({ topic, detail });
+    const topic = document.getElementById("supportTopicInput")?.value?.trim() || "รายงานปัญหาการใช้งาน";
+    const detail = document.getElementById("supportDetailInput")?.value?.trim() || "รายงานจากผู้ใช้";
+    const res = await apiClient.submitSupportReport({ topic, detail });
+    if (!res?.ok && store.state.api.mode === "live") {
+      store.showToast(res?.error || "ส่งรายงานปัญหาไม่สำเร็จ กรุณาลองอีกครั้ง");
+      return;
+    }
     store.showToast("ส่งรายงานปัญหาเรียบร้อย ขอบคุณครับ");
-    store.navigate("profile");
+    store.navigate("profile", { viewportMode: ui.viewportMode === "web" ? "web" : "mobile" });
     return;
   }
   if (d.openExportCsv) {
@@ -1394,7 +1687,13 @@ appEl.addEventListener("click", async (e) => {
   }
   if (d.downloadCsv) {
     const headers = ["title", "url", "platform", "folder", "status", "favorite", "tags", "note", "reminder", "ai_summary"];
-    const rows = data.links.map((item) => {
+    const folderFilter = ui.csvExportFolderId && ui.csvExportFolderId !== "all" ? ui.csvExportFolderId : null;
+    const filteredLinks = data.links.filter((item) => {
+      if (folderFilter && item.folderId !== folderFilter) return false;
+      if (ui.csvExportUnreadOnly && item.status !== "unread") return false;
+      return true;
+    });
+    const rows = filteredLinks.map((item) => {
       const f = getFolderById(item.folderId)?.name || "";
       return [
         item.title,
@@ -1414,7 +1713,7 @@ appEl.addEventListener("click", async (e) => {
     const csv = "\uFEFF" + [headers.join(","), ...rows].join("\n");
     downloadFile("sharely-links-export.csv", csv, "text/csv;charset=utf-8");
     store.closeSheet();
-    store.showToast("ส่งออกไฟล์ CSV เรียบร้อย");
+    store.showToast(`ส่งออกไฟล์ CSV เรียบร้อย (${filteredLinks.length} รายการ)`);
     return;
   }
   if (d.openLogoutDialog) {
@@ -1443,21 +1742,29 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.selectWebLink) {
-    ui.activeLinkId = d.selectWebLink;
-    ui.carouselIndex = 0;
-    ui.videoPlaying = false;
-    ui.noteEditing = false;
-    ui.tagPopoverOpen = false;
-    store.emit();
+    store.navigate("linkDetail", {
+      activeLinkId: d.selectWebLink,
+      prevPcSection: ui.pcSection && ui.pcSection !== "linkDetail" ? ui.pcSection : ui.prevPcSection || "home",
+      carouselIndex: 0,
+      videoPlaying: false,
+      noteEditing: false,
+      tagPopoverOpen: false,
+      viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
+    });
     return;
   }
   if (d.extUnfurl) {
     ui.extensionDraft = ui.extensionDraft || { url: "https://www.tiktok.com/@minimal.ari/video/74009911", folderId: data.folders[0]?.id, tags: ["#คาเฟ่"], note: "" };
     const res = await apiClient.previewUrl(ui.extensionDraft.url);
     if (res.ok && res.data) {
-      ui.extensionDraft.title = res.data.title;
-      ui.extensionDraft.platform = res.data.platform;
-      ui.extensionDraft.domain = res.data.domain;
+      ui.extensionDraft.title = res.data.title || ui.extensionDraft.title;
+      ui.extensionDraft.description = res.data.description || "";
+      ui.extensionDraft.platform = res.data.platform || ui.extensionDraft.platform;
+      ui.extensionDraft.domain = res.data.domain || ui.extensionDraft.domain;
+      ui.extensionDraft.media_items = Array.isArray(res.data.media_items) ? res.data.media_items : [];
+      ui.extensionDraft.coverUrl = res.data.image_url || res.data.media_items?.[0] || null;
+      ui.extensionDraft.embed_url = res.data.embed_url || null;
+      ui.extensionDraft.embed_type = res.data.embed_type || "none";
     }
     store.emit();
     return;
@@ -1479,8 +1786,9 @@ appEl.addEventListener("click", async (e) => {
   if (d.extToggleReminder) {
     ui.extensionDraft = ui.extensionDraft || { tags: ["#คาเฟ่"], note: "", folderId: data.folders[0]?.id, url: "https://www.tiktok.com/@minimal.ari/video/74009911", title: "คาเฟ่สายมินิมอลอารีย์", domain: "tiktok.com" };
     const enabled = !ui.extensionDraft.reminder;
-    ui.extensionDraft.reminder = enabled ? "พรุ่งนี้ 18:00" : "";
-    ui.extensionDraft.reminderDate = enabled ? "2026-11-15" : null;
+    const todayIso = getBangkokTodayIso();
+    ui.extensionDraft.reminder = enabled ? `${todayIso} 18:00` : "";
+    ui.extensionDraft.reminderDate = enabled ? todayIso : null;
     ui.extensionDraft.reminderTime = enabled ? "18:00" : null;
     store.emit();
     return;
@@ -1496,13 +1804,14 @@ appEl.addEventListener("click", async (e) => {
     const created = await apiClient.createLink(ext);
     if (!created) return;
     ui.activeLinkId = created.id;
-    ui.viewportMode = "mobile";
-    store.navigate("home");
+    ui.viewportMode = ui.qaViewportLocked ? ui.viewportMode : resolveDefaultViewportMode();
+    store.navigate("home", { viewportMode: ui.viewportMode });
     store.showToast("บันทึกจาก Extension เรียบร้อย");
     return;
   }
 
-  // 12. Testbed Controls & MCP
+  // 12. Testbed Controls & MCP (Strictly quarantined to ?qa=1 / #qa)
+  if (!isQaModeEnabled()) return;
   if (d.setApiMode) {
     api.mode = d.setApiMode;
     if (d.setApiMode === "live" && api.authProvider === "mock") {
@@ -1709,25 +2018,127 @@ appEl.addEventListener("click", async (e) => {
   }
 });
 
-// Initialize
+if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const ui = store.state.ui;
+    if (ui.folderPickerSheetOpen) {
+      ui.folderPickerSheetOpen = false;
+      store.emit();
+      return;
+    }
+    if (ui.createFolderSheetOpen) {
+      ui.createFolderSheetOpen = false;
+      store.emit();
+      return;
+    }
+    if (ui.aiConfirmModalOpen || (ui.aiSummaryStatus && ui.aiSummaryStatus !== "idle")) {
+      ui.aiConfirmModalOpen = false;
+      ui.aiSummaryStatus = "idle";
+      store.emit();
+      return;
+    }
+    if (ui.noteEditing) {
+      ui.noteEditing = false;
+      store.emit();
+      return;
+    }
+    if (ui.tagPopoverOpen) {
+      ui.tagPopoverOpen = false;
+      store.emit();
+      return;
+    }
+    if (ui.activeDialog) {
+      store.closeDialog();
+      return;
+    }
+    if (ui.activeSheet) {
+      ui.simulatedSourceApp = null;
+      store.closeSheet();
+    }
+  });
+}
+
+// Initialize URL invite token, OAuth callback & responsive viewport
+function parseInitialRouteParams() {
+  if (typeof window === "undefined") return { inviteToken: null, role: "viewer", oauthCode: null };
+  const url = new URL(window.location.href);
+  const pathMatch = url.pathname.match(/^\/invite\/([^/?#]+)/i);
+  let inviteToken = pathMatch ? decodeURIComponent(pathMatch[1]) : url.searchParams.get("invite");
+  let role = url.searchParams.get("role") || "";
+  const oauthCode = url.searchParams.get("code");
+  const hasOAuthHash = /(?:access_token|refresh_token|error)=/i.test(url.hash || "");
+  if (!inviteToken && (oauthCode || hasOAuthHash)) {
+    const saved = loadPendingInvite();
+    if (saved?.token) {
+      inviteToken = saved.token;
+      if (!role && saved?.role) role = saved.role;
+    }
+  } else if (!inviteToken) {
+    savePendingInvite(null);
+  }
+  return {
+    inviteToken: inviteToken ? String(inviteToken).trim() : null,
+    role: role || "viewer",
+    oauthCode,
+  };
+}
+
+const bootParams = parseInitialRouteParams();
+if (bootParams.inviteToken) {
+  store.state.ui.pendingInviteToken = bootParams.inviteToken;
+  store.state.ui.pendingInviteRole = bootParams.role;
+  store.state.ui.authContext = "invite";
+  savePendingInvite(bootParams.inviteToken, bootParams.role);
+}
+
 store.applyAppearanceToDom();
-if (
+if (!isQaModeEnabled()) {
+  store.initResponsiveViewport();
+}
+if (bootParams.inviteToken) {
+  store.state.ui.screen = "inviteLanding";
+} else if (
   store.state.ui.authGuardEnabled !== false &&
   !hasValidSession(store.state) &&
   (isProtectedScreen(store.state.ui.screen) || isProtectedViewport(store.state.ui.viewportMode))
 ) {
-  store.state.ui.viewportMode = "mobile";
+  store.state.ui.viewportMode = resolveDefaultViewportMode();
   store.state.ui.screen = "login";
 }
 store.subscribe(renderApp);
 renderApp();
+
+let _lastHydratedToken = "";
+function hydrateOnceIfNeeded() {
+  const token = store.state.api.bearerToken || "";
+  if (store.state.api.mode !== "live" || !store.state.data.user?.isAuthenticated || !token) return;
+  if (_lastHydratedToken === token) return;
+  _lastHydratedToken = token;
+  apiClient.hydrateWorkspace().catch(() => {});
+}
+
+if (bootParams.inviteToken) {
+  apiClient
+    .previewInvite(bootParams.inviteToken)
+    .then((res) => {
+      if (res?.ok && res.data) {
+        store.state.ui.invitePreview = res.data;
+        if (res.data.valid === false) {
+          savePendingInvite(null);
+        }
+        store.emit();
+      }
+    })
+    .catch(() => {});
+}
 
 // Hydrate health and live backend workspace cleanly in background
 apiClient
   .checkHealth()
   .then((res) => {
     if (res?.ok && store.state.data.user?.isAuthenticated) {
-      return apiClient.hydrateWorkspace();
+      hydrateOnceIfNeeded();
     }
     return null;
   })
@@ -1742,7 +2153,8 @@ supabaseAuth
     },
     ({ event, session, claims, user }) => {
       if (event === "SIGNED_OUT") {
-        if (getAuthMode(store.state) === "supabase") {
+        _lastHydratedToken = "";
+        if (getAuthMode(store.state) === "supabase" && store.state.data.user?.isAuthenticated) {
           store.clearSession({ redirectToLogin: store.state.ui.authGuardEnabled !== false });
         }
         return;
@@ -1755,13 +2167,14 @@ supabaseAuth
           refreshToken: session.refresh_token || "",
           claims,
         });
+        hydrateOnceIfNeeded();
         if (["login", "emailLogin", "checkEmail"].includes(store.state.ui.screen)) {
           completePostAuthNavigation("home");
         }
       }
     }
   )
-  .then(({ session, claims, user }) => {
+  .then(async ({ session, claims, user }) => {
     if (session?.access_token) {
       store.state.api.authProvider = "supabase";
       store.applyAuthenticatedSession({
@@ -1770,9 +2183,24 @@ supabaseAuth
         refreshToken: session.refresh_token || "",
         claims,
       });
+      hydrateOnceIfNeeded();
       if (["login", "emailLogin", "checkEmail"].includes(store.state.ui.screen)) {
         completePostAuthNavigation("home");
       }
+    } else if (bootParams.oauthCode) {
+      const cbRes = await apiClient.exchangeOAuthCode(bootParams.oauthCode);
+      if (cbRes?.ok && hasValidSession(store.state)) {
+        hydrateOnceIfNeeded();
+        completePostAuthNavigation(bootParams.inviteToken ? "inviteLanding" : "home");
+      }
+    }
+    if (bootParams.oauthCode && typeof window !== "undefined" && window.history?.replaceState) {
+      try {
+        const cleanUrl = new URL(window.location.href);
+        cleanUrl.searchParams.delete("code");
+        cleanUrl.searchParams.delete("state");
+        window.history.replaceState({}, "", cleanUrl.toString());
+      } catch {}
     }
   })
   .catch(() => {});
