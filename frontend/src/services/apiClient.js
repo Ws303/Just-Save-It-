@@ -10,6 +10,8 @@ import { getAuthMode } from "./routeGuard.js";
 import { buildAuthRedirectUrl, extractClaimsSummary, supabaseAuth } from "./supabaseAuth.js";
 import { disableWebPush } from "./pushClient.js";
 
+let _refreshInFlightPromise = null;
+
 function formatRemindIsoInBangkok(remIso, fallbackTime = "18:00") {
   if (!remIso) return { date: null, time: fallbackTime };
   const dt = new Date(remIso);
@@ -1156,7 +1158,7 @@ export const apiClient = {
         store.state.data.user.timezone = prof.default_timezone;
       }
       if (m.ai_quota && typeof m.ai_quota.remaining === "number") {
-        const lim = m.ai_quota.limit ?? store.state.data.freeQuotaTotal ?? 20;
+        const lim = m.ai_quota.limit ?? store.state.data.freeQuotaTotal ?? 50;
         store.state.data.freeQuotaRemaining = m.ai_quota.remaining;
         store.state.data.freeQuotaLimit = lim;
         store.state.data.freeQuotaTotal = lim;
@@ -1464,59 +1466,69 @@ export const apiClient = {
   },
 
   async refreshSession() {
-    const authMode = getAuthMode(store.state);
-    const refreshToken = store.state.api.refreshToken;
+    if (_refreshInFlightPromise) {
+      return _refreshInFlightPromise;
+    }
+    _refreshInFlightPromise = (async () => {
+      const authMode = getAuthMode(store.state);
+      const refreshToken = store.state.api.refreshToken;
 
-    if (authMode === "supabase") {
-      const started = performance.now();
-      const res = await supabaseAuth.refreshSession(getSupabaseConfig(), refreshToken);
-      recordLog({
+      if (authMode === "supabase") {
+        const started = performance.now();
+        const res = await supabaseAuth.refreshSession(getSupabaseConfig(), refreshToken);
+        recordLog({
+          method: "POST",
+          path: "/auth/v1/token?grant_type=refresh_token",
+          mode: "supabase",
+          status: res.status || (res.ok ? 200 : 401),
+          durationMs: performance.now() - started,
+          requestBody: { has_refresh_token: Boolean(refreshToken) },
+          responseBody: res.ok ? { refreshed: true, claims: res.data?.claims } : { error: res.error },
+          error: res.ok ? null : res.error,
+        });
+        if (res.ok && res.data?.access_token) {
+          store.applyAuthenticatedSession({
+            user: res.data.user,
+            accessToken: res.data.access_token,
+            refreshToken: res.data.refresh_token || refreshToken,
+            claims: res.data.claims,
+          });
+        }
+        return res;
+      }
+
+      if (!refreshToken) return { ok: false, status: 401, error: "ไม่มี Refresh Token" };
+      const res = await dispatchRequest({
         method: "POST",
-        path: "/auth/v1/token?grant_type=refresh_token",
-        mode: "supabase",
-        status: res.status || (res.ok ? 200 : 401),
-        durationMs: performance.now() - started,
-        requestBody: { has_refresh_token: Boolean(refreshToken) },
-        responseBody: res.ok ? { refreshed: true, claims: res.data?.claims } : { error: res.error },
-        error: res.ok ? null : res.error,
+        path: "/api/auth/refresh",
+        body: { refresh_token: refreshToken },
+        skipAuthRefresh: true,
+        skipUnauthRedirect: true,
+        mockHandler: () => ({
+          status: 200,
+          data: {
+            access_token: `mock_jwt_${Date.now()}`,
+            refresh_token: `mock_ref_${Date.now()}`,
+            user: store.state.data.user,
+          },
+        }),
       });
       if (res.ok && res.data?.access_token) {
         store.applyAuthenticatedSession({
           user: res.data.user,
           accessToken: res.data.access_token,
           refreshToken: res.data.refresh_token || refreshToken,
-          claims: res.data.claims,
+          claims: !res.isMock ? extractClaimsSummary(res.data.access_token) : null,
+          isMock: Boolean(res.isMock),
         });
       }
       return res;
+    })();
+    try {
+      return await _refreshInFlightPromise;
+    } finally {
+      _refreshInFlightPromise = null;
     }
-
-    if (!refreshToken) return { ok: false, status: 401, error: "ไม่มี Refresh Token" };
-    const res = await dispatchRequest({
-      method: "POST",
-      path: "/api/auth/refresh",
-      body: { refresh_token: refreshToken },
-      skipAuthRefresh: true,
-      skipUnauthRedirect: true,
-      mockHandler: () => ({
-        status: 200,
-        data: {
-          access_token: `mock_jwt_${Date.now()}`,
-          refresh_token: `mock_ref_${Date.now()}`,
-          user: store.state.data.user,
-        },
-      }),
-    });
-    if (res.ok && res.data?.access_token) {
-      store.applyAuthenticatedSession({
-        user: res.data.user,
-        accessToken: res.data.access_token,
-        refreshToken: res.data.refresh_token || refreshToken,
-        claims: !res.isMock ? extractClaimsSummary(res.data.access_token) : null,
-        isMock: Boolean(res.isMock),
-      });
-    }
-    return res;
   },
 
   async checkSupabaseSession() {

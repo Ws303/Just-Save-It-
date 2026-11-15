@@ -249,7 +249,7 @@ async def summarize_item_once(
         try:
             cached_hash_res = (
                 db.table("items")
-                .select("ai_summary, ai_tags, ai_summary_language")
+                .select("ai_summary, ai_summary_language")
                 .eq("url_hash", url_hash)
                 .not_.is_("ai_summary", "null")
                 .limit(1)
@@ -260,12 +260,11 @@ async def summarize_item_once(
                 donor_lang = donor.get("ai_summary_language") or "th"
                 if donor_lang == resolved_lang:
                     summary_text = donor["ai_summary"]
-                    tags_list = donor.get("ai_tags") or []
+                    tags_list = item.get("ai_tags") or []
 
                     update_payload: Dict[str, Any] = {
                         "ai_summary": summary_text,
                         "ai_summary_language": donor_lang,
-                        "ai_tags": tags_list,
                         "enrich_status": "done",
                     }
                     if req.save_to_note:

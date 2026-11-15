@@ -91,6 +91,14 @@ async function runBackgroundSync() {
       }
     }
 
+    const cutoffMs = nowMs - 24 * 60 * 60 * 1000;
+    for (const [k, ts] of Object.entries(notifiedMap)) {
+      if (typeof ts !== "number" || ts < cutoffMs) {
+        delete notifiedMap[k];
+        changed = true;
+      }
+    }
+
     if (changed) {
       await JustSaveItApi.setStorage({ [JustSaveItApi.STORAGE_KEYS.NOTIFIED_REMINDERS]: notifiedMap });
     }
@@ -102,7 +110,7 @@ async function runBackgroundSync() {
 if (chrome.alarms && chrome.alarms.onAlarm) {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm && alarm.name === SYNC_ALARM_NAME) {
-      runBackgroundSync();
+      return runBackgroundSync();
     }
   });
 }

@@ -71,7 +71,8 @@ export default function ItemDetailScreen() {
     const res = await refreshLinkPreview(item.id);
     setBusy("");
     if (res.ok && res.data) {
-      setItem(res.data);
+      const nextItem = (res.data as { item?: MobileLinkItem })?.item ?? res.data;
+      setItem(nextItem);
       Alert.alert("รีเฟรชพรีวิวสำเร็จ");
     } else {
       Alert.alert("รีเฟรชพรีวิวไม่สำเร็จ", res.error || "กรุณาลองใหม่");

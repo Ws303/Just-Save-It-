@@ -102,3 +102,24 @@ test("offline queue enqueue deduplicates and recovers failed items on flush", as
   assert.equal(queued.length, 1);
   assert.equal(queued[0].url, "https://example.com/1");
 });
+
+test("offline queue drops permanent 4xx poison-pill entries while retaining retry items", async () => {
+  await setOfflineQueue([]);
+  await enqueueOfflineItem({ url: "https://example.com/bad-422", title: "Bad Payload" });
+  await enqueueOfflineItem({ url: "https://example.com/transient-503", title: "Transient" });
+  await enqueueOfflineItem({ url: "https://example.com/good-201", title: "Good" });
+
+  const res = await flushOfflineQueueWithSender(async (item) => {
+    if (item.url.includes("bad-422")) return "drop";
+    if (item.url.includes("good-201")) return "ok";
+    return "retry";
+  });
+
+  assert.equal(res.flushed, 1);
+  assert.equal(res.dropped, 1);
+  assert.equal(res.remaining, 1);
+
+  const remaining = await loadOfflineQueue();
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].url, "https://example.com/transient-503");
+});

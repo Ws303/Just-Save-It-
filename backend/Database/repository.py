@@ -1094,19 +1094,29 @@ def export_user_data(db: Any, user_id: str) -> Dict[str, Any]:
     prof_res = db.table("profiles").select("*").eq("id", user_id).execute()
     profile = dict(prof_res.data[0]) if prof_res.data else {"id": user_id}
 
-    folders = list_folders_for_user(db, user_id)
+    folders = [f for f in list_folders_for_user(db, user_id) if f.get("owner_id") == user_id]
     tags = list_tags_for_user(db, user_id)
     items: List[Dict[str, Any]] = []
     page_size = 500
     offset = 0
     while True:
-        batch = list_and_search_items(db, user_id, limit=page_size, offset=offset)
+        query = db.table("items").select("*").eq("owner_id", user_id)
+        if hasattr(query, "order") and callable(getattr(query, "order", None)):
+            query = query.order("saved_at", desc=True)
+        if hasattr(query, "range") and callable(getattr(query, "range", None)):
+            batch = [dict(r) for r in (query.range(offset, offset + page_size - 1).execute().data or [])]
+        else:
+            all_owned = [dict(r) for r in (query.execute().data or [])]
+            batch = all_owned[offset : offset + page_size]
         items.extend(batch)
         if len(batch) < page_size:
             break
         offset += page_size
+
+    for idx in range(0, len(items), 200):
+        _attach_tags_batch(db, items[idx : idx + 200])
     for item in items:
-        item["tags"] = _fetch_item_tags(db, item["id"])
+        _with_item_compat_fields(item)
 
     reminders_res = db.table("reminders").select("*").eq("user_id", user_id).execute()
     devices_res = db.table("devices").select("*").eq("user_id", user_id).execute()

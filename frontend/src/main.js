@@ -1516,7 +1516,7 @@ appEl.addEventListener("click", async (e) => {
   if (d.saveReminder && ui.activeSheet?.type === "reminder") {
     const scheduleType = ui.activeSheet.scheduleType || ui.reminderScheduleType || "once";
     const repeatEveryDays = scheduleType === "every_n_days" ? Number(ui.activeSheet.repeatEveryDays || ui.reminderRepeatDays || 3) : null;
-    const ym = ui.activeSheet.yearMonth || "2026-11";
+    const ym = ui.activeSheet.yearMonth || new Date().toISOString().slice(0, 7);
     const dateStr = `${ym}-${String(ui.activeSheet.day || 15).padStart(2, "0")}`;
     const res = await apiClient.saveReminder(d.saveReminder, {
       scheduleType,
@@ -2348,7 +2348,7 @@ if (bootParams.inviteToken) {
 store.subscribe(renderApp);
 renderApp();
 
-let _lastHydratedToken = "";
+let _lastHydratedUserId = "";
 let _jwtRefreshTimer = null;
 
 function ensureJwtAutoRefresh() {
@@ -2370,9 +2370,17 @@ function ensureJwtAutoRefresh() {
 
 function hydrateOnceIfNeeded() {
   const token = store.state.api.bearerToken || "";
-  if (store.state.api.mode !== "live" || !store.state.data.user?.isAuthenticated || !token) return;
-  if (_lastHydratedToken === token) return;
-  _lastHydratedToken = token;
+  const userId = store.state.data.user?.id || "";
+  if (store.state.api.mode !== "live" || !store.state.data.user?.isAuthenticated || !token) {
+    _lastHydratedUserId = "";
+    return;
+  }
+  const identityKey = userId || token;
+  if (_lastHydratedUserId === identityKey) {
+    refreshRealtimeAccessToken(token);
+    return;
+  }
+  _lastHydratedUserId = identityKey;
   apiClient
     .hydrateWorkspace()
     .then(() => applyPendingDeepLinks())

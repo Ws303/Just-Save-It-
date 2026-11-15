@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as Linking from "expo-linking";
 import { StatusBar } from "expo-status-bar";
@@ -11,15 +11,38 @@ export default function RootLayout() {
   const router = useRouter();
   const segments = useSegments();
   const incomingUrl = Linking.useURL();
+  const hydratedUserRef = useRef<string>("");
+  const pendingDeepLinkRef = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
+    async function processDeepLink(rawUrl: string) {
+      const inviteToken = extractInviteTokenFromUrl(rawUrl);
+      if (inviteToken) {
+        await acceptFolderInvite(inviteToken);
+        if (active) router.replace("/(tabs)/folders");
+        return;
+      }
+
+      const extracted = extractSharedUrlFromIntent(rawUrl);
+      if (extracted?.url) {
+        router.replace({
+          pathname: "/(tabs)",
+          params: {
+            sharedUrl: extracted.url,
+            sharedTitle: extracted.title || "",
+          },
+        });
+      }
+    }
+
     async function bootstrap() {
       const session = await loadSession();
       if (!active) return;
       const inLogin = segments[0] === "login";
 
       if (!session?.access_token) {
+        hydratedUserRef.current = "";
         if (!inLogin) {
           router.replace("/login");
         }
@@ -30,10 +53,20 @@ export default function RootLayout() {
         router.replace("/(tabs)");
       }
 
-      await flushOfflineQueue();
-      const ws = await fetchWorkspace();
-      if (active && ws.reminders.length > 0) {
-        await syncLocalRemindersWithOs(ws.reminders);
+      const sessionKey = session.user?.id || session.access_token;
+      if (hydratedUserRef.current !== sessionKey) {
+        hydratedUserRef.current = sessionKey;
+        await flushOfflineQueue();
+        const ws = await fetchWorkspace();
+        if (active && ws.reminders.length > 0) {
+          await syncLocalRemindersWithOs(ws.reminders);
+        }
+      }
+
+      if (active && pendingDeepLinkRef.current) {
+        const queuedUrl = pendingDeepLinkRef.current;
+        pendingDeepLinkRef.current = null;
+        await processDeepLink(queuedUrl);
       }
     }
     void bootstrap();
@@ -47,7 +80,11 @@ export default function RootLayout() {
     let active = true;
     async function handleDeepLink(rawUrl: string) {
       const session = await loadSession();
-      if (!active || !session?.access_token) return;
+      if (!active) return;
+      if (!session?.access_token) {
+        pendingDeepLinkRef.current = rawUrl;
+        return;
+      }
 
       const inviteToken = extractInviteTokenFromUrl(rawUrl);
       if (inviteToken) {

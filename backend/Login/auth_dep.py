@@ -9,7 +9,7 @@ Mitigates RISK-001:
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 import jwt
 from jwt import PyJWKClient
@@ -62,6 +62,21 @@ def _get_jwk_client(supabase_url: str) -> PyJWKClient:
     return client
 
 
+_DELETED_USER_IDS: Set[str] = set()
+
+
+def mark_user_deleted(user_id: str) -> None:
+    """Record a deleted user ID in memory so remaining JWTs are rejected immediately."""
+    clean_id = str(user_id or "").strip()
+    if clean_id:
+        _DELETED_USER_IDS.add(clean_id)
+
+
+def is_user_deleted(user_id: str) -> bool:
+    """Return True if the user ID has been revoked/deleted in this worker."""
+    return str(user_id or "").strip() in _DELETED_USER_IDS
+
+
 def _ensure_authenticated_claims(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Ensure decoded JWT contains a non-empty subject and is not an anonymous key token."""
     sub = str(payload.get("sub") or "").strip()
@@ -69,6 +84,12 @@ def _ensure_authenticated_claims(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token: missing subject claim.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if is_user_deleted(sub):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: user account has been deleted.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     if str(payload.get("role") or "").strip().lower() == "anon":

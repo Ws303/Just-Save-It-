@@ -148,7 +148,7 @@ export default function ProfileScreen() {
     const jsonString = JSON.stringify(res.data, null, 2);
     await Share.share({
       title: "just-save-it-export.json",
-      message: jsonString.slice(0, 12000),
+      message: jsonString,
     });
   }
 
@@ -264,7 +264,9 @@ export default function ProfileScreen() {
           <View key={tok.id} style={styles.tokenRow}>
             <View>
               <Text style={[styles.tokenName, { color: textPrimary }]}>{tok.name || "API Token"}</Text>
-              <Text style={styles.tokenMeta}>{tok.prefix ? `${tok.prefix}•••` : tok.id}</Text>
+              <Text style={styles.tokenMeta}>
+                {tok.token_prefix || tok.prefix ? `${tok.token_prefix || tok.prefix}•••` : tok.id}
+              </Text>
             </View>
             <Pressable style={styles.revokeBtn} onPress={() => void handleRevokeToken(tok.id)}>
               <Text style={styles.revokeBtnText}>เพิกถอน</Text>

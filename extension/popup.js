@@ -516,6 +516,7 @@
           "https://just-save-it-web.onrender.com/*",
           "http://localhost:4173/*",
           "http://127.0.0.1:4173/*",
+          "http://localhost:3000/*",
         ],
       });
       if (!tabs.length) {
@@ -528,9 +529,26 @@
           const res = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
             func: () => {
-              const raw = localStorage.getItem("sharely_test_state_v1");
-              if (!raw) return null;
-              const parsed = JSON.parse(raw);
+              const sessionRaw = localStorage.getItem("sharely_auth_session_v1");
+              if (sessionRaw) {
+                try {
+                  const sessionParsed = JSON.parse(sessionRaw);
+                  if (sessionParsed?.accessToken) {
+                    return {
+                      accessToken: sessionParsed.accessToken,
+                      refreshToken: sessionParsed.refreshToken || "",
+                      apiBaseUrl: sessionParsed.apiBaseUrl || "",
+                    };
+                  }
+                } catch (_err) {
+                  // Continue to legacy state fallback
+                }
+              }
+              const legacyRaw =
+                localStorage.getItem("sharely_testbed_state_v1") ||
+                localStorage.getItem("sharely_test_state_v1");
+              if (!legacyRaw) return null;
+              const parsed = JSON.parse(legacyRaw);
               return {
                 accessToken: parsed?.api?.bearerToken || "",
                 refreshToken: parsed?.api?.refreshToken || "",

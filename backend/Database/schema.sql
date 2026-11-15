@@ -8,6 +8,9 @@
 --   supabase/migrations/0004_functions_and_triggers.sql
 --   supabase/migrations/0005_rls_policies.sql
 --   supabase/migrations/0006_storage_realtime_and_cron.sql
+--   supabase/migrations/0007_ui_parity_fixes.sql
+--   supabase/migrations/0008_fix_private_schema_and_cron_5m.sql
+--   supabase/migrations/0009_private_revoke_and_realtime_check.sql
 --
 -- Safe & idempotent: can be pasted directly into Supabase SQL Editor as one run.
 -- =============================================================================
@@ -1359,7 +1362,7 @@ begin
     end if;
     perform cron.schedule(
       'just_save_it_cron_reminders',
-      '* * * * *',
+      '*/5 * * * *',
       $cron$select private.invoke_backend_endpoint('/cron/reminders', 'X-Cron-Secret', 'cron_secret', '{}'::jsonb);$cron$
     );
 
@@ -1374,3 +1377,137 @@ begin
   end if;
 end
 $$;
+
+
+-- -----------------------------------------------------------------------------
+-- SECTION: 0007_ui_parity_fixes.sql
+-- -----------------------------------------------------------------------------
+
+alter table if exists public.items
+  add column if not exists is_favorite boolean not null default false;
+
+create index if not exists idx_items_owner_favorite_saved_at
+  on public.items (owner_id, is_favorite, saved_at desc)
+  where is_favorite = true;
+
+alter table if exists public.folders
+  add column if not exists cover_url text;
+
+
+-- -----------------------------------------------------------------------------
+-- SECTION: 0008_fix_private_schema_and_cron_5m.sql
+-- -----------------------------------------------------------------------------
+
+grant usage on schema private to authenticated, service_role;
+
+grant execute on function private.canonicalize_url(text) to authenticated, service_role;
+grant execute on function private.set_item_url_hash() to authenticated, service_role;
+grant execute on function private.touch_updated_at() to authenticated, service_role;
+grant execute on function private.cancel_reminders_on_item_done() to authenticated, service_role;
+grant execute on function private.guard_profile_tier() to authenticated, service_role;
+grant execute on function private.guard_item_ownership() to authenticated, service_role;
+grant execute on function private.can_access_folder(uuid, public.folder_role) to authenticated, service_role;
+
+do $$
+begin
+  if to_regprocedure('private.trg_items_after_insert_webhook()') is not null then
+    grant execute on function private.trg_items_after_insert_webhook() to authenticated, service_role;
+  end if;
+
+  if exists (select 1 from pg_extension where extname = 'pg_cron') then
+    if exists (select 1 from cron.job where jobname = 'just_save_it_cron_reminders') then
+      perform cron.unschedule('just_save_it_cron_reminders');
+    end if;
+    perform cron.schedule(
+      'just_save_it_cron_reminders',
+      '*/5 * * * *',
+      $cron$select private.invoke_backend_endpoint('/cron/reminders', 'X-Cron-Secret', 'cron_secret', '{}'::jsonb);$cron$
+    );
+  end if;
+end
+$$;
+
+
+-- -----------------------------------------------------------------------------
+-- SECTION: 0009_private_revoke_and_realtime_check.sql
+-- -----------------------------------------------------------------------------
+
+revoke all on schema private from PUBLIC, anon;
+revoke all on all tables in schema private from PUBLIC, anon;
+revoke all on all routines in schema private from PUBLIC, anon;
+
+grant usage on schema private to authenticated, service_role;
+
+create or replace function private.guard_profile_tier()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_jwt_role text := coalesce(
+    nullif(current_setting('request.jwt.claim.role', true), ''),
+    nullif((nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role'), ''),
+    (select auth.role())
+  );
+begin
+  if current_user not in ('service_role', 'postgres', 'supabase_admin')
+     and coalesce(v_jwt_role, '') is distinct from 'service_role' then
+    if tg_op = 'INSERT' then
+      new.tier := 'free';
+    elsif tg_op = 'UPDATE' and new.tier is distinct from old.tier then
+      raise exception 'Profile tier can only be updated by service_role';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function private.guard_item_ownership()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_jwt_role text := coalesce(
+    nullif(current_setting('request.jwt.claim.role', true), ''),
+    nullif((nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role'), ''),
+    (select auth.role())
+  );
+begin
+  if current_user not in ('service_role', 'postgres', 'supabase_admin')
+     and coalesce(v_jwt_role, '') is distinct from 'service_role' then
+    if new.owner_id is distinct from old.owner_id then
+      raise exception 'Item owner_id is immutable';
+    end if;
+    if new.folder_id is distinct from old.folder_id and old.owner_id is distinct from (select auth.uid()) then
+      raise exception 'Only item owner can move item across folders';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+grant execute on function private.guard_profile_tier() to authenticated, service_role;
+grant execute on function private.guard_item_ownership() to authenticated, service_role;
+
+do $$
+declare
+  tbl text;
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    foreach tbl in array array['items', 'folders', 'folder_members', 'reminders'] loop
+      if not exists (
+        select 1
+          from pg_publication_tables
+         where pubname = 'supabase_realtime'
+           and schemaname = 'public'
+           and tablename = tbl
+      ) then
+        execute format('alter publication supabase_realtime add table public.%I', tbl);
+      end if;
+    end loop;
+  end if;
+end
+$$;
+
+notify pgrst, 'reload schema';

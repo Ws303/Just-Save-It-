@@ -94,6 +94,45 @@ const KEYS = {
 
 const memoryStore = new Map<string, string>();
 let asyncStoragePromise: Promise<StorageBackend | null> | null = null;
+let secureStoragePromise: Promise<StorageBackend | null> | null = null;
+
+interface SecureStoreModuleShape {
+  getItemAsync?: (key: string) => Promise<string | null>;
+  setItemAsync?: (key: string, value: string) => Promise<void>;
+  deleteItemAsync?: (key: string) => Promise<void>;
+}
+
+function toSecureStorageBackend(mod: unknown): StorageBackend | null {
+  if (!mod || typeof mod !== "object") return null;
+  const candidate = ((mod as { default?: unknown })?.default ?? mod) as SecureStoreModuleShape;
+  if (
+    typeof candidate.getItemAsync === "function" &&
+    typeof candidate.setItemAsync === "function" &&
+    typeof candidate.deleteItemAsync === "function"
+  ) {
+    const getItemAsync = candidate.getItemAsync.bind(candidate);
+    const setItemAsync = candidate.setItemAsync.bind(candidate);
+    const deleteItemAsync = candidate.deleteItemAsync.bind(candidate);
+    return {
+      getItem: (key: string) => getItemAsync(key),
+      setItem: (key: string, value: string) => setItemAsync(key, value),
+      removeItem: (key: string) => deleteItemAsync(key),
+    };
+  }
+  return null;
+}
+
+async function getSecureSessionBackend(): Promise<StorageBackend> {
+  if (!secureStoragePromise) {
+    const pkgName = ["expo", "secure", "store"].join("-");
+    secureStoragePromise = import(pkgName)
+      .then((mod) => toSecureStorageBackend(mod))
+      .catch(() => null);
+  }
+  const secure = await secureStoragePromise;
+  if (secure) return secure;
+  return getStorageBackend();
+}
 
 function isStorageBackend(candidate: unknown): candidate is StorageBackend {
   if (!candidate || typeof candidate !== "object") return false;
@@ -146,16 +185,45 @@ async function writeJson(key: string, value: unknown): Promise<void> {
 }
 
 export async function loadSession(): Promise<StoredSession | null> {
-  return readJson<StoredSession | null>(KEYS.session, null);
+  const secureBackend = await getSecureSessionBackend();
+  const raw = await secureBackend.getItem(KEYS.session);
+  if (raw) {
+    try {
+      return JSON.parse(raw) as StoredSession;
+    } catch {
+      return null;
+    }
+  }
+  const fallbackBackend = await getStorageBackend();
+  if (secureBackend !== fallbackBackend) {
+    const legacyRaw = await fallbackBackend.getItem(KEYS.session);
+    if (legacyRaw) {
+      try {
+        return JSON.parse(legacyRaw) as StoredSession;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
 }
 
 export async function saveSession(session: StoredSession): Promise<void> {
-  await writeJson(KEYS.session, session);
+  const secureBackend = await getSecureSessionBackend();
+  await secureBackend.setItem(KEYS.session, JSON.stringify(session));
+  const fallbackBackend = await getStorageBackend();
+  if (secureBackend !== fallbackBackend) {
+    await fallbackBackend.removeItem(KEYS.session);
+  }
 }
 
 export async function clearSession(): Promise<void> {
-  const backend = await getStorageBackend();
-  await backend.removeItem(KEYS.session);
+  const secureBackend = await getSecureSessionBackend();
+  await secureBackend.removeItem(KEYS.session);
+  const fallbackBackend = await getStorageBackend();
+  if (secureBackend !== fallbackBackend) {
+    await fallbackBackend.removeItem(KEYS.session);
+  }
 }
 
 export async function loadOfflineQueue(): Promise<QueuedLinkPayload[]> {
@@ -182,18 +250,23 @@ export async function enqueueOfflineItem(
   return next;
 }
 
+export type OfflineFlushOutcome = boolean | "ok" | "retry" | "drop";
+
 export async function flushOfflineQueueWithSender(
-  sender: (item: QueuedLinkPayload) => Promise<boolean>,
-): Promise<{ flushed: number; remaining: number; failed: QueuedLinkPayload[] }> {
+  sender: (item: QueuedLinkPayload) => Promise<OfflineFlushOutcome>,
+): Promise<{ flushed: number; remaining: number; dropped: number; failed: QueuedLinkPayload[] }> {
   const queue = await loadOfflineQueue();
-  if (!queue.length) return { flushed: 0, remaining: 0, failed: [] };
+  if (!queue.length) return { flushed: 0, remaining: 0, dropped: 0, failed: [] };
   const remaining: QueuedLinkPayload[] = [];
   let flushed = 0;
+  let dropped = 0;
   for (const entry of queue) {
     try {
-      const ok = await sender(entry);
-      if (ok) {
+      const outcome = await sender(entry);
+      if (outcome === true || outcome === "ok") {
         flushed += 1;
+      } else if (outcome === "drop") {
+        dropped += 1;
       } else {
         remaining.push(entry);
       }
@@ -202,7 +275,7 @@ export async function flushOfflineQueueWithSender(
     }
   }
   await setOfflineQueue(remaining);
-  return { flushed, remaining: remaining.length, failed: remaining };
+  return { flushed, remaining: remaining.length, dropped, failed: remaining };
 }
 
 export async function loadCachedWorkspace(): Promise<CachedWorkspace> {

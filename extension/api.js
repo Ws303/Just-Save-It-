@@ -21,6 +21,7 @@
     NOTIFIED_REMINDERS: "jsi_notified_reminders",
   };
   const memoryStorage = {};
+  let _refreshInFlightPromise = null;
 
   function isLocalBackendUrl(rawUrl) {
     try {
@@ -137,22 +138,32 @@
 
   async function tryRefreshAccessToken(backendUrl, refreshToken) {
     if (!refreshToken) return null;
-    try {
-      const resp = await fetch(`${backendUrl}/api/auth/refresh`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      });
-      if (!resp.ok) return null;
-      const data = await parseJsonSafe(resp);
-      if (data && data.access_token) {
-        await saveAuthSession(data);
-        return data.access_token;
-      }
-    } catch (_err) {
-      return null;
+    if (_refreshInFlightPromise) {
+      return _refreshInFlightPromise;
     }
-    return null;
+    _refreshInFlightPromise = (async () => {
+      try {
+        const resp = await fetch(`${backendUrl}/api/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        if (!resp.ok) return null;
+        const data = await parseJsonSafe(resp);
+        if (data && data.access_token) {
+          await saveAuthSession(data);
+          return data.access_token;
+        }
+      } catch (_err) {
+        return null;
+      }
+      return null;
+    })();
+    try {
+      return await _refreshInFlightPromise;
+    } finally {
+      _refreshInFlightPromise = null;
+    }
   }
 
   async function apiRequest(path, options = {}) {

@@ -26,10 +26,13 @@ export interface McpTokenRecord {
   id: string;
   name?: string;
   prefix?: string;
+  token_prefix?: string;
   token?: string;
   created_at?: string;
   last_used_at?: string | null;
 }
+
+let _refreshInFlightPromise: Promise<boolean> | null = null;
 
 export interface ApiResult<T = JsonRecord> {
   ok: boolean;
@@ -144,37 +147,47 @@ export function getGoogleOAuthUrl(redirectUri: string): string {
 }
 
 export async function refreshSession(): Promise<boolean> {
-  const current = await loadSession();
-  if (!current?.refresh_token) return false;
+  if (_refreshInFlightPromise) {
+    return _refreshInFlightPromise;
+  }
+  _refreshInFlightPromise = (async () => {
+    const current = await loadSession();
+    if (!current?.refresh_token) return false;
+    try {
+      const resp = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ refresh_token: current.refresh_token }),
+      });
+      const data = await parseJsonSafe(resp);
+      const accessToken = typeof data?.access_token === "string" ? data.access_token : "";
+      if (!resp.ok || !accessToken) return false;
+      const rawUser = data?.user as JsonRecord | undefined;
+      const rawMeta = rawUser?.user_metadata as JsonRecord | undefined;
+      await saveSession({
+        access_token: accessToken,
+        refresh_token: typeof data?.refresh_token === "string" ? data.refresh_token : current.refresh_token,
+        expires_at: typeof data?.expires_at === "number" ? data.expires_at : current.expires_at,
+        user: rawUser
+          ? {
+              id: String(rawUser.id || current.user?.id || ""),
+              email: String(rawUser.email || current.user?.email || ""),
+              display_name: String(rawMeta?.display_name || current.user?.display_name || ""),
+            }
+          : current.user,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
   try {
-    const resp = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
-      method: "POST",
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ refresh_token: current.refresh_token }),
-    });
-    const data = await parseJsonSafe(resp);
-    const accessToken = typeof data?.access_token === "string" ? data.access_token : "";
-    if (!resp.ok || !accessToken) return false;
-    const rawUser = data?.user as JsonRecord | undefined;
-    const rawMeta = rawUser?.user_metadata as JsonRecord | undefined;
-    await saveSession({
-      access_token: accessToken,
-      refresh_token: typeof data?.refresh_token === "string" ? data.refresh_token : current.refresh_token,
-      expires_at: typeof data?.expires_at === "number" ? data.expires_at : current.expires_at,
-      user: rawUser
-        ? {
-            id: String(rawUser.id || current.user?.id || ""),
-            email: String(rawUser.email || current.user?.email || ""),
-            display_name: String(rawMeta?.display_name || current.user?.display_name || ""),
-          }
-        : current.user,
-    });
-    return true;
-  } catch {
-    return false;
+    return await _refreshInFlightPromise;
+  } finally {
+    _refreshInFlightPromise = null;
   }
 }
 
@@ -239,19 +252,28 @@ export async function fetchWorkspace(): Promise<{
     apiFetch<{ reminders?: MobileReminderItem[] }>("/api/reminders"),
   ]);
 
-  if (!itemsRes.ok && itemsRes.status === 0) {
+  if (!itemsRes.ok) {
     const cached = await loadCachedWorkspace();
     const session = await loadSession();
     return {
-      me: session?.user ? { ...session.user } : null,
+      me: meRes.ok ? meRes.data : session?.user ? { ...session.user } : null,
       items: cached.items,
       folders: cached.folders,
       reminders: cached.reminders,
-      offline: true,
+      offline: itemsRes.status === 0,
     };
   }
 
-  const items = Array.isArray(itemsRes.data?.items) ? itemsRes.data.items : [];
+  const firstBatch = Array.isArray(itemsRes.data?.items) ? itemsRes.data.items : [];
+  const items: MobileLinkItem[] = [...firstBatch];
+  let offset = firstBatch.length;
+  while (firstBatch.length === 100 && offset < 500) {
+    const nextRes = await apiFetch<{ items?: MobileLinkItem[] }>(`/api/items?limit=100&offset=${offset}`);
+    const batch = nextRes.ok && Array.isArray(nextRes.data?.items) ? nextRes.data.items : [];
+    items.push(...batch);
+    if (batch.length < 100) break;
+    offset += batch.length;
+  }
   const folders = Array.isArray(foldersRes.data?.folders) ? foldersRes.data.folders : [];
   const reminders = Array.isArray(remRes.data?.reminders) ? remRes.data.reminders : [];
 
@@ -287,11 +309,11 @@ export async function saveLinkItem(payload: {
 }
 
 export async function flushOfflineQueue(
-  customSender?: (item: QueuedLinkPayload) => Promise<boolean>,
+  customSender?: (item: QueuedLinkPayload) => Promise<boolean | "ok" | "retry" | "drop">,
 ): Promise<{ flushed: number; remaining: number }> {
   const sender =
     customSender ||
-    (async (entry: QueuedLinkPayload) => {
+    (async (entry: QueuedLinkPayload): Promise<"ok" | "retry" | "drop"> => {
       const res = await apiFetch("/api/items", {
         method: "POST",
         body: {
@@ -303,7 +325,9 @@ export async function flushOfflineQueue(
           status: entry.status || "inbox",
         },
       });
-      return res.ok;
+      if (res.ok) return "ok";
+      if (res.status === 400 || res.status === 404 || res.status === 422) return "drop";
+      return "retry";
     });
 
   const out = await flushOfflineQueueWithSender(sender);

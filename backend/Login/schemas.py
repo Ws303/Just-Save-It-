@@ -85,10 +85,11 @@ class MagicLinkResponse(BaseModel):
 
 class UpdateProfileRequest(BaseModel):
     """User profile update request."""
-    display_name: Optional[str] = Field(None, max_length=80)
+    display_name: Optional[str] = Field(None, max_length=120)
+    preferred_summary_language: Optional[str] = Field(None, max_length=10)
+    default_timezone: Optional[str] = Field(None, max_length=80)
     avatar_url: Optional[str] = None
     locale: Optional[str] = Field(None, max_length=10)
-    timezone: Optional[str] = Field(None, max_length=50)
 
 
 class CreateApiTokenRequest(BaseModel):

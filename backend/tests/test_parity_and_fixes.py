@@ -393,3 +393,146 @@ def test_register_device_validates_web_push_endpoint_ssrf_and_accepts_valid_fcm(
         assert good.json()["push_token"] == "https://fcm.googleapis.com/fcm/send/abc123"
     finally:
         app.dependency_overrides.pop(get_current_user_id, None)
+
+
+def test_export_user_data_owner_only_and_over_100_items(isolated_db):
+    """PDPA export includes >100 owned items (no 100 RPC cap) and excludes collaborator items/folders."""
+    from Database.repository import export_user_data
+
+    owner_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
+    collab_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2"
+    isolated_db.tables["profiles"].append({"id": owner_id, "display_name": "Owner"})
+    isolated_db.tables["profiles"].append({"id": collab_id, "display_name": "Collab"})
+
+    shared_folder = create_folder_for_user(isolated_db, collab_id, FolderCreateRequest(name="Collab Shared Folder"))
+    isolated_db.tables["folder_members"].append({
+        "folder_id": shared_folder["id"],
+        "user_id": owner_id,
+        "role": "editor",
+    })
+    collab_item = create_or_bump_item(
+        isolated_db,
+        collab_id,
+        ItemCreateRequest(url="https://example.com/collab-only", title="Collab Item", folder_id=shared_folder["id"]),
+    )
+
+    for idx in range(520):
+        isolated_db.tables["items"].append({
+            "id": f"00000000-0000-4000-8000-{idx:012d}",
+            "owner_id": owner_id,
+            "url": f"https://example.com/owned/{idx}",
+            "canonical_url": f"https://example.com/owned/{idx}",
+            "url_hash": f"hash-{idx:04d}",
+            "title": f"Owned Item {idx}",
+            "status": "inbox",
+            "saved_at": "2026-11-15T00:00:00+00:00",
+        })
+
+    exported = export_user_data(isolated_db, owner_id)
+    exported_ids = {row["id"] for row in exported["items"]}
+    exported_folder_ids = {row["id"] for row in exported["folders"]}
+
+    assert len(exported["items"]) == 520
+    assert collab_item["id"] not in exported_ids
+    assert shared_folder["id"] not in exported_folder_ids
+
+
+def test_delete_my_account_revokes_subsequent_token_use(isolated_db, monkeypatch):
+    """DELETE /api/auth/me deletes auth user before profile and rejects subsequent requests with 401."""
+    import jwt as pyjwt
+    from Login import auth_dep
+
+    test_secret = "parity-test-jwt-secret-key-at-least-32b"
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", test_secret)
+    uid = "cccccccc-cccc-4ccc-8ccc-ccccccccccc3"
+    isolated_db.tables["profiles"].append({"id": uid, "display_name": "Delete User"})
+
+    call_order = []
+    orig_delete_user = getattr(getattr(getattr(isolated_db, "auth", None), "admin", None), "delete_user", None)
+
+    class _MockAuthAdmin:
+        def delete_user(self, target_uid):
+            call_order.append(("auth_admin.delete_user", target_uid))
+            assert any(p.get("id") == target_uid for p in isolated_db.tables["profiles"]), (
+                "auth_admin.delete_user must run before profile row deletion"
+            )
+
+    class _MockAuth:
+        admin = _MockAuthAdmin()
+
+    isolated_db.auth = _MockAuth()
+    token = pyjwt.encode(
+        {
+            "sub": uid,
+            "role": "authenticated",
+            "aud": "authenticated",
+            "exp": int((datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()),
+        },
+        test_secret,
+        algorithm="HS256",
+    )
+
+    try:
+        client = TestClient(app)
+        del_res = client.delete("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert del_res.status_code == 200
+        assert del_res.json()["deleted"] is True
+        assert ("auth_admin.delete_user", uid) in call_order
+
+        me_after = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert me_after.status_code == 401
+    finally:
+        auth_dep._DELETED_USER_IDS.discard(uid)
+        if orig_delete_user is None and hasattr(isolated_db, "auth"):
+            delattr(isolated_db, "auth")
+
+
+@pytest.mark.asyncio
+async def test_ai_url_hash_cache_does_not_leak_donor_tags(isolated_db):
+    """url_hash donor cache reuses summary without leaking another tenant's private ai_tags."""
+    from Ai.schemas import AIConfig, SummarizeRequest
+    from Ai.summarizer_service import summarize_item_once
+
+    isolated_db.tables["items"].append({
+        "id": "donor-item-1",
+        "owner_id": "donor-owner",
+        "url": "https://example.com/shared-article",
+        "url_hash": "shared-url-hash-xyz",
+        "ai_summary": "• สรุปข้อ 1\n• สรุปข้อ 2\n• สรุปข้อ 3",
+        "ai_summary_language": "th",
+        "ai_tags": ["confidential-project", "secret-client"],
+    })
+    isolated_db.tables["items"].append({
+        "id": "recip-item-2",
+        "owner_id": "recipient-owner",
+        "url": "https://example.com/shared-article",
+        "url_hash": "shared-url-hash-xyz",
+        "ai_tags": ["my-tag"],
+    })
+
+    resp = await summarize_item_once(
+        db=isolated_db,
+        user_id="recipient-owner",
+        req=SummarizeRequest(item_id="recip-item-2", ai_config=AIConfig(provider="built-in")),
+    )
+    assert resp.cached_from_db is True
+    assert "confidential-project" not in resp.suggested_tags
+    assert "secret-client" not in resp.suggested_tags
+    assert resp.suggested_tags == ["my-tag"]
+
+
+def test_mcp_create_item_rejects_ssrf_targets(isolated_db):
+    """MCP create_item invokes SSRF guard so loopback/metadata IPs are rejected."""
+    from Ai.mcp_server import create_item, set_authenticated_user_id, set_override_db
+
+    set_override_db(isolated_db)
+    set_authenticated_user_id("usr-mcp-ssrf")
+    try:
+        with pytest.raises(ValueError):
+            create_item(url="http://127.0.0.1:8000/internal")
+        with pytest.raises(ValueError):
+            create_item(url="http://169.254.169.254/latest/meta-data")
+        assert len(isolated_db.tables["items"]) == 0
+    finally:
+        set_authenticated_user_id(None)
+        set_override_db(None)

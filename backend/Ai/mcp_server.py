@@ -10,6 +10,7 @@ Enforces:
    - Reminders: set_or_cancel_reminder
 """
 
+import asyncio
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -45,6 +46,7 @@ from Database.text_hygiene import (
     compute_url_hash,
     normalize_unicode_text,
 )
+from .content_extractor import validate_safe_url
 from .schemas import SummarizeRequest
 from .summarizer_service import (
     check_item_access_permission,
@@ -192,15 +194,22 @@ def search_and_list_items(
 
     if tag_name and tag_name.strip():
         tag_lower = normalize_unicode_text(tag_name.strip()).lower()
-        tag_res = db.table("tags").select("id, name").eq("owner_id", user_id).execute()
-        matching_ids = [
+        candidate_ids = [item["id"] for item in items if item.get("id")]
+        if not candidate_ids:
+            return []
+        link_res = db.table("item_tags").select("item_id, tag_id").in_("item_id", candidate_ids).execute()
+        link_rows = link_res.data or []
+        candidate_tag_ids = list({r["tag_id"] for r in link_rows if r.get("tag_id")})
+        if not candidate_tag_ids:
+            return []
+        tag_res = db.table("tags").select("id, name").in_("id", candidate_tag_ids).execute()
+        matching_ids = {
             r["id"]
             for r in (tag_res.data or [])
             if normalize_unicode_text(r.get("name", "")).lower() == tag_lower
-        ]
+        }
         if matching_ids:
-            link_res = db.table("item_tags").select("item_id").in_("tag_id", matching_ids).execute()
-            valid_item_ids = {r["item_id"] for r in (link_res.data or [])}
+            valid_item_ids = {r["item_id"] for r in link_rows if r.get("tag_id") in matching_ids}
             items = [item for item in items if item.get("id") in valid_item_ids]
         else:
             return []
@@ -260,6 +269,7 @@ def create_item(
     raw_url = (url or "").strip()
     if not raw_url or not (raw_url.lower().startswith("http://") or raw_url.lower().startswith("https://")):
         raise ValueError("URL must start with http:// or https://")
+    raw_url = validate_safe_url(raw_url)
     if status not in ("inbox", "todo", "done", "archived"):
         raise ValueError(f"Invalid status '{status}'. Must be one of inbox, todo, done, archived.")
     if folder_id is not None and folder_id.strip():
@@ -760,7 +770,7 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
             return Response(content="Unauthorized: Missing API token.", status_code=401)
 
         try:
-            user_id = resolve_user_id_from_token(raw_token)
+            user_id = await asyncio.to_thread(resolve_user_id_from_token, raw_token)
             token_reset = _current_user_id_ctx.set(user_id)
             try:
                 return await call_next(request)

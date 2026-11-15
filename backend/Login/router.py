@@ -12,8 +12,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
 from Database.client import get_db
+from Database.supabase_client import is_supabase_configured
 from Database.text_hygiene import clean_text_field
-from .auth_dep import get_current_user_id
+from .auth_dep import get_current_user_id, mark_user_deleted
 from .dependencies import CurrentUser, get_current_user
 from .schemas import (
     AuthTokenResponse,
@@ -167,6 +168,32 @@ def get_me(
     """Return current user's profile and monthly built-in AI quota usage."""
     user_id = current_user.id
     prof_res = db.table("profiles").select("*").eq("id", user_id).execute()
+    if (
+        not prof_res.data
+        and is_supabase_configured()
+        and current_user.access_token
+        and not current_user.access_token.startswith("dev-token-")
+    ):
+        auth_api = getattr(db, "auth", None)
+        if auth_api is not None and callable(getattr(auth_api, "get_user", None)):
+            try:
+                user_resp = auth_api.get_user(current_user.access_token)
+                valid_user = getattr(user_resp, "user", None)
+                if not valid_user or str(getattr(valid_user, "id", "")) != str(user_id):
+                    mark_user_deleted(user_id)
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="User account no longer exists.",
+                    )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.warning("Deleted/missing user check failed via Supabase get_user: %s", exc)
+                mark_user_deleted(user_id)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User account no longer exists.",
+                ) from exc
     profile = dict(prof_res.data[0]) if prof_res.data else _default_profile(user_id)
     profile.setdefault("preferred_summary_language", "th")
     profile.setdefault("default_timezone", "Asia/Bangkok")
@@ -385,10 +412,11 @@ def delete_my_account(
         db.table("beta_feedback").delete().eq("user_id", user_id).execute()
     except Exception as exc:
         logger.debug("Optional beta_feedback cleanup skipped during account deletion: %s", exc)
-    db.table("profiles").delete().eq("id", user_id).execute()
-
     auth_admin = getattr(getattr(db, "auth", None), "admin", None)
     if auth_admin is not None and callable(getattr(auth_admin, "delete_user", None)):
         auth_admin.delete_user(user_id)
+
+    db.table("profiles").delete().eq("id", user_id).execute()
+    mark_user_deleted(user_id)
 
     return {"deleted": True, "user_id": user_id}

@@ -5266,6 +5266,7 @@ a {
 .pc-folder-card.figma-style .pc-folder-info {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
   flex-direction: column;
   align-items: flex-start;
   justify-content: space-between;
@@ -5768,12 +5769,17 @@ a {
 
 .pc-folder-info-text {
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
 .pc-folder-info-text strong {
+  display: block;
+  max-width: 100%;
   font-size: 14px;
   color: #20283e;
   white-space: nowrap;

@@ -156,7 +156,7 @@ sequenceDiagram
 ```
 - **Idempotent + Canonical Dedup:** ตัด query tracking (`utm_*`, `fbclid`, `igsh`, `si`, `ref`) ก่อนสร้าง `url_hash` (`UNIQUE (owner_id, url_hash)`) → เซฟซ้ำ = ดึงอันเดิมขึ้นมาบน (update `saved_at`) ไม่สร้างซ้ำ
 - **Hard Cap 5 รูป & Cover-Only WebP Storage:** ไม่ว่าต้นทางจะมีกี่สิบรูป ระบบจะคัดเก็บ **ไม่เกิน 5 รูปเสมอ** โดยดาวน์โหลดและบีบอัดเป็น WebP เฉพาะ **รูปปก #1 (`image_url`)** ลง Supabase Storage ส่วน **รูป #2–#5** เก็บเป็น URL ตรงใน `media_items` (ถ้าโหลดไม่ขึ้นจากเว็บต้นทางในอนาคต Client แค่ซ่อนสไลด์นั้นโดยปก #1 ยังอยู่ครบ)
-- **Cross-User Unfurl & AI Cache:** ลิงก์สาธารณะเดียวกัน (`url_hash` ตรงกัน) ใช้ผล Unfurl ล่าสุด (ภายใน 7 วัน) และ `ai_summary` ร่วมกันได้ → ประหยัด CPU Server, เลี่ยงการโดนเว็บปลายทางบล็อก IP, และประหยัดโควต้า AI 70–80%
+- **Cross-User Unfurl & AI Cache:** ลิงก์สาธารณะเดียวกัน (`url_hash` ตรงกัน) ใช้ผล Unfurl ล่าสุด (ภายใน 7 วัน) และ `ai_summary` ร่วมกันได้ (โดย **ไม่** คัดลอก `ai_tags` ของผู้ใช้ต้นทางข้ามบัญชี เพื่อรักษาความเป็นส่วนตัวของแท็กผู้ใช้แต่ละราย) → ประหยัด CPU Server, เลี่ยงการโดนเว็บปลายทางบล็อก IP, และประหยัดโควต้า AI 70–80%
 - **Retry:** worker ดึงพรีวิวล้มเหลว → `enrich_status='failed'` + `enrich_attempts`, cron retry สูงสุด 3 ครั้ง; การ์ดยังใช้งานได้ด้วย URL ล้วน + มีปุ่มกด Refresh Preview เองได้
 
 ### 5.2 กลับมาดู (Cross-Device Reminder Flow: One-Time & Recurring + iOS Local Sync)
@@ -217,26 +217,25 @@ flowchart TD
 3. **FastAPI ใช้ `service_role` เสมอ ต้อง filter `owner_id`/สิทธิ์เองทุก query** — ห้ามรับ `user_id` จาก AI/MCP parameter (ดู §8)
 4. **ประหยัด Storage & Bandwidth สูงสุด:** เก็บไฟล์จริงบน Storage **เฉพาะรูปปก #1 (WebP)** เท่านั้น; รูปที่ 2–5 ใช้ External URL; วิดีโอใช้ Official Embed โหลดตอนกด Play
 
-### 6.1 Tech Stack (ล็อกแล้ว)
+### 6.1 Tech Stack (Implemented Architecture)
 | ชั้น | เลือก | เหตุผล |
 |---|---|---|
-| Monorepo | **pnpm workspaces + Turborepo** | แชร์ types/zod/supabase client ทั้ง 3 client TS |
-| Web | **Next.js 15 (App Router) + Tailwind + shadcn/ui + TanStack Query** | SSR หน้า invite/share preview, Carousel + Lazy `<iframe>`, Vercel deploy ง่าย |
-| Mobile | **Expo (SDK ล่าสุด) + Expo Router + NativeWind + `react-native-webview`** | โค้ดเดียว Android+iOS; ใช้ `WebView` แบบ Lazy เฉพาะตอนกด Play; ต้องใช้ **Dev Build/EAS** |
-| Share Sheet | **`expo-share-intent`** (MVP: เปิดแอปแล้วเซฟอัตโนมัติ) → อัปเกรดเป็น `expo-share-extension` ทีหลัง | ลดความเสี่ยง iOS share-extension memory limit / App Group |
-| Extension | **WXT + React** (MV3, build Chrome/Edge/Firefox จากโค้ดเดียว) | HMR, typed messaging |
-| DB/Auth | **Supabase** (Postgres 15, RLS, Realtime, Storage, pg_cron, pgvector) | |
-| Worker/AI/MCP | **FastAPI + Python 3.12 + `httpx` + `trafilatura` + `selectolax` + `Pillow` + `mcp` SDK** | `selectolax` แกะ HTML/5 รูปไวมาก; `Pillow` ย่อ+แปลงปกเป็น WebP; deploy: Railway / Fly.io / Cloud Run |
+| Repo Layout | **Multi-package repository (`frontend/`, `extension/`, `mobile/`, `backend/`, `supabase/`)** | แยก deploy Render Static Site / FastAPI Web Service / MV3 Extension / EAS Mobile Build อิสระและเบา |
+| Web / PWA | **Vanilla ES Modules + Vite + Tailwind-free Custom CSS (`frontend/`)** | SPA ตรง Figma 1:1 100%, โหลดเร็ว, รองรับ PWA `share_target` + VAPID Web Push + Supabase Realtime |
+| Mobile | **Expo SDK 53 + Expo Router (`mobile/`)** | โค้ดเดียว Android+iOS, EAS APK Build พร้อมใช้, รองรับ Android `ACTION_SEND`/Deep Link, Offline Queue, และ iOS Local Notification Sync |
+| Share Sheet | **Android Intent Filter + `expo-linking` + Deep Link (`mobile/app/_layout.tsx`)** | รับลิงก์จากแอปอื่นเข้าหน้าบันทึกอัตโนมัติและเก็บ URL ค้างไว้กรณีเปิดแอปขณะยังไม่ล็อกอิน |
+| Extension | **Chrome Manifest V3 (`extension/`, Zero-build Vanilla JS)** | โหลด `Load unpacked` ได้ทันที มี `web_bridge.js` + `externally_connectable` + Context Menu + DOM Assist + Offline Queue |
+| DB/Auth | **Supabase** (Postgres 15+, RLS, Realtime, Storage, `pg_cron`) | `(select auth.uid())` InitPlan RLS ทุกตาราง, `private` schema revokes, และ Realtime Broadcast |
+| Worker/AI/MCP | **FastAPI + Python 3.12 + `httpx` + `trafilatura` + `selectolax` + `Pillow` + `mcp` SDK** | `selectolax` แกะ HTML/5 รูปไวมาก; `Pillow` ย่อ+แปลงปกเป็น WebP; deploy: Render Web Service |
 | AI | **Gemini Flash (`gemini-2.5-flash` via env) + Groq (`llama-3.3-70b-versatile`) failover + BYOK + Custom (Ollama/vLLM)** | รันจริงแล้วใน `backend/Ai/`; ประหยัดและรองรับผู้ใช้ที่เอา Key/Local LLM มาเอง |
-| Embedding (SHOULD) | `gemini-embedding-001` (env `EMBED_MODEL`), `vector(768)` | |
-| Push | **Expo Push Service** (FCM ฟรีบน Android + APNs เมื่อเปิด Apple Dev) + **`expo-notifications` Local Sync (iOS Pre-APNs)** + Web Push (VAPID) | |
-| Monitoring | Sentry (ทุก client + FastAPI) | |
+| Embedding (SHOULD) | `gemini-embedding-001` (env `EMBED_MODEL`), `vector(768)` *(Phase II backlog)* | สำหรับ Semantic Search เชิงความหมาย |
+| Push | **Expo Push Service** (Android FCM) + **`expo-notifications` Local Sync (iOS ≤ 64 slots)** + Web Push (ES256 VAPID + RFC 8291) | |
 
 ### 6.2 Auth ข้ามแพลตฟอร์ม
-- **Providers:** Google + **Sign in with Apple (บังคับบน iOS ถ้ามี Google login — App Store Guideline 4.8)** + Email OTP
-- **Web/Mobile:** Supabase session ปกติ (mobile เก็บใน `expo-secure-store`)
-- **Extension:** ปุ่ม "Login" → เปิดแท็บ `web/extension/connect` → web ส่ง session ให้ extension ผ่าน `externally_connectable` + `chrome.runtime.sendMessage(EXT_ID, session)` → เก็บใน `chrome.storage.local`, refresh token เอง
-- **MCP:** Personal Access Token (`jsi_live_xxx`) เก็บเป็น SHA-256 hash (pattern เดียวกับ `Nous/docs/plans/2026-11-12-unified-ai-platform-architecture.md` §4)
+- **Providers:** Google OAuth + Email/Password & Magic Link OTP (`Sign in with Apple` เตรียมไว้ในแผน iOS Store phase ถัดไป)
+- **Web/Mobile:** Supabase session (`sharely_auth_session_v1` บน Web และ `getSecureSessionBackend()` ที่รองรับ `expo-secure-store` พร้อม `AsyncStorage` fallback บน Mobile)
+- **Extension:** รองรับทั้งปุ่มเชื่อมต่อจากหน้าเว็บ (`web_bridge.js` content script + `externally_connectable` + `sharely_auth_session_v1`), Email/Password, และ Web Access Token พร้อม single-flight refresh token lock
+- **MCP:** Personal Access Token (`jsi_live_xxx`) เก็บเป็น SHA-256 hash และตรวจสิทธิ์แบบ async thread-offloaded ใน `MCPAuthMiddleware`
 
 ---
 
