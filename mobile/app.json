@@ -1,0 +1,83 @@
+{
+  "expo": {
+    "name": "Sharely — Just Save It",
+    "slug": "just-save-it",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "sharely",
+    "userInterfaceStyle": "light",
+    "owner": "woraset",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FDFBF7"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.woraset.justsaveit"
+    },
+    "android": {
+      "package": "com.woraset.justsaveit",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#FDFBF7"
+      },
+      "intentFilters": [
+        {
+          "action": "SEND",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "mimeType": "text/plain"
+            }
+          ]
+        },
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "sharely"
+            },
+            {
+              "scheme": "https",
+              "host": "just-save-it-web.onrender.com",
+              "pathPrefix": "/invite"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/icon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-notifications",
+        {
+          "color": "#BA0E1A"
+        }
+      ],
+      "expo-web-browser"
+    ],
+    "extra": {
+      "apiBaseUrl": "https://just-save-it-api.onrender.com",
+      "supabaseUrl": "https://pnqjamwhgzqzvpiytcln.supabase.co",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBucWphbXdoZ3pxenZwaXl0Y2xuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ2NjAzMjIsImV4cCI6MjExMDIzNjMyMn0.4RfZtHD9-23dSQw2P6tWRz45mty5BumKWAKKBifbebw",
+      "router": {},
+      "eas": {
+        "projectId": "87a7a33c-35c8-45c1-9007-5bb554d34cc3"
+      }
+    }
+  }
+}

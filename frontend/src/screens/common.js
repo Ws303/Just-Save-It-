@@ -29,7 +29,70 @@ export function renderBottomNav(activeTab) {
   `;
 }
 
-export function renderFilterChips(activeFilter, styleVariant = "home") {
+const PLATFORM_FILTER_CHIPS = [
+  { id: "all", label: "ทุกแพลตฟอร์ม" },
+  { id: "youtube", label: "YouTube" },
+  { id: "tiktok", label: "TikTok" },
+  { id: "instagram", label: "IG" },
+  { id: "facebook", label: "Facebook" },
+  { id: "x", label: "X" },
+  { id: "website", label: "เว็บไซต์" },
+];
+
+const CONTENT_TYPE_FILTER_CHIPS = [
+  { id: "all", label: "ทุกประเภท" },
+  { id: "video", label: "วิดีโอ" },
+  { id: "image", label: "รูปภาพ" },
+  { id: "social", label: "โซเชียล" },
+  { id: "article", label: "บทความ" },
+];
+
+export function renderAdvancedFilterToggle(state, scope = "home", pillClass = "figma-filter-pill") {
+  const ui = state?.ui || {};
+  const activePlat = scope === "folder" ? ui.folderPlatformFilter || "all" : ui.homePlatformFilter || "all";
+  const activeType = scope === "folder" ? ui.folderContentTypeFilter || "all" : ui.homeContentTypeFilter || "all";
+  const isActive = Boolean(ui.filterDrawerOpen) || activePlat !== "all" || activeType !== "all";
+  const activeCount = (activePlat !== "all" ? 1 : 0) + (activeType !== "all" ? 1 : 0);
+  const label = activeCount > 0 ? `ตัวกรอง (${activeCount}) ▾` : "ตัวกรอง ▾";
+  const activeCls = isActive ? (pillClass === "filter-chip" ? "active-dark" : "active") : "";
+  return `
+    <button
+      type="button"
+      class="${pillClass} ${activeCls}"
+      data-action="toggle-filter-drawer"
+      aria-expanded="${ui.filterDrawerOpen ? "true" : "false"}"
+    >
+      <span>${label}</span>
+    </button>
+  `;
+}
+
+export function renderAdvancedFilterDrawer(state, scope = "home") {
+  const ui = state?.ui || {};
+  if (!ui.filterDrawerOpen) return "";
+  const activePlat = String(scope === "folder" ? ui.folderPlatformFilter || "all" : ui.homePlatformFilter || "all").toLowerCase();
+  const activeType = String(scope === "folder" ? ui.folderContentTypeFilter || "all" : ui.homeContentTypeFilter || "all").toLowerCase();
+  return `
+    <div class="advanced-filter-drawer" style="display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:14px;background:var(--bg-surface);border:1px solid var(--border-light);">
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+        <span class="tiny-hint" style="font-weight:700;margin-right:2px;">แพลตฟอร์ม:</span>
+        ${PLATFORM_FILTER_CHIPS.map((p) => {
+          const on = activePlat === p.id;
+          return `<button type="button" class="chip-pill ${on ? "active" : ""}" style="${on ? "background:var(--ink-strong);color:#fff;border-color:var(--ink-strong);" : ""}" data-set-platform-filter="${p.id}" data-filter-scope="${scope}">${p.label}</button>`;
+        }).join("")}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+        <span class="tiny-hint" style="font-weight:700;margin-right:2px;">ประเภทสื่อ:</span>
+        ${CONTENT_TYPE_FILTER_CHIPS.map((t) => {
+          const on = activeType === t.id;
+          return `<button type="button" class="chip-pill ${on ? "active" : ""}" style="${on ? "background:var(--theme-accent);color:#fff;border-color:var(--theme-accent);" : ""}" data-set-content-type-filter="${t.id}" data-filter-scope="${scope}">${t.label}</button>`;
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
+export function renderFilterChips(activeFilter, styleVariant = "home", state = null) {
   const chips = [
     { id: "all", label: "ทั้งหมด" },
     { id: "unread", label: "ยังไม่ได้ดู" },
@@ -56,6 +119,7 @@ export function renderFilterChips(activeFilter, styleVariant = "home") {
             </button>`;
         })
         .join("")}
+      ${state ? renderAdvancedFilterToggle(state, styleVariant === "dark" ? "folder" : "home", "filter-chip") : ""}
     </div>
   `;
 }
@@ -205,6 +269,20 @@ export function renderPostMenuAndDialog(ui, links) {
             <button class="icon-btn" data-close-sheet="1">${icons.close(17)}</button>
           </div>
           <p class="tiny-hint" style="margin:0;">${escHtml(item.title)}</p>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px;">
+            ${[
+              { id: "inbox", label: "กล่องเข้า" },
+              { id: "todo", label: "ต้องอ่าน" },
+              { id: "done", label: "อ่านแล้ว" },
+              { id: "archived", label: "เก็บถาวร" },
+            ]
+              .map((st) => {
+                const curStatus = item.workflowStatus || (item.status === "read" ? "done" : "inbox");
+                const isActive = curStatus === st.id;
+                return `<button type="button" class="chip-pill ${isActive ? "active" : ""}" style="${isActive ? "background:var(--theme-accent);color:#fff;border-color:var(--theme-accent);" : ""}" data-set-workflow-status="${st.id}" data-item-id="${escHtml(item.id)}">${st.label}</button>`;
+              })
+              .join("")}
+          </div>
           <div class="settings-card">
             <button class="settings-row" data-open-link="${escHtml(item.id)}">
               <span>เปิดรายละเอียดลิงก์</span>
@@ -213,6 +291,10 @@ export function renderPostMenuAndDialog(ui, links) {
             <button class="settings-row" data-toggle-status-sheet="${escHtml(item.id)}">
               <span>${item.status === "read" ? "ทำเครื่องหมายว่ายังไม่ได้ดู" : "ทำเครื่องหมายว่าดูแล้ว"}</span>
               ${icons.check(16)}
+            </button>
+            <button class="settings-row" data-refresh-preview-sheet="${escHtml(item.id)}">
+              <span>รีเฟรชพรีวิวลิงก์</span>
+              ${icons.chevronRight(16)}
             </button>
             <button class="settings-row" data-trigger-ai-sheet="${escHtml(item.id)}">
               <span>สรุปเนื้อหาด้วย AI</span>

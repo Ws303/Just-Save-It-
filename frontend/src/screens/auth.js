@@ -1,9 +1,11 @@
 /**
  * Authentication & Folder Invitation Landing Screens:
- * - 10 Login · Cherry reference (62:178)
- * - 9 / 23.2 Email login (24:190, 154:450)
- * - 23.3 Check email magic link simulator (154:467)
- * - 23 Folder invitation landing (154:360)
+ * - Mobile 10 Login Landing (319:818)
+ * - Mobile 10A Email Login (319:2944)
+ * - Mobile 10B Forgot Password (319:2974)
+ * - Mobile Check Email (319:2988)
+ * - Mobile 25 Sign Up (319:3029)
+ * - Desktop PC Auth Cream Cherry Canvas + Floating White Card (390:572 / 383:9076 / 383:11530 / 383:11560 / 383:11574)
  */
 import { icons, escHtml, safeImgUrl } from "../components/icons.js";
 import { getAuthMode } from "../services/routeGuard.js";
@@ -21,13 +23,13 @@ function renderAuthBanner(state) {
 
   const redirectNote = postAuthRedirect?.screen
     ? `<div style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:10px;padding:8px 12px;font-size:12.5px;font-weight:600;">
-        🔒 หน้า "${escHtml(postAuthRedirect.screen)}" เป็น Protected Route — เข้าสู่ระบบเพื่อดำเนินการต่อ
+        หน้า "${escHtml(postAuthRedirect.screen)}" ต้องเข้าสู่ระบบก่อนใช้งาน
       </div>`
     : "";
 
   const errNote = authError
     ? `<div style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:10px;padding:8px 12px;font-size:12.5px;font-weight:600;">
-        ⚠️ ${escHtml(authError)}
+        ${escHtml(authError)}
       </div>`
     : "";
 
@@ -41,56 +43,66 @@ function renderAuthBanner(state) {
   return `${modeBadge}${redirectNote}${errNote}`;
 }
 
-export function renderLoginScreen(state) {
+function renderSharelyCherryWordmark({ size = "md", withCherry = false } = {}) {
+  return `
+    <div class="figma-brand-wordmark ${size}">
+      ${withCherry ? `<span class="figma-wordmark-cherry">${icons.cherry(28)}</span>` : ""}
+      <div class="figma-wordmark-row">
+        <span class="figma-wordmark-text">Sharely</span>
+        ${size === "hero" ? `<img class="figma-wordmark-rays" src="./assets/icons/login-wordmark-accent.svg" alt="" />` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function renderAuthCardFormContent(state, { desktop = false } = {}) {
   const isInviteAuth = state.ui.authContext === "invite";
-  const authMode = state.ui.authMode || "login"; // "login" | "signup" | "forgot"
+  const screen = state.ui.screen;
+  const rawMode = state.ui.authMode || "login";
+  const viewMode = screen === "emailLogin" && rawMode === "login" ? "email" : rawMode;
   const fallbackEmail = state.api.useDevBypass ? state.data.user.email || "" : "";
-  const emailVal = state.ui.authEmail || (authMode === "signup" ? "" : fallbackEmail);
+  const emailVal = state.ui.authEmail || (viewMode === "signup" ? "" : fallbackEmail);
   const nameVal = state.ui.authDisplayName || "";
   const showPw = Boolean(state.ui.showPassword);
 
-  if (authMode === "forgot") {
+  if (viewMode === "forgot") {
     return `
-      <div class="screen-scroll figma-auth-page">
-        <div class="figma-auth-topbar">
-          <button class="figma-back-btn" data-action="set-auth-mode" data-mode="login">
+      <div class="figma-auth-subpage">
+        <div class="figma-auth-topbar clean">
+          <button type="button" class="figma-back-link" data-action="set-auth-mode" data-mode="email">
             ${icons.back(18)}
-            <span>ย้อนกลับ</span>
+            <span>กลับ</span>
           </button>
-          <span class="figma-auth-top-title">ลืมรหัสผ่าน</span>
-          <span style="width:68px;"></span>
         </div>
 
-        <div class="figma-auth-body">
-          <div class="figma-auth-hero compact">
-            <div class="figma-brand-badge">${icons.bookmarkSolid(20)}</div>
-            <h1 class="figma-auth-title">ลืมรหัสผ่านใช่ไหม?</h1>
-            <p class="figma-auth-sub">กรอกอีเมลที่ใช้สมัคร แล้วเราจะส่งลิงก์สำหรับตั้งรหัสผ่านใหม่ให้</p>
-          </div>
+        <div class="figma-auth-subhead">
+          ${renderSharelyCherryWordmark({ size: "sm" })}
+          <h1 class="figma-auth-title">ลืมรหัสผ่าน?</h1>
+          <p class="figma-auth-sub">กรอกอีเมลที่ใช้สมัคร ระบบจะส่งลิงก์ตั้งรหัสผ่านใหม่ให้คุณ</p>
+        </div>
 
-          ${renderAuthBanner(state)}
+        ${renderAuthBanner(state)}
 
-          <div class="figma-field">
-            <label class="figma-label" for="forgotEmailInput">อีเมล</label>
-            <input
-              id="forgotEmailInput"
-              class="figma-input"
-              type="email"
-              value="${escHtml(emailVal)}"
-              placeholder="name@email.com"
-              data-bind-email-login="1"
-            />
-          </div>
+        <div class="figma-field">
+          <label class="figma-label" for="forgotEmailInput">อีเมล</label>
+          <input
+            id="forgotEmailInput"
+            class="figma-input figma-input-soft"
+            type="email"
+            value="${escHtml(emailVal)}"
+            placeholder="name@email.com"
+            data-bind-email-login="1"
+          />
+        </div>
 
-          <div class="figma-info-box">
-            <strong>หมายเหตุ:</strong> ระบบจะส่งลิงก์รีเซ็ตรหัสผ่านไปยังอีเมลของคุณ ลิงก์มีอายุใช้งาน 15 นาที
-          </div>
+        <button type="button" class="figma-primary-btn figma-red-pill" data-action="send-reset-link">
+          ส่งลิงก์รีเซ็ตรหัสผ่าน
+        </button>
 
-          <button class="figma-primary-btn" data-action="send-reset-link">
-            ส่งลิงก์รีเซ็ตรหัสผ่าน
-          </button>
+        <p class="figma-forgot-hint">หากไม่พบอีเมล ลองตรวจสอบในโฟลเดอร์สแปม หรือ อีเมลขยะ</p>
 
-          <button class="figma-text-link center" data-action="set-auth-mode" data-mode="login">
+        <div class="figma-auth-footer">
+          <button type="button" class="figma-inline-link" data-action="set-auth-mode" data-mode="email">
             กลับไปหน้าเข้าสู่ระบบ
           </button>
         </div>
@@ -98,48 +110,116 @@ export function renderLoginScreen(state) {
     `;
   }
 
-  const isSignup = authMode === "signup";
-  return `
-    <div class="screen-scroll figma-auth-page">
-      <div class="figma-auth-body">
-        <div class="figma-auth-hero">
-          <div class="figma-brand-badge">${icons.bookmarkSolid(22)}</div>
-          <h1 class="figma-brand-name">Sharely</h1>
-          <p class="figma-brand-tagline">เซฟไว้ก่อน ค่อยกลับมาดู</p>
+  if (viewMode === "signup") {
+    return `
+      <div class="figma-auth-subpage">
+        <div class="figma-auth-topbar clean">
+          <button type="button" class="figma-back-link" data-action="set-auth-mode" data-mode="login">
+            ${icons.back(18)}
+            <span>กลับ</span>
+          </button>
+        </div>
 
-          <div class="figma-auth-tabs" role="tablist">
-            <button class="figma-auth-tab ${!isSignup ? "active" : ""}" data-action="set-auth-mode" data-mode="login">
-              เข้าสู่ระบบ
-            </button>
-            <button class="figma-auth-tab ${isSignup ? "active" : ""}" data-action="set-auth-mode" data-mode="signup">
-              สมัครใช้งาน
-            </button>
-          </div>
+        <div class="figma-auth-subhead">
+          ${renderSharelyCherryWordmark({ size: "sm", withCherry: true })}
+          <h1 class="figma-auth-title">สมัครใช้งาน</h1>
+          <p class="figma-auth-sub">สร้างบัญชีเพื่อเริ่มบันทึกลิงก์และแชร์กับเพื่อน</p>
         </div>
 
         ${renderAuthBanner(state)}
 
-        ${
-          isSignup
-            ? `<div class="figma-field">
-                <label class="figma-label" for="displayNameSignupInput">ชื่อที่แสดง</label>
-                <input
-                  id="displayNameSignupInput"
-                  class="figma-input"
-                  type="text"
-                  value="${escHtml(nameVal)}"
-                  placeholder="เช่น Fah"
-                  data-bind-displayname-signup="1"
-                />
-              </div>`
-            : ""
-        }
+        <div class="figma-field">
+          <label class="figma-label" for="displayNameSignupInput">ชื่อเล่น</label>
+          <input
+            id="displayNameSignupInput"
+            class="figma-input figma-input-soft"
+            type="text"
+            value="${escHtml(nameVal)}"
+            placeholder="เช่น มิน, แพรว"
+            data-bind-displayname-signup="1"
+          />
+        </div>
 
         <div class="figma-field">
           <label class="figma-label" for="emailLoginInput">อีเมล</label>
           <input
             id="emailLoginInput"
-            class="figma-input"
+            class="figma-input figma-input-soft"
+            type="email"
+            value="${escHtml(emailVal)}"
+            placeholder="name@email.com"
+            data-bind-email-login="1"
+          />
+        </div>
+
+        <div class="figma-field">
+          <label class="figma-label" for="passwordLoginInput">รหัสผ่าน</label>
+          <div class="figma-password-wrap figma-input-soft">
+            <input
+              id="passwordLoginInput"
+              class="figma-input"
+              type="${showPw ? "text" : "password"}"
+              value="${escHtml(state.ui.authPassword || "")}"
+              placeholder="อย่างน้อย 8 ตัวอักษร"
+              data-bind-password-login="1"
+            />
+            <button class="figma-pw-toggle" type="button" data-action="toggle-show-password">
+              ${showPw ? "ซ่อน" : "แสดง"}
+            </button>
+          </div>
+        </div>
+
+        <div class="figma-field">
+          <label class="figma-label" for="passwordConfirmInput">ยืนยันรหัสผ่าน</label>
+          <div class="figma-password-wrap figma-input-soft">
+            <input
+              id="passwordConfirmInput"
+              class="figma-input"
+              type="${showPw ? "text" : "password"}"
+              value="${escHtml(state.ui.authPasswordConfirm || "")}"
+              placeholder="กรอกรหัสผ่านอีกครั้ง"
+              data-bind-password-confirm="1"
+            />
+          </div>
+        </div>
+
+        <button type="button" class="figma-primary-btn figma-red-pill" data-submit-signup="1">
+          สร้างบัญชี
+        </button>
+
+        <div class="figma-auth-footer">
+          <span>มีบัญชีอยู่แล้ว?</span>
+          <button type="button" class="figma-inline-link" data-action="set-auth-mode" data-mode="email">
+            เข้าสู่ระบบ
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  if (viewMode === "email") {
+    return `
+      <div class="figma-auth-subpage">
+        <div class="figma-auth-topbar clean">
+          <button type="button" class="figma-back-link" data-action="set-auth-mode" data-mode="login">
+            ${icons.back(18)}
+            <span>กลับ</span>
+          </button>
+        </div>
+
+        <div class="figma-auth-subhead">
+          ${renderSharelyCherryWordmark({ size: "sm" })}
+          <h1 class="figma-auth-title">เข้าสู่ระบบด้วยอีเมล</h1>
+          <p class="figma-auth-sub">ยินดีต้อนรับกลับมา กรอกข้อมูลเพื่อเข้าสู่ระบบ</p>
+        </div>
+
+        ${renderAuthBanner(state)}
+
+        <div class="figma-field">
+          <label class="figma-label" for="emailLoginInput">อีเมล</label>
+          <input
+            id="emailLoginInput"
+            class="figma-input figma-input-soft"
             type="email"
             value="${escHtml(emailVal)}"
             placeholder="name@email.com"
@@ -149,66 +229,113 @@ export function renderLoginScreen(state) {
 
         <div class="figma-field">
           <div class="figma-label-row">
-            <label class="figma-label" for="passwordLoginInput">
-              ${isSignup ? "รหัสผ่าน (อย่างน้อย 8 ตัวอักษร)" : "รหัสผ่าน"}
-            </label>
-            ${
-              !isSignup
-                ? `<button class="figma-inline-link" data-action="set-auth-mode" data-mode="forgot">ลืมรหัสผ่าน?</button>`
-                : ""
-            }
+            <label class="figma-label" for="passwordLoginInput">รหัสผ่าน</label>
           </div>
-          <div class="figma-password-wrap">
+          <div class="figma-password-wrap figma-input-soft">
             <input
               id="passwordLoginInput"
               class="figma-input"
               type="${showPw ? "text" : "password"}"
               value="${escHtml(state.ui.authPassword || "")}"
-              placeholder="••••••••"
+              placeholder="กรอกรหัสผ่าน"
               data-bind-password-login="1"
             />
             <button class="figma-pw-toggle" type="button" data-action="toggle-show-password">
               ${showPw ? "ซ่อน" : "แสดง"}
             </button>
           </div>
+          <div style="display:flex;justify-content:flex-end;">
+            <button type="button" class="figma-inline-link" data-action="set-auth-mode" data-mode="forgot">
+              ลืมรหัสผ่าน?
+            </button>
+          </div>
         </div>
 
-        ${
-          isSignup
-            ? `<div class="figma-field">
-                <label class="figma-label" for="passwordConfirmInput">ยืนยันรหัสผ่าน</label>
-                <input
-                  id="passwordConfirmInput"
-                  class="figma-input"
-                  type="${showPw ? "text" : "password"}"
-                  value="${escHtml(state.ui.authPasswordConfirm || "")}"
-                  placeholder="กรอกรหัสผ่านอีกครั้ง"
-                  data-bind-password-confirm="1"
-                />
-              </div>
-              <p class="figma-terms-note">
-                เมื่อสร้างบัญชี ถือว่าคุณยอมรับ <span>ข้อกำหนดการใช้งาน</span> และ <span>นโยบายความเป็นส่วนตัว</span>
-              </p>
-              <button class="figma-primary-btn" data-submit-signup="1">
-                สร้างบัญชีด้วยอีเมล
-              </button>`
-            : `<button class="figma-primary-btn" data-submit-password-login="1">
-                เข้าสู่ระบบด้วยอีเมล
-              </button>`
-        }
-
-        <div class="figma-divider"><span>หรือเข้าใช้งานต่อด้วย</span></div>
-
-        <button class="figma-oauth-btn google" data-oauth-google="${isInviteAuth ? "invite" : "app"}">
-          <img src="./assets/icons/google-logo.svg" alt="" style="width:20px;height:20px;" />
-          <span>${isSignup ? "สมัครด้วย Google" : "ดำเนินการต่อด้วย Google"}</span>
+        <button type="button" class="figma-primary-btn figma-red-pill" data-submit-password-login="1">
+          เข้าสู่ระบบ
         </button>
 
         <div class="figma-auth-footer">
-          <span>${isSignup ? "มีบัญชีอยู่แล้ว?" : "ยังไม่มีบัญชี?"}</span>
-          <button class="figma-inline-link" data-action="set-auth-mode" data-mode="${isSignup ? "login" : "signup"}">
-            ${isSignup ? "เข้าสู่ระบบ" : "สมัครใช้งาน"}
+          <span>ยังไม่มีบัญชีใช่ไหม?</span>
+          <button type="button" class="figma-inline-link" data-action="set-auth-mode" data-mode="signup">
+            สมัครใช้งาน
           </button>
+        </div>
+      </div>
+    `;
+  }
+
+  // Landing mode (Figma 319:818 Mobile / 383:9076 Desktop right card)
+  return `
+    <div class="figma-landing-card-body">
+      ${
+        desktop
+          ? `<div class="figma-pc-card-header">
+               <h1 class="figma-auth-title" style="font-size:28px;">เข้าสู่ระบบ</h1>
+               <p class="figma-auth-sub">เลือกวิธีเข้าสู่ระบบเพื่อใช้งานต่อ</p>
+             </div>`
+          : ""
+      }
+
+      ${renderAuthBanner(state)}
+
+      <div class="figma-landing-actions">
+        <button type="button" class="figma-primary-btn figma-red-pill tall" data-action="set-auth-mode" data-mode="email">
+          <img src="./assets/icons/email-white.svg" alt="" style="width:20px;height:20px;" />
+          <span>เข้าสู่ระบบด้วยอีเมล</span>
+        </button>
+
+        <button type="button" class="figma-oauth-btn figma-google-pill tall" data-oauth-google="${isInviteAuth ? "invite" : "app"}">
+          <img src="./assets/icons/google-logo.svg" alt="" style="width:20px;height:20px;" />
+          <span>ดำเนินการต่อด้วย Google</span>
+        </button>
+      </div>
+
+      <div class="figma-auth-footer landing">
+        <span>ยังไม่มีบัญชีใช่ไหม?</span>
+        <button type="button" class="figma-inline-link" data-action="set-auth-mode" data-mode="signup">
+          สมัครใช้งาน
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+export function renderLoginScreen(state) {
+  const screen = state.ui.screen;
+  const rawMode = state.ui.authMode || "login";
+  const viewMode = screen === "emailLogin" && rawMode === "login" ? "email" : rawMode;
+
+  if (viewMode !== "login") {
+    return `
+      <div class="screen-scroll figma-auth-page clean-white" data-node-id="319:2944">
+        <div class="figma-auth-body compact-form">
+          ${renderAuthCardFormContent(state, { desktop: false })}
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="screen-scroll figma-login-landing" data-node-id="319:818">
+      <img class="figma-wave-red-corner" src="./assets/icons/login-red-corner.svg" alt="" />
+      <img class="figma-wave-lavender-bottom" src="./assets/icons/login-lavender-wave.svg" alt="" />
+
+      <div class="figma-landing-stage">
+        <div class="figma-landing-hero">
+          <img
+            class="figma-landing-cherries"
+            src="./assets/icons/login-cherry-illustration.svg"
+            alt="Sharely cherries"
+          />
+          <div class="figma-landing-brand">
+            ${renderSharelyCherryWordmark({ size: "hero" })}
+            <p class="figma-landing-subtitle">Save, organize, and share what you love.</p>
+          </div>
+        </div>
+
+        <div class="figma-landing-bottom">
+          ${renderAuthCardFormContent(state, { desktop: false })}
         </div>
       </div>
     </div>
@@ -216,7 +343,13 @@ export function renderLoginScreen(state) {
 }
 
 export function renderEmailLoginScreen(state) {
-  return renderLoginScreen(state);
+  return `
+    <div class="screen-scroll figma-auth-page clean-white" data-node-id="319:2944">
+      <div class="figma-auth-body compact-form">
+        ${renderAuthCardFormContent({ ...state, ui: { ...state.ui, authMode: state.ui.authMode === "login" ? "email" : state.ui.authMode } }, { desktop: false })}
+      </div>
+    </div>
+  `;
 }
 
 export function renderCheckEmailScreen(state) {
@@ -224,44 +357,39 @@ export function renderCheckEmailScreen(state) {
   const authMode = getAuthMode(state);
   const targetEmail = state.ui.authEmail || state.data.user.email || "name@email.com";
   return `
-    <div class="screen-scroll figma-auth-page">
-      <div class="figma-auth-topbar">
-        <button class="figma-back-btn" data-go-screen="login">
+    <div class="screen-scroll figma-auth-page clean-white" data-node-id="319:2988">
+      <div class="figma-auth-topbar clean">
+        <button type="button" class="figma-back-link" data-action="set-auth-mode" data-mode="email">
           ${icons.back(18)}
-          <span>ย้อนกลับ</span>
+          <span>กลับ</span>
         </button>
-        <span class="figma-auth-top-title">ยืนยันอีเมล</span>
-        <span style="width:68px;"></span>
       </div>
 
-      <div class="figma-auth-body">
-        <div class="figma-verify-hero">
-          <div class="figma-verify-icon">${icons.mail(26)}</div>
-          <h2 class="figma-auth-title">เช็กอีเมลของคุณ</h2>
-          <p class="figma-auth-sub">
-            เราส่งลิงก์ยืนยันตัวตนไปที่ <strong>${escHtml(targetEmail)}</strong><br />
-            กดลิงก์ในอีเมลเพื่อเปิดใช้งานบัญชี
-          </p>
-        </div>
-
-        <div class="figma-steps-card">
-          <div class="figma-step-row"><span>1</span><p>เปิดแอปอีเมลในเครื่องของคุณ</p></div>
-          <div class="figma-step-row"><span>2</span><p>กดปุ่ม "ยืนยันอีเมลของฉัน"</p></div>
-          <div class="figma-step-row"><span>3</span><p>กลับมาที่แอป Sharely เพื่อเข้าใช้งาน</p></div>
-        </div>
+      <div class="figma-auth-body center-verify">
+        <div class="figma-verify-check-circle">${icons.check(28)}</div>
+        <h2 class="figma-auth-title">ตรวจสอบอีเมลของคุณ</h2>
+        <p class="figma-auth-sub" style="text-align:center;">
+          เราได้ส่งลิงก์ยืนยันและลิงก์เข้าสู่ระบบไปที่<br />
+          <span class="figma-verify-email-badge">${escHtml(targetEmail)}</span>
+        </p>
 
         ${
           authMode === "supabase"
-            ? `<button class="figma-primary-btn" data-check-supabase-session="1">
+            ? `<button type="button" class="figma-primary-btn figma-red-pill" data-check-supabase-session="1">
                 ยืนยันแล้ว เข้าใช้งานเลย
               </button>`
-            : `<button class="figma-primary-btn" data-simulate-magic-link="${isInvite ? "invite" : "app"}">
+            : `<button type="button" class="figma-primary-btn figma-red-pill" data-simulate-magic-link="${isInvite ? "invite" : "app"}">
                 ยืนยันแล้ว เข้าใช้งานเลย
               </button>`
         }
 
-        <button class="figma-oauth-btn google" data-submit-email-login="1">
-          <span>ส่งอีเมลอีกครั้ง</span>
+        <div class="figma-auth-footer" style="margin-top:8px;">
+          <span>ไม่ได้รับอีเมลใช่ไหม?</span>
+          <button type="button" class="figma-inline-link" data-submit-email-login="1">ส่งอีกครั้ง</button>
+        </div>
+
+        <button type="button" class="figma-text-link center" data-action="set-auth-mode" data-mode="email">
+          กลับไปหน้าเข้าสู่ระบบ
         </button>
       </div>
     </div>
@@ -308,7 +436,7 @@ export function renderInviteLandingScreen(state) {
         ${
           isInvalidInvite
             ? `<div style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:12px;padding:12px;font-size:13px;font-weight:600;">
-                 ⚠️ ${escHtml(invalidMessage)}
+                 ${escHtml(invalidMessage)}
                </div>`
             : ""
         }
@@ -376,56 +504,54 @@ export function renderWebAuthView(state) {
       ? renderInviteLandingScreen(state)
       : screen === "checkEmail"
         ? renderCheckEmailScreen(state)
-        : renderLoginScreen(state);
+        : renderAuthCardFormContent(state, { desktop: true });
 
   return `
-    <div class="pc-auth-shell" data-node-id="390:572">
-      <section class="pc-auth-hero">
-        <div class="pc-auth-hero-brand">
-          <span class="pc-auth-hero-logo-badge">${icons.bookmarkSolid(22)}</span>
-          <span>Sharely</span>
-        </div>
+    <div class="pc-auth-shell" data-pc-cream="1" data-node-id="390:572">
+      <img class="pc-auth-wave-red" src="./assets/icons/login-red-corner.svg" alt="" />
+      <img class="pc-auth-wave-lavender" src="./assets/icons/login-lavender-wave.svg" alt="" />
 
-        <div class="pc-auth-hero-copy">
-          <h1>เซฟไว้ก่อน<br />ค่อยกลับมาดู</h1>
-          <p>
-            เก็บรวบรวมลิงก์ โพสต์ และไอเดียสำคัญจาก TikTok, Instagram, X และเว็บโปรดไว้ในที่เดียว พร้อมสรุปด้วย AI และแชร์โฟลเดอร์กับเพื่อน
-          </p>
-          <div class="pc-auth-hero-highlights">
-            <span class="pc-auth-hero-pill">${icons.bookmarkSolid(15)}<span>เก็บไว้อ่านทีหลัง</span></span>
-            <span class="pc-auth-hero-pill">${icons.people(15)}<span>แชร์โฟลเดอร์ร่วมกัน</span></span>
-            <span class="pc-auth-hero-pill">${icons.bot(15)}<span>สรุปด้วย AI</span></span>
+      <div class="pc-auth-inner">
+        <section class="pc-auth-brand-stage">
+          <div class="pc-auth-brand-copy">
+            <div class="figma-wordmark-row desktop-hero">
+              <span class="pc-auth-wordmark">Sharely</span>
+              <img class="figma-wordmark-rays pc" src="./assets/icons/login-wordmark-accent.svg" alt="" />
+            </div>
+            <p class="pc-auth-tagline">เซฟลิงก์ที่ชอบ กลับมาดูได้ทุกเมื่อ</p>
           </div>
-        </div>
 
-        <div class="pc-auth-hero-foot">
-          Sharely Web &amp; Mobile · ซิงก์อัตโนมัติบนคลาวด์
-        </div>
-      </section>
+          <img
+            class="pc-auth-cherries-art"
+            src="./assets/icons/login-cherry-illustration.svg"
+            alt="Sharely cherries illustration"
+          />
+        </section>
 
-      <section class="pc-auth-form-col">
-        <div class="pc-auth-card">
-          ${
-            isInvite && preview && screen !== "inviteLanding"
-              ? `
-            <div class="pc-invite-preview-banner">
-              <div class="pc-invite-preview-thumb">
-                ${
-                  invCover
-                    ? `<img src="${escHtml(invCover)}" alt="" />`
-                    : `<span>${escHtml(preview.folder_emoji || "📁")}</span>`
-                }
-              </div>
-              <div style="min-width:0;">
-                <strong style="display:block;font-size:14px;color:var(--ink-primary);">เข้าร่วม "${escHtml(preview.folder_name || "โฟลเดอร์ที่แชร์")}"</strong>
-                <span style="font-size:12.5px;color:var(--ink-secondary);">คำเชิญจาก ${escHtml(preview.inviter_name || "เพื่อนของคุณ")}</span>
-              </div>
-            </div>`
-              : ""
-          }
-          ${rightBody}
-        </div>
-      </section>
+        <section class="pc-auth-form-col">
+          <div class="pc-auth-card">
+            ${
+              isInvite && preview && screen !== "inviteLanding"
+                ? `
+              <div class="pc-invite-preview-banner">
+                <div class="pc-invite-preview-thumb">
+                  ${
+                    invCover
+                      ? `<img src="${escHtml(invCover)}" alt="" />`
+                      : `<span>${escHtml(preview.folder_emoji || "📁")}</span>`
+                  }
+                </div>
+                <div style="min-width:0;">
+                  <strong style="display:block;font-size:14px;color:var(--ink-primary);">เข้าร่วม "${escHtml(preview.folder_name || "โฟลเดอร์ที่แชร์")}"</strong>
+                  <span style="font-size:12.5px;color:var(--ink-secondary);">คำเชิญจาก ${escHtml(preview.inviter_name || "เพื่อนของคุณ")}</span>
+                </div>
+              </div>`
+                : ""
+            }
+            ${rightBody}
+          </div>
+        </section>
+      </div>
     </div>
   `;
 }

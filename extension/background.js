@@ -2,6 +2,8 @@ importScripts("api.js");
 
 const MENU_SAVE_PAGE = "jsi-save-page";
 const MENU_SAVE_LINK = "jsi-save-link";
+const SYNC_ALARM_NAME = "jsi-sync-alarm";
+const WEB_APP_URL = "https://just-save-it-web.onrender.com";
 
 function setActionBadge(text, color) {
   chrome.action.setBadgeBackgroundColor({ color });
@@ -11,20 +13,149 @@ function setActionBadge(text, color) {
   }, 3500);
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+function ensureSyncAlarm() {
+  if (chrome.alarms && typeof chrome.alarms.create === "function") {
+    chrome.alarms.create(SYNC_ALARM_NAME, { periodInMinutes: 5 });
+  }
+}
+
+function setupContextMenus() {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: MENU_SAVE_PAGE,
-      title: "บันทึกหน้านี้ลง Just-Save-It",
+      title: "บันทึกหน้านี้ลง Sharely",
       contexts: ["page", "selection"],
     });
     chrome.contextMenus.create({
       id: MENU_SAVE_LINK,
-      title: "บันทึกลิงก์นี้ลง Just-Save-It",
+      title: "บันทึกลิงก์นี้ลง Sharely",
       contexts: ["link"],
     });
   });
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  setupContextMenus();
+  ensureSyncAlarm();
 });
+
+if (chrome.runtime.onStartup) {
+  chrome.runtime.onStartup.addListener(() => {
+    ensureSyncAlarm();
+  });
+}
+
+async function runBackgroundSync() {
+  const session = await JustSaveItApi.getSessionState();
+  if (!session.accessToken) return;
+
+  try {
+    const flushRes = await JustSaveItApi.flushOfflineQueue();
+    if (flushRes.flushed > 0) {
+      setActionBadge(`+${flushRes.flushed}`, "#16756a");
+    }
+  } catch (_err) {
+    // Offline or temporarily unreachable; keep queued
+  }
+
+  try {
+    const remRes = await JustSaveItApi.fetchReminders();
+    const reminders = Array.isArray(remRes && remRes.reminders) ? remRes.reminders : Array.isArray(remRes) ? remRes : [];
+    const stored = await JustSaveItApi.getStorage([JustSaveItApi.STORAGE_KEYS.NOTIFIED_REMINDERS]);
+    const notifiedMap = stored[JustSaveItApi.STORAGE_KEYS.NOTIFIED_REMINDERS] || {};
+    const nowMs = Date.now();
+    const lookbackMs = 10 * 60 * 1000;
+    let changed = false;
+
+    for (const rem of reminders) {
+      if (!rem || rem.is_enabled === false || rem.is_completed) continue;
+      const dueStr = rem.next_remind_at || rem.remind_at;
+      if (!dueStr) continue;
+      const dueMs = new Date(dueStr).getTime();
+      if (Number.isNaN(dueMs)) continue;
+      if (dueMs <= nowMs + 60000 && dueMs >= nowMs - lookbackMs) {
+        const key = `${rem.id}:${dueStr}`;
+        if (notifiedMap[key]) continue;
+        notifiedMap[key] = nowMs;
+        changed = true;
+        if (chrome.notifications && typeof chrome.notifications.create === "function") {
+          const itemId = rem.item_id || "";
+          chrome.notifications.create(`jsi_rem::${itemId}::${rem.id}`, {
+            type: "basic",
+            iconUrl: "icons/icon128.png",
+            title: "เตือนความจำจาก Sharely",
+            message: rem.title_snapshot || "ถึงเวลาดูลิงก์ที่บันทึกไว้แล้ว",
+            priority: 1,
+          });
+        }
+      }
+    }
+
+    if (changed) {
+      await JustSaveItApi.setStorage({ [JustSaveItApi.STORAGE_KEYS.NOTIFIED_REMINDERS]: notifiedMap });
+    }
+  } catch (_err) {
+    // Ignore transient network errors during background alarm
+  }
+}
+
+if (chrome.alarms && chrome.alarms.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm && alarm.name === SYNC_ALARM_NAME) {
+      runBackgroundSync();
+    }
+  });
+}
+
+if (chrome.notifications && chrome.notifications.onClicked) {
+  chrome.notifications.onClicked.addListener((notifId) => {
+    chrome.notifications.clear(notifId);
+    const parts = String(notifId || "").split("::");
+    const itemId = parts[0] === "jsi_rem" && parts[1] ? parts[1] : "";
+    const targetUrl = itemId ? `${WEB_APP_URL}/?item=${encodeURIComponent(itemId)}` : WEB_APP_URL;
+    chrome.tabs.create({ url: targetUrl });
+  });
+}
+
+async function handleConnectMessage(message) {
+  if (!message || message.type !== "SHARELY_EXTENSION_CONNECT" || !message.accessToken) {
+    return { ok: false, error: "Invalid message" };
+  }
+  if (message.apiBaseUrl) {
+    await JustSaveItApi.setBackendUrl(message.apiBaseUrl);
+  }
+  const user = await JustSaveItApi.loginWithAccessToken(message.accessToken, message.refreshToken || "");
+  setActionBadge("SYNC", "#16756a");
+  return { ok: true, user };
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message && message.type === "SHARELY_EXTENSION_CONNECT") {
+    handleConnectMessage(message)
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message && message.type === "JSI_FLUSH_QUEUE") {
+    JustSaveItApi.flushOfflineQueue()
+      .then((res) => sendResponse({ ok: true, ...res }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  return false;
+});
+
+if (chrome.runtime.onMessageExternal) {
+  chrome.runtime.onMessageExternal.addListener((message, _sender, sendResponse) => {
+    if (message && message.type === "SHARELY_EXTENSION_CONNECT") {
+      handleConnectMessage(message)
+        .then((res) => sendResponse(res))
+        .catch((err) => sendResponse({ ok: false, error: err.message }));
+      return true;
+    }
+    return false;
+  });
+}
 
 async function quickSaveUrl({ url, tabId = null, fallbackTitle = "", selectionText = "" }) {
   if (!JustSaveItApi.isSaveableHttpUrl(url)) {
@@ -34,18 +165,22 @@ async function quickSaveUrl({ url, tabId = null, fallbackTitle = "", selectionTe
 
   const session = await JustSaveItApi.getSessionState();
   if (!session.accessToken) {
-    setActionBadge("AUTH", "#c72d2d");
+    setActionBadge("AUTH", "#ba0e1a");
     try {
       await chrome.action.openPopup();
     } catch (_err) {
-      // openPopup may fail without direct user gesture on some browsers
+      // openPopup may require direct user gesture on some browsers
     }
     return;
   }
 
   let domMeta = null;
   if (tabId) {
-    domMeta = await JustSaveItApi.runDomAssist(tabId);
+    try {
+      domMeta = await JustSaveItApi.runDomAssist(tabId);
+    } catch (_err) {
+      domMeta = null;
+    }
   }
 
   const payload = {
@@ -61,14 +196,19 @@ async function quickSaveUrl({ url, tabId = null, fallbackTitle = "", selectionTe
   };
 
   try {
-    setActionBadge("...", "#07112f");
+    setActionBadge("...", "#1e1e1e");
     await JustSaveItApi.apiRequest("/api/items", {
       method: "POST",
       body: payload,
     });
     setActionBadge("OK", "#16756a");
   } catch (err) {
-    setActionBadge(err.status === 401 ? "AUTH" : "ERR", "#c72d2d");
+    if (!err.status || err.status >= 500 || err.status === 429) {
+      await JustSaveItApi.enqueueOfflineSave(payload, err.message || "network");
+      setActionBadge("QUE", "#6f42c1");
+    } else {
+      setActionBadge(err.status === 401 ? "AUTH" : "ERR", "#ba0e1a");
+    }
   }
 }
 

@@ -47,8 +47,8 @@ export function renderProfileBody(state) {
               <div class="inline-flex-row" style="gap:12px;">
                 <span style="color:var(--ink-secondary);display:inline-flex;">${icons.bell(20)}</span>
                 <div>
-                  <div style="font-size:15px;font-weight:700;">แจ้งเตือนลิงก์</div>
-                  <div class="tiny-hint">${escHtml(pushHint)}</div>
+                  <div style="font-size:15px;font-weight:700;">การแจ้งเตือน</div>
+                  <div class="tiny-hint">${pushPerm === "denied" ? escHtml(pushHint) : "รับการแจ้งเตือนเมื่อถึงเวลาที่ตั้งไว้"}</div>
                 </div>
               </div>
               <button type="button" class="toggle-switch ${user.notificationsEnabled ? "on" : ""}" data-toggle-notif-setting="1" aria-label="เปิดปิดแจ้งเตือน">
@@ -72,7 +72,7 @@ export function renderProfileBody(state) {
                 <span style="color:var(--ink-secondary);display:inline-flex;">${icons.palette(20)}</span>
                 <div>
                   <div style="font-size:15px;font-weight:700;">การแสดงผล</div>
-                  <div class="tiny-hint">ธีมและขนาดตัวอักษร</div>
+                  <div class="tiny-hint">เลือกธีมสี</div>
                 </div>
               </div>
               ${icons.chevronRight(17)}
@@ -92,7 +92,7 @@ export function renderProfileBody(state) {
         </div>
 
         <div>
-          <h2 class="section-title" style="margin-bottom:8px;">อื่น ๆ</h2>
+          <h2 class="section-title" style="margin-bottom:8px;">${isWeb ? "ข้อมูลและความช่วยเหลือ" : "อื่น ๆ"}</h2>
           <div class="settings-card">
             <button type="button" class="settings-row" ${isWeb ? `data-pc-section="help"` : `data-go-screen="help"`}>
               <div class="inline-flex-row" style="gap:12px;">
@@ -139,23 +139,11 @@ export function renderProfileScreen(state) {
 }
 
 export function renderDisplayBody(state) {
-  const { theme, textSize } = state.data.appearance;
+  const { theme } = state.data.appearance;
   const activeThemeMeta = THEME_OPTIONS.find((t) => t.id === theme) || THEME_OPTIONS[0];
   const doneAttr = state.ui.viewportMode === "web" ? `data-pc-section="profile"` : `data-nav="profile"`;
 
   return `
-        <div>
-          <h2 class="section-title" style="margin-bottom:10px;">ขนาดตัวอักษร</h2>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-            <button type="button" class="btn-outline-pill" style="border-color:${textSize === "normal" ? "var(--theme-accent)" : "var(--border-input)"};background:${textSize === "normal" ? "var(--theme-soft)" : "#fff"};" data-set-text-size="normal">
-              ปกติ
-            </button>
-            <button type="button" class="btn-outline-pill" style="border-color:${textSize === "large" ? "var(--theme-accent)" : "var(--border-input)"};background:${textSize === "large" ? "var(--theme-soft)" : "#fff"};" data-set-text-size="large">
-              ใหญ่
-            </button>
-          </div>
-        </div>
-
         <div style="display:flex;flex-direction:column;gap:10px;">
           <h2 class="section-title" style="margin-bottom:2px;">ธีมสี</h2>
           ${THEME_OPTIONS.map(
@@ -242,9 +230,68 @@ export function renderSecurityBody(state) {
 
         <div style="display:flex;flex-direction:column;gap:8px;">
           <strong style="font-size:15px;">เชื่อมต่อ Chrome Extension</strong>
-          <p class="tiny-hint" style="margin:0;">คัดลอก Access Token ปัจจุบันไปวางใน Extension (รองรับบัญชี Google OAuth) — ห้ามส่งต่อ Token นี้ให้ผู้อื่น</p>
-          <button type="button" class="btn-outline-pill" style="width:100%;" data-copy-extension-token="1">
-            คัดลอก Extension Token
+          <p class="tiny-hint" style="margin:0;">ส่ง Session ปัจจุบันให้ Extension อัตโนมัติ หรือคัดลอก Token ไปวาง (รองรับ Google OAuth) — ห้ามส่งต่อ Token นี้ให้ผู้อื่น</p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <button type="button" class="btn-accent-pill" data-action="connect-extension">
+              เชื่อมต่ออัตโนมัติ
+            </button>
+            <button type="button" class="btn-outline-pill" data-copy-extension-token="1">
+              คัดลอก Token
+            </button>
+          </div>
+        </div>
+
+        <hr style="border:none;border-top:1px solid var(--border-divider);width:100%;" />
+
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <strong style="font-size:15px;">MCP API Tokens</strong>
+            <button type="button" class="chip-pill" data-action="refresh-mcp-tokens">รีเฟรช</button>
+          </div>
+          <p class="tiny-hint" style="margin:0;">สร้าง Token สำหรับเชื่อมต่อ Claude Desktop, Cursor หรือ AI Agent ผ่าน <code>/mcp</code></p>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input class="field-input" type="text" placeholder="ชื่อ Client เช่น Claude Desktop" id="mcpTokenNameInput" style="flex:1;" />
+            <button type="button" class="btn-outline-pill" data-action="create-mcp-token">สร้าง Token</button>
+          </div>
+          ${
+            state.ui.latestMcpRawToken
+              ? `<div style="background:var(--bg-muted);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;">
+                   <span class="tiny-hint" style="font-weight:700;color:var(--theme-accent-text);">Token ใหม่ (แสดงครั้งเดียว กรุณาคัดลอกเก็บไว้):</span>
+                   <code style="font-size:12px;word-break:break-all;background:var(--bg-surface);padding:6px 8px;border-radius:8px;border:1px solid var(--border-light);">${escHtml(state.ui.latestMcpRawToken)}</code>
+                   <button type="button" class="btn-outline-pill" style="width:100%;" data-action="copy-mcp-raw-token">คัดลอก MCP Token</button>
+                 </div>`
+              : ""
+          }
+          <div class="settings-card">
+            ${
+              (state.ui.mcpTokens || []).length === 0
+                ? `<div class="settings-row"><span class="tiny-hint">ยังไม่มี MCP Token ที่ใช้งานอยู่</span></div>`
+                : (state.ui.mcpTokens || [])
+                    .map(
+                      (tok) => `
+                <div class="settings-row">
+                  <div class="settings-row-left" style="flex-direction:column;align-items:flex-start;gap:2px;">
+                    <span class="settings-row-label" style="font-size:13.5px;font-weight:600;">${escHtml(tok.name || "MCP Client")}</span>
+                    <span class="tiny-hint">${escHtml(tok.token_prefix || "jsi_live_...")}</span>
+                  </div>
+                  <button type="button" class="chip-pill" style="color:var(--theme-accent-text);border-color:var(--theme-accent);" data-revoke-mcp-token="${escHtml(tok.id)}">เพิกถอน</button>
+                </div>`
+                    )
+                    .join("")
+            }
+          </div>
+        </div>
+
+        <hr style="border:none;border-top:1px solid var(--border-divider);width:100%;" />
+
+        <div class="settings-card">
+          <button type="button" class="settings-row" data-action="open-pdpa-policy">
+            <span>นโยบายความเป็นส่วนตัว (PDPA)</span>
+            ${icons.chevronRight(16)}
+          </button>
+          <button type="button" class="settings-row" style="color:var(--theme-accent-text);font-weight:700;" data-action="open-delete-account">
+            <span>ลบบัญชีผู้ใช้และข้อมูลทั้งหมด</span>
+            ${icons.close(16)}
           </button>
         </div>
   `;
@@ -290,6 +337,13 @@ export function renderHelpBody() {
         </div>
 
         <button type="button" class="btn-accent-pill full48" data-submit-support="1">ส่งรายงาน</button>
+
+        <div class="settings-card">
+          <button type="button" class="settings-row" data-action="open-pdpa-policy">
+            <span>นโยบายความเป็นส่วนตัวและ PDPA</span>
+            ${icons.chevronRight(16)}
+          </button>
+        </div>
   `;
 }
 
@@ -364,11 +418,49 @@ export function renderProfileSheets(state) {
           </label>
           <div>
             <strong style="font-size:15px;">จำนวนที่จะส่งออก (${matchingLinks.length} รายการ)</strong>
-            <p class="tiny-hint" style="margin:4px 0 0;">ไฟล์ CSV รวมชื่อโพสต์ URL โฟลเดอร์ แท็ก และโน้ต</p>
+            <p class="tiny-hint" style="margin:4px 0 0;">ไฟล์ CSV รวมชื่อโพสต์ URL โฟลเดอร์ แท็ก และโน้ต · หรือดาวน์โหลด JSON ครบทุกข้อมูลตามสิทธิ์ PDPA</p>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
             <button class="btn-outline-pill" data-close-sheet="1">ยกเลิก</button>
             <button class="btn-accent-pill lg" data-download-csv="1">ส่งออก CSV</button>
+          </div>
+          <button type="button" class="btn-outline-pill" style="width:100%;" data-download-json="1">ส่งออกเป็น JSON (ข้อมูลครบถ้วน)</button>
+        </div>
+      </div>
+    `;
+  }
+
+  if (sheet.type === "pdpaPolicy") {
+    return `
+      <div class="modal-backdrop" data-close-sheet="1">
+        <div class="bottom-sheet" style="max-height:82vh;overflow-y:auto;">
+          <h3 style="margin:0;font-size:20px;">นโยบายความเป็นส่วนตัว (PDPA)</h3>
+          <p class="tiny-hint" style="margin:6px 0 0;line-height:1.6;">
+            Sharely / Just Save It เก็บเฉพาะลิงก์ โน้ต แท็ก การตั้งเตือน และข้อมูลโปรไฟล์ที่คุณบันทึกไว้เท่านั้น โดยแยกสิทธิ์การเข้าถึงตาม User ID ผ่าน Row-Level Security (RLS)
+          </p>
+          <ul style="margin:8px 0;padding-left:18px;font-size:13px;color:var(--ink-secondary);line-height:1.6;">
+            <li>BYOK AI Keys ถูกใช้ส่งต่อจากเบราว์เซอร์เพื่อสรุปเนื้อหาตามคำขอของคุณโดยตรง</li>
+            <li>คุณสามารถส่งออกข้อมูลทั้งหมดเป็น CSV หรือ JSON ได้ตลอดเวลาจากเมนูส่งออกข้อมูล</li>
+            <li>คุณสามารถลบบัญชีและข้อมูลทั้งหมดอย่างถาวรได้ในหน้าบัญชีและความปลอดภัย</li>
+          </ul>
+          <button type="button" class="btn-accent-pill full48" data-close-sheet="1">รับทราบ</button>
+        </div>
+      </div>
+    `;
+  }
+
+  if (sheet.type === "deleteAccount") {
+    return `
+      <div class="modal-backdrop center" data-close-sheet="1">
+        <div class="center-dialog">
+          <h3 style="margin:0;font-size:20px;color:var(--theme-accent-text);">ลบบัญชีผู้ใช้ถาวร?</h3>
+          <p style="margin:0;font-size:13.5px;color:var(--ink-secondary);line-height:1.5;">
+            ข้อมูลลิงก์ โฟลเดอร์ แท็ก การเตือน และ MCP Token ทั้งหมดของคุณจะถูกลบถาวรและกู้คืนไม่ได้ พิมพ์ <strong>DELETE</strong> เพื่อยืนยัน
+          </p>
+          <input class="field-input" type="text" placeholder="พิมพ์ DELETE" id="deleteAccountConfirmInput" autocomplete="off" />
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;">
+            <button type="button" class="btn-outline-pill" data-close-sheet="1">ยกเลิก</button>
+            <button type="button" class="btn-accent-pill lg" data-action="confirm-delete-account">ยืนยันลบบัญชี</button>
           </div>
         </div>
       </div>

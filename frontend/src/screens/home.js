@@ -4,7 +4,7 @@
  */
 import { icons, escHtml, safeImgUrl, resolveMediaThumbUrl } from "../components/icons.js";
 import { filterLinks, getFolderById, getFolderCount } from "../state/store.js";
-import { renderBottomNav, renderLinkCard } from "./common.js";
+import { renderBottomNav, renderLinkCard, renderAdvancedFilterToggle, renderAdvancedFilterDrawer } from "./common.js";
 
 export function renderNotificationsFullScreen(state) {
   const notifications = state.data.notifications || [];
@@ -113,11 +113,21 @@ export function renderHomeScreen(state) {
   }
 
   const { folders, links, notifications } = state.data;
-  const { homeSearch, homeFilter, showAllHomeLinks } = state.ui;
+  const {
+    homeSearch,
+    homeFilter,
+    showAllHomeLinks,
+    homePlatformFilter = "all",
+    homeContentTypeFilter = "all",
+  } = state.ui;
 
-  const filteredLinks = filterLinks(links, homeSearch, homeFilter);
+  const filteredLinks = filterLinks(links, homeSearch, homeFilter, {
+    platform: homePlatformFilter,
+    contentType: homeContentTypeFilter,
+  });
+  const hasAdvancedFilter = homePlatformFilter !== "all" || homeContentTypeFilter !== "all";
   const visibleLinks =
-    !showAllHomeLinks && !homeSearch && homeFilter === "all"
+    !showAllHomeLinks && !homeSearch && homeFilter === "all" && !hasAdvancedFilter
       ? filteredLinks.slice(0, 2)
       : filteredLinks;
   const unreadNotifications = notifications.filter((n) => n.unread).length;
@@ -174,10 +184,12 @@ export function renderHomeScreen(state) {
             </button>`
             )
             .join("")}
+          ${renderAdvancedFilterToggle(state, "home", "figma-filter-pill")}
         </div>
+        ${renderAdvancedFilterDrawer(state, "home")}
 
         ${
-          homeFilter === "all" && !homeSearch
+          homeFilter === "all" && !homeSearch && !hasAdvancedFilter
             ? `
           <div class="figma-resume-banner">
             <div class="figma-resume-copy">

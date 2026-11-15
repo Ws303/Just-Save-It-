@@ -45,6 +45,9 @@ self.addEventListener("notificationclick", (event) => {
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windowClients) => {
       for (const client of windowClients) {
         if (client.url && client.url.startsWith(self.location.origin) && "focus" in client) {
+          if (itemId && "postMessage" in client) {
+            client.postMessage({ type: "OPEN_ITEM", itemId });
+          }
           return client.focus();
         }
       }

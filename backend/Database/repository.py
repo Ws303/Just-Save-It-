@@ -991,6 +991,26 @@ def register_device_for_user(db: Any, user_id: str, req: DeviceRegisterRequest) 
         if isinstance(req.web_push_sub, dict)
         else ""
     )
+    if req.platform == "web" or web_endpoint:
+        target_endpoint = web_endpoint or (req.push_token or "").strip()
+        if not target_endpoint and req.delivery_mode == "remote":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="web_push_sub.endpoint is required for web remote push delivery.",
+            )
+        if target_endpoint:
+            from Reminders.push_adapters import validate_web_push_endpoint
+
+            try:
+                safe_endpoint = validate_web_push_endpoint(target_endpoint)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid web push endpoint: {exc}",
+                ) from exc
+            if isinstance(req.web_push_sub, dict):
+                req.web_push_sub["endpoint"] = safe_endpoint
+            web_endpoint = safe_endpoint
     effective_push_token = (req.push_token or "").strip() or (web_endpoint or None)
 
     if effective_push_token:

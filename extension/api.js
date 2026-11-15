@@ -17,7 +17,10 @@
     ACCESS_TOKEN: "jsi_access_token",
     REFRESH_TOKEN: "jsi_refresh_token",
     USER: "jsi_user",
+    OFFLINE_QUEUE: "jsi_offline_queue",
+    NOTIFIED_REMINDERS: "jsi_notified_reminders",
   };
+  const memoryStorage = {};
 
   function isLocalBackendUrl(rawUrl) {
     try {
@@ -35,12 +38,12 @@
     }
     const withScheme = /^https?:\/\//i.test(trimmed)
       ? trimmed
-      : /^(localhost|127\.0\.0\.1)(:|\/|$)/i.test(trimmed)
+      : /^(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(trimmed)
         ? `http://${trimmed}`
         : `https://${trimmed}`;
     try {
       const parsed = new URL(withScheme);
-      const isLocal = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+      const isLocal = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]";
       if (parsed.protocol === "https:" || (parsed.protocol === "http:" && isLocal)) {
         return parsed.origin;
       }
@@ -51,21 +54,38 @@
   }
 
   function getStorage(keys) {
-    return new Promise((resolve) => {
-      chrome.storage.local.get(keys, (result) => resolve(result || {}));
-    });
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      return new Promise((resolve) => {
+        chrome.storage.local.get(keys, (result) => resolve(result || {}));
+      });
+    }
+    const keyList = Array.isArray(keys) ? keys : [keys];
+    const out = {};
+    for (const k of keyList) {
+      if (k in memoryStorage) out[k] = memoryStorage[k];
+    }
+    return Promise.resolve(out);
   }
 
   function setStorage(values) {
-    return new Promise((resolve) => {
-      chrome.storage.local.set(values, () => resolve());
-    });
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      return new Promise((resolve) => {
+        chrome.storage.local.set(values, () => resolve());
+      });
+    }
+    Object.assign(memoryStorage, values);
+    return Promise.resolve();
   }
 
   function removeStorage(keys) {
-    return new Promise((resolve) => {
-      chrome.storage.local.remove(keys, () => resolve());
-    });
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      return new Promise((resolve) => {
+        chrome.storage.local.remove(keys, () => resolve());
+      });
+    }
+    const keyList = Array.isArray(keys) ? keys : [keys];
+    for (const k of keyList) delete memoryStorage[k];
+    return Promise.resolve();
   }
 
   async function getSessionState() {
@@ -245,6 +265,77 @@
     return typeof url === "string" && /^https?:\/\//i.test(url.trim());
   }
 
+  async function getOfflineQueue() {
+    const res = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE]);
+    return Array.isArray(res[STORAGE_KEYS.OFFLINE_QUEUE]) ? res[STORAGE_KEYS.OFFLINE_QUEUE] : [];
+  }
+
+  async function enqueueOfflineSave(payload, reason = "offline") {
+    if (!payload || !isSaveableHttpUrl(payload.url)) return await getOfflineQueue();
+    const current = await getOfflineQueue();
+    const deduped = current.filter((entry) => entry?.payload?.url !== payload.url);
+    const next = [
+      {
+        id: `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        payload,
+        reason,
+        queued_at: new Date().toISOString(),
+      },
+      ...deduped,
+    ].slice(0, 50);
+    await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: next });
+    return next;
+  }
+
+  async function flushOfflineQueue(saveFn) {
+    const queue = await getOfflineQueue();
+    if (!queue.length) return { flushed: 0, remaining: 0, failed: 0 };
+    const sender =
+      typeof saveFn === "function"
+        ? saveFn
+        : (itemPayload) => apiRequest("/api/items", { method: "POST", body: itemPayload });
+
+    let flushed = 0;
+    let failed = 0;
+    const remaining = [];
+    for (let i = 0; i < queue.length; i += 1) {
+      const entry = queue[i];
+      try {
+        await sender(entry.payload);
+        flushed += 1;
+      } catch (err) {
+        if (err && typeof err.status === "number" && err.status >= 400 && err.status < 500 && err.status !== 401 && err.status !== 429) {
+          failed += 1; // Permanent client validation error: drop instead of infinite retry
+        } else {
+          remaining.push(...queue.slice(i));
+          break;
+        }
+      }
+    }
+    await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: remaining });
+    return { flushed, remaining: remaining.length, failed };
+  }
+
+  async function fetchRecentItems({ search = "", limit = 20 } = {}) {
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    if (String(search || "").trim()) {
+      params.set("q", String(search).trim());
+    }
+    return apiRequest(`/api/items?${params.toString()}`);
+  }
+
+  async function updateItemStatus(itemId, status) {
+    return apiRequest(`/api/items/${encodeURIComponent(itemId)}`, {
+      method: "PATCH",
+      body: { status },
+    });
+  }
+
+  async function fetchReminders() {
+    return apiRequest("/api/reminders");
+  }
+
   const exportedApi = {
     CLOUD_BACKEND_URL,
     LOCAL_BACKEND_URL,
@@ -257,12 +348,21 @@
     saveAuthSession,
     clearAuthSession,
     setBackendUrl,
+    getStorage,
+    setStorage,
+    removeStorage,
     apiRequest,
     checkHealth,
     loginWithAccessToken,
     formatAiSummaryResponse,
     runDomAssist,
     isSaveableHttpUrl,
+    getOfflineQueue,
+    enqueueOfflineSave,
+    flushOfflineQueue,
+    fetchRecentItems,
+    updateItemStatus,
+    fetchReminders,
   };
 
   global.JustSaveItApi = exportedApi;

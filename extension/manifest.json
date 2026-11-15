@@ -8,15 +8,30 @@
     "tabs",
     "storage",
     "contextMenus",
-    "scripting"
+    "scripting",
+    "alarms",
+    "notifications"
   ],
   "host_permissions": [
     "https://just-save-it-api.onrender.com/*",
     "https://just-save-it-web.onrender.com/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*",
-    "https://*/*"
+    "https://pnqjamwhgzqzvpiytcln.supabase.co/*",
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*",
+    "http://[::1]:*/*"
   ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "externally_connectable": {
+    "matches": [
+      "https://just-save-it-web.onrender.com/*",
+      "http://localhost:4173/*",
+      "http://127.0.0.1:4173/*",
+      "http://localhost:3000/*"
+    ]
+  },
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",

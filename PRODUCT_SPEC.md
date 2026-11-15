@@ -556,7 +556,7 @@ create policy items_delete on public.items for delete using (owner_id = (select 
 | `POST /api/preview` | Client (ตอนพิมพ์/วางลิงก์ ก่อนกดเซฟ) | Preview ทันทีแบบอ่านอย่างเดียว (rate-limit 30/นาที/user, ไม่เขียน Storage) | ✅ สร้างแล้ว |
 | `POST /api/items/{id}/refresh-preview` | Client (ปุ่มรีเฟรชพรีวิว) | บังคับดึงพรีวิวใหม่เมื่อเว็บต้นทางเปลี่ยนหรือเคยพัง (rate-limit 10/ชม./user) | ✅ สร้างแล้ว |
 | `POST /api/ai/summarize` | Client (กดปุ่ม **"✨ สรุปด้วย AI"**) | เช็ก DB/`url_hash` ก่อน ถ้าไม่มีค่อยสกัดบทความ + เรียก AI 3-Tier แล้วเซฟถาวร | ✅ สร้างแล้ว |
-| `POST /cron/reminders` | pg_cron (ทุก 1 นาที) | เรียก `claim_due_reminders()` ยิง push (ครั้งเดียว → mark `sent`; เตือนซ้ำทุกๆ $N$ วัน → เลื่อน `remind_at` ไปรอบถัดไปอัตโนมัติ) | ✅ สร้างแล้ว |
+| `POST /cron/reminders` | pg_cron (ทุก 5 นาที `*/5 * * * *`) | เรียก `claim_due_reminders()` ยิง push (ครั้งเดียว → mark `sent`; เตือนซ้ำทุกๆ $N$ วัน → เลื่อน `remind_at` ไปรอบถัดไปอัตโนมัติ) | ✅ สร้างแล้ว |
 | `POST /cron/retry-enrich` | pg_cron (ทุก 10 นาที) | retry unfurl ที่ `failed` และ `enrich_attempts < 3` | ✅ สร้างแล้ว |
 | `/mcp` | External AI (Claude/Cursor) | Remote MCP (SSE & Streamable HTTP + SHA-256 PAT `jsi_live_xxx`, 13 Tools) | ✅ สร้างแล้ว |
 
@@ -620,7 +620,7 @@ create policy items_delete on public.items for delete using (owner_id = (select 
 
 2. **โหมดส่งแจ้งเตือนแบบคู่ขนาน (Dual Delivery):**
    - **โหมด A — Remote Push (`delivery_mode = 'remote'`):** ใช้กับ **Android (FCM ฟรีตอนเทส APK/Dev Build)**, **Web Push (VAPID ฟรี)**, และ **iOS (Production หลังจ่าย Apple Developer $99/ปี + ใส่ APNs `.p8` Key)**
-     - `pg_cron` เรียก `POST /cron/reminders` ทุก 1 นาที → เรียก `public.claim_due_reminders()` (`FOR UPDATE SKIP LOCKED`)
+     - `pg_cron` เรียก `POST /cron/reminders` ทุก 5 นาที (`*/5 * * * *`) → เรียก `public.claim_due_reminders()` (`FOR UPDATE SKIP LOCKED`)
        - ถ้า `schedule_type = 'once'` → อัปเดต `status = 'sent'`, `sent_at = now()` แล้วส่ง Push
        - ถ้า `schedule_type = 'every_n_days'` → **คง `status = 'pending'`** และคำนวณ `remind_at` ใหม่เป็น `(local_date + repeat_every_days) @ remind_time` ใน `timezone` ของผู้ใช้ (วนจน `> now()` กันยิงรัวหากเครื่อง/เซิร์ฟเวอร์หยุดพัก) แล้วส่ง Push รอบนี้
    - **โหมด B — iOS Pre-APNs Local Sync (`delivery_mode = 'local_sync'`):** ใช้กับ **iOS ช่วงพัฒนา/ทดสอบก่อนจ่าย $99/ปี** (รันได้บน Simulator, Expo Go, และ iPhone จริงผ่าน Free Apple ID โดยไม่ต้องเปิด Push Entitlement / APNs Key)
@@ -683,12 +683,11 @@ Just-Save-It-/
 │   ├── Login/                   # ✅ สร้างแล้ว (auth_dep JWT/Dev bypass, router /me + DELETE /me + tokens)
 │   ├── Reminders/               # ✅ สร้างแล้ว (schemas, unroller <=64 DST-safe, push_adapters Expo/FCM/WebPush, service, router)
 │   └── tests/                   # ✅ test_ai_module.py, test_db_and_auth.py, test_unfurl_engine.py, test_reminders_engine.py
-├── supabase/                    # ✅ สร้างแล้ว (README.md + migrations 0001..0006)
-│   └── migrations/              # ✅ 0001..0006_storage_realtime_and_cron.sql (Storage, Realtime, pg_cron, RPCs, beta_feedback)
-├── frontend/
-│   └── index.html               # ✅ Wireframe ต้นแบบ 6 หน้าจอ (มีปุ่ม Play "เล่นพรีวิว" แล้ว)
-├── apps/                        # ⏳ แผน Monorepo ระยะถัดไป (Next.js web, Expo mobile, WXT extension)
-├── packages/                    # ⏳ shared types, zod, url-normalize, ui-tokens
+├── supabase/                    # ✅ สร้างแล้ว (README.md + migrations 0001..0009)
+│   └── migrations/              # ✅ 0001..0009 (Storage, Realtime, pg_cron 5m, RPCs, beta_feedback, private schema grants/revoke)
+├── frontend/                    # ✅ Web App & PWA (1:1 Figma Mobile + Desktop, Realtime, Web Push, Share Target)
+├── extension/                   # ✅ Chrome Extension MV3 (Popup E1..E10, Recent/Search, Offline Queue, Alarms, Web Connect)
+├── mobile/                      # ✅ Expo Router React Native (Android Share Intent + Push, iOS Local Sync ≤64)
 ├── PRODUCT_SPEC.md              # เอกสารนี้ (v1.2)
 ├── AI_IMPLEMENTATION_PLAN.md    # บรีฟ & Checklist ของพาร์ท AI (A1–A8, B0–B13)
 └── TECH_STACK.md

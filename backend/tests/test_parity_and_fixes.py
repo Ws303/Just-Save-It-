@@ -339,3 +339,57 @@ def test_parse_cors_settings_supports_extension_regex_and_unhandled_500_keeps_co
         assert "access-control-allow-origin" in {k.lower() for k in resp.headers.keys()}
     finally:
         app.dependency_overrides.pop(get_current_user_id, None)
+
+
+def test_register_device_validates_web_push_endpoint_ssrf_and_accepts_valid_fcm(isolated_db, monkeypatch):
+    from Login.auth_dep import get_current_user_id
+
+    app.dependency_overrides[get_current_user_id] = lambda: "11111111-1111-4111-8111-111111111111"
+    try:
+        client = TestClient(app)
+        # 1. Non-HTTPS metadata IP must be rejected with 422 before DB insert
+        bad_meta = client.post(
+            "/api/devices",
+            json={
+                "platform": "web",
+                "delivery_mode": "remote",
+                "web_push_sub": {
+                    "endpoint": "http://169.254.169.254/latest/meta-data",
+                    "keys": {"p256dh": "k", "auth": "a"},
+                },
+            },
+        )
+        assert bad_meta.status_code == 422
+
+        # 2. Private IP or localhost HTTPS must be rejected with 422
+        bad_local = client.post(
+            "/api/devices",
+            json={
+                "platform": "web",
+                "delivery_mode": "remote",
+                "web_push_sub": {
+                    "endpoint": "https://127.0.0.1/push",
+                    "keys": {"p256dh": "k", "auth": "a"},
+                },
+            },
+        )
+        assert bad_local.status_code == 422
+        assert len(isolated_db.tables["devices"]) == 0
+
+        # 3. Valid Web Push FCM endpoint passes validation (mock getaddrinfo to keep test hermetic)
+        with patch("Ai.content_extractor.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("142.250.190.10", 443))]):
+            good = client.post(
+                "/api/devices",
+                json={
+                    "platform": "web",
+                    "delivery_mode": "remote",
+                    "web_push_sub": {
+                        "endpoint": "https://fcm.googleapis.com/fcm/send/abc123",
+                        "keys": {"p256dh": "k", "auth": "a"},
+                    },
+                },
+            )
+        assert good.status_code == 201
+        assert good.json()["push_token"] == "https://fcm.googleapis.com/fcm/send/abc123"
+    finally:
+        app.dependency_overrides.pop(get_current_user_id, None)

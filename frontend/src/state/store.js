@@ -450,6 +450,13 @@ export const store = {
       authError: null,
       toast: null,
       videoPlaying: false,
+      homePlatformFilter: "all",
+      homeContentTypeFilter: "all",
+      folderPlatformFilter: "all",
+      folderContentTypeFilter: "all",
+      filterDrawerOpen: false,
+      mcpTokens: [],
+      latestMcpRawToken: "",
     },
     api: {
       mode: "live", // "live" | "mock"
@@ -924,12 +931,33 @@ export function getFolderCount(folder) {
   return Math.max(actual, folder.baseExternalCount || actual);
 }
 
-export function filterLinks(links, search, filterMode) {
+export function filterLinks(links, search, filterMode, { platform = "all", contentType = "all" } = {}) {
   const q = (search || "").trim().toLowerCase();
+  const normPlatform = String(platform || "all").trim().toLowerCase();
+  const normType = String(contentType || "all").trim().toLowerCase();
   return links.filter((item) => {
     if (filterMode === "unread" && item.status !== "unread") return false;
     if (filterMode === "read" && item.status !== "read") return false;
     if (filterMode === "favorite" && !item.favorite) return false;
+    if (["inbox", "todo", "done", "archived"].includes(filterMode)) {
+      const wf = String(item.workflowStatus || (item.status === "read" ? "done" : "inbox")).toLowerCase();
+      if (wf !== filterMode) return false;
+    }
+    if (normPlatform && normPlatform !== "all") {
+      const itemPlat = String(item.platform || "").trim().toLowerCase();
+      if (normPlatform === "website" || normPlatform === "web") {
+        const major = ["youtube", "tiktok", "instagram", "facebook", "x", "twitter", "reddit"];
+        if (major.includes(itemPlat)) return false;
+      } else if (normPlatform === "x") {
+        if (itemPlat !== "x" && itemPlat !== "twitter") return false;
+      } else if (itemPlat !== normPlatform) {
+        return false;
+      }
+    }
+    if (normType && normType !== "all") {
+      const itemType = String(item.contentType || item.content_type || "article").trim().toLowerCase();
+      if (itemType !== normType) return false;
+    }
     if (!q) return true;
     const folder = getFolderById(item.folderId);
     const haystack = [

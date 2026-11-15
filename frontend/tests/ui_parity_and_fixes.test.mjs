@@ -306,6 +306,17 @@ test("Extension API defaults to Render Cloud, supports localhost preset, fixes s
   assert.ok(!/value="reading"/.test(popupHtml), "Extension statusSelect must not use invalid 'reading' status");
   assert.match(popupHtml, /value="todo"/);
   assert.match(popupHtml, /id="tokenLoginInput"/);
+  assert.match(popupHtml, /id="webConnectBtn"/);
+  assert.match(popupHtml, /id="tabRecentBtn"/);
+
+  assert.equal(extApi.isSaveableHttpUrl("https://example.com"), true);
+  assert.equal(extApi.isSaveableHttpUrl("chrome://extensions"), false);
+  await extApi.enqueueOfflineSave({ url: "https://example.com/offline-1", title: "Offline Item" });
+  const q1 = await extApi.getOfflineQueue();
+  assert.equal(q1.length, 1);
+  const flushed = await extApi.flushOfflineQueue(async () => ({ id: "ok" }));
+  assert.equal(flushed.flushed, 1);
+  assert.equal(flushed.remaining, 0);
 });
 
 test("Web Push helper decodes VAPID key, deactivates safely, and Profile renders Extension token copy", async () => {
@@ -332,6 +343,33 @@ test("Web Push helper decodes VAPID key, deactivates safely, and Profile renders
 
   const secHtml = renderSecurityBody(store.state);
   assert.match(secHtml, /data-copy-extension-token="1"/);
+  assert.match(secHtml, /data-action="connect-extension"/);
+  assert.match(secHtml, /data-action="create-mcp-token"/);
+  assert.match(secHtml, /data-action="open-delete-account"/);
   const profHtml = renderProfileBody(store.state);
   assert.match(profHtml, /data-toggle-notif-setting="1"/);
+});
+
+test("Phase C: 4-state workflow status mapping, platform/contentType filtering, and postMenu actions", async () => {
+  const { mapUiStatusToBackend, normalizeWorkflowStatus, inferContentType } = await import("../src/services/apiClient.js");
+  const { filterLinks } = await import("../src/state/store.js");
+  const { renderPostMenuAndDialog } = await import("../src/screens/common.js");
+
+  assert.equal(mapUiStatusToBackend("todo"), "todo");
+  assert.equal(mapUiStatusToBackend("archived"), "archived");
+  assert.equal(normalizeWorkflowStatus("todo"), "todo");
+  assert.equal(inferContentType({ platform: "youtube", embed_type: "youtube" }), "video");
+  assert.equal(inferContentType({ platform: "instagram" }), "social");
+
+  const sampleLinks = [
+    { id: "1", title: "YT Video", platform: "YouTube", contentType: "video", status: "unread", workflowStatus: "todo", favorite: false, tags: [] },
+    { id: "2", title: "Blog Post", platform: "Website", contentType: "article", status: "read", workflowStatus: "archived", favorite: false, tags: [] },
+  ];
+  assert.equal(filterLinks(sampleLinks, "", "all", { platform: "youtube" }).length, 1);
+  assert.equal(filterLinks(sampleLinks, "", "all", { contentType: "article" }).length, 1);
+  assert.equal(filterLinks(sampleLinks, "", "todo").length, 1);
+
+  const menuHtml = renderPostMenuAndDialog({ activeSheet: { type: "postMenu", linkId: "1" } }, sampleLinks);
+  assert.match(menuHtml, /data-refresh-preview-sheet="1"/);
+  assert.match(menuHtml, /data-set-workflow-status="todo"/);
 });

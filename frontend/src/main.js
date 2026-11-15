@@ -23,6 +23,7 @@ import {
 } from "./services/routeGuard.js";
 import { supabaseAuth } from "./services/supabaseAuth.js";
 import { enableWebPush, disableWebPush } from "./services/pushClient.js";
+import { startRealtimeSync, stopRealtimeSync, refreshRealtimeAccessToken } from "./services/realtimeClient.js";
 import { icons, escHtml } from "./components/icons.js";
 import { renderPostMenuAndDialog } from "./screens/common.js";
 import {
@@ -583,6 +584,9 @@ const PASSIVE_DATASET_KEYS = new Set([
   "authCtx",
   "shareApp",
   "forceRefresh",
+  "itemId",
+  "platform",
+  "contentType",
   "fallback",
   "emoji",
   "tag",
@@ -637,6 +641,90 @@ appEl.addEventListener("click", async (e) => {
     if (act === "toggle-home-all-links") {
       ui.showAllHomeLinks = !ui.showAllHomeLinks;
       store.emit();
+      return;
+    }
+    if (act === "toggle-filter-drawer") {
+      ui.filterDrawerOpen = !ui.filterDrawerOpen;
+      store.emit();
+      return;
+    }
+    if (act === "create-mcp-token") {
+      const nameInput = document.getElementById("mcpTokenNameInput");
+      const tokenName = nameInput?.value?.trim() || "MCP Client";
+      const res = await apiClient.createMcpToken(tokenName);
+      if (res?.ok) {
+        if (nameInput) nameInput.value = "";
+        store.showToast(`สร้าง MCP Token "${tokenName}" แล้ว`);
+      } else {
+        store.showToast(res?.error || "สร้าง MCP Token ไม่สำเร็จ");
+      }
+      return;
+    }
+    if (act === "refresh-mcp-tokens") {
+      await apiClient.listMcpTokens();
+      store.showToast("รีเฟรชรายการ MCP Token แล้ว");
+      return;
+    }
+    if (act === "copy-mcp-raw-token") {
+      const raw = (ui.latestMcpRawToken || store.state.api.mcpApiToken || "").trim();
+      if (!raw) {
+        store.showToast("ยังไม่มี Token ให้คัดลอก");
+        return;
+      }
+      const copied = await copyText(raw);
+      store.showToast(copied ? "คัดลอก MCP Token แล้ว" : "คัดลอกอัตโนมัติไม่สำเร็จ");
+      return;
+    }
+    if (act === "connect-extension") {
+      const token = (store.state.api.bearerToken || "").trim();
+      if (!token) {
+        store.showToast("ยังไม่มี Live Access Token (โปรดเข้าสู่ระบบก่อน)");
+        return;
+      }
+      if (typeof window !== "undefined") {
+        window.postMessage(
+          {
+            type: "SHARELY_EXTENSION_CONNECT",
+            source: "sharely-web",
+            accessToken: token,
+            refreshToken: store.state.api.refreshToken || "",
+            apiBaseUrl: store.state.api.baseUrl || "",
+            supabaseUrl: store.state.api.supabaseUrl || "",
+            supabaseAnonKey: store.state.api.supabaseAnonKey || "",
+          },
+          window.location.origin
+        );
+      }
+      const copied = await copyText(token);
+      store.showToast(
+        copied
+          ? "ส่ง Session ไปยัง Extension และคัดลอก Token แล้ว"
+          : "ส่ง Session ไปยังหน้าต่าง Extension แล้ว"
+      );
+      return;
+    }
+    if (act === "open-pdpa-policy") {
+      store.openSheet({ type: "pdpaPolicy" });
+      return;
+    }
+    if (act === "open-delete-account") {
+      store.openSheet({ type: "deleteAccount" });
+      return;
+    }
+    if (act === "confirm-delete-account") {
+      const confirmVal = (document.getElementById("deleteAccountConfirmInput")?.value || "").trim();
+      if (confirmVal !== "DELETE") {
+        store.showToast("กรุณาพิมพ์ DELETE ให้ถูกต้องเพื่อยืนยัน");
+        return;
+      }
+      const res = await apiClient.deleteAccount();
+      if (!res?.ok) {
+        store.showToast(res?.error || "ลบบัญชีไม่สำเร็จ กรุณาลองอีกครั้ง");
+        return;
+      }
+      stopRealtimeSync();
+      store.closeSheet();
+      store.navigate("login", { allowGuestSwitch: true });
       return;
     }
     if (act === "open-notifications") {
@@ -962,6 +1050,9 @@ appEl.addEventListener("click", async (e) => {
     if (allowed) {
       ui.pcSection = d.pcSection;
       ui.notificationScreenOpen = d.pcSection === "notifications";
+      if (d.pcSection === "security") {
+        apiClient.listMcpTokens().catch(() => {});
+      }
       store.emit();
     }
     return;
@@ -969,10 +1060,13 @@ appEl.addEventListener("click", async (e) => {
   if (d.goScreen) {
     if (d.authCtx) ui.authContext = d.authCtx;
     else ui.authContext = "app";
-    store.navigate(d.goScreen, {
+    const ok = store.navigate(d.goScreen, {
       viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
       allowGuestSwitch: ui.authContext === "invite" || ["login", "emailLogin", "checkEmail"].includes(d.goScreen),
     });
+    if (ok && d.goScreen === "security") {
+      apiClient.listMcpTokens().catch(() => {});
+    }
     return;
   }
   if (d.openEditFolder) {
@@ -1188,6 +1282,18 @@ appEl.addEventListener("click", async (e) => {
     store.emit();
     return;
   }
+  if (d.setPlatformFilter) {
+    if (d.filterScope === "folder") ui.folderPlatformFilter = d.setPlatformFilter;
+    else ui.homePlatformFilter = d.setPlatformFilter;
+    store.emit();
+    return;
+  }
+  if (d.setContentTypeFilter) {
+    if (d.filterScope === "folder") ui.folderContentTypeFilter = d.setContentTypeFilter;
+    else ui.homeContentTypeFilter = d.setContentTypeFilter;
+    store.emit();
+    return;
+  }
   if (d.toggleFav) {
     const item = getLinkById(d.toggleFav);
     if (item) {
@@ -1243,6 +1349,24 @@ appEl.addEventListener("click", async (e) => {
       }
       store.closeSheet();
     }
+    return;
+  }
+  if (d.setWorkflowStatus) {
+    const itemId = d.itemId || ui.activeSheet?.linkId;
+    if (itemId) {
+      const updated = await apiClient.patchLink(itemId, { status: d.setWorkflowStatus });
+      if (!updated) {
+        store.showToast("อัปเดตสถานะไม่สำเร็จ");
+        return;
+      }
+      store.closeSheet();
+      store.showToast("อัปเดตสถานะรายการแล้ว");
+    }
+    return;
+  }
+  if (d.refreshPreviewSheet) {
+    store.closeSheet();
+    await apiClient.refreshItemPreview(d.refreshPreviewSheet);
     return;
   }
   if (d.triggerAiSheet) {
@@ -1641,11 +1765,9 @@ appEl.addEventListener("click", async (e) => {
           registerDevice: (payload) => apiClient.registerWebPushDevice(payload),
         });
         if (!pushRes.ok) {
-          if (pushRes.reason === "permission_denied") {
-            data.user.notificationsEnabled = false;
-            store.save();
-            store.emit();
-          }
+          data.user.notificationsEnabled = false;
+          store.save();
+          store.emit();
           store.showToast(pushRes.message || "ไม่สามารถเปิด Web Push ได้");
           return;
         }
@@ -1673,6 +1795,11 @@ appEl.addEventListener("click", async (e) => {
         ? "คัดลอก Extension Token แล้ว (เก็บเป็นความลับ ห้ามแชร์)"
         : "ไม่สามารถคัดลอกอัตโนมัติได้ กรุณาลองใหม่"
     );
+    return;
+  }
+  if (d.revokeMcpToken) {
+    const res = await apiClient.revokeMcpToken(d.revokeMcpToken);
+    store.showToast(res?.ok ? "เพิกถอน MCP Token แล้ว" : res?.error || "เพิกถอน Token ไม่สำเร็จ");
     return;
   }
   if (d.setTextSize) {
@@ -1748,6 +1875,22 @@ appEl.addEventListener("click", async (e) => {
     downloadFile("sharely-links-export.csv", csv, "text/csv;charset=utf-8");
     store.closeSheet();
     store.showToast(`ส่งออกไฟล์ CSV เรียบร้อย (${filteredLinks.length} รายการ)`);
+    return;
+  }
+  if (d.downloadJson) {
+    const res = await apiClient.exportWorkspaceJson();
+    if (!res?.ok || !res.data) {
+      store.showToast(res?.error || "ส่งออกไฟล์ JSON ไม่สำเร็จ");
+      return;
+    }
+    const dateStamp = getBangkokTodayIso();
+    downloadFile(
+      `just-save-it-export-${dateStamp}.json`,
+      JSON.stringify(res.data, null, 2),
+      "application/json;charset=utf-8"
+    );
+    store.closeSheet();
+    store.showToast("ส่งออกไฟล์ JSON เรียบร้อยแล้ว");
     return;
   }
   if (d.openLogoutDialog) {
@@ -2091,14 +2234,27 @@ if (typeof document !== "undefined" && typeof document.addEventListener === "fun
   });
 }
 
-// Initialize URL invite token, OAuth callback & responsive viewport
+// Initialize URL invite token, share target, cold-start ?item=, OAuth callback & responsive viewport
+function extractFirstHttpUrl(rawText = "") {
+  const match = String(rawText || "").match(/https?:\/\/[^\s<>"']+/i);
+  return match ? match[0] : "";
+}
+
 function parseInitialRouteParams() {
-  if (typeof window === "undefined") return { inviteToken: null, role: "viewer", oauthCode: null };
+  if (typeof window === "undefined") {
+    return { inviteToken: null, role: "viewer", oauthCode: null, itemId: null, shareTarget: false, sharedUrl: "", sharedTitle: "" };
+  }
   const url = new URL(window.location.href);
   const pathMatch = url.pathname.match(/^\/invite\/([^/?#]+)/i);
   let inviteToken = pathMatch ? decodeURIComponent(pathMatch[1]) : url.searchParams.get("invite");
   let role = url.searchParams.get("role") || "";
   const oauthCode = url.searchParams.get("code");
+  const itemId = url.searchParams.get("item");
+  const shareTarget = url.searchParams.get("share_target") === "1";
+  const sharedUrl =
+    extractFirstHttpUrl(url.searchParams.get("url") || "") ||
+    extractFirstHttpUrl(url.searchParams.get("text") || "");
+  const sharedTitle = String(url.searchParams.get("title") || "").trim();
   const hasOAuthHash = /(?:access_token|refresh_token|error)=/i.test(url.hash || "");
   if (!inviteToken && (oauthCode || hasOAuthHash)) {
     const saved = loadPendingInvite();
@@ -2113,10 +2269,61 @@ function parseInitialRouteParams() {
     inviteToken: inviteToken ? String(inviteToken).trim() : null,
     role: role || "viewer",
     oauthCode,
+    itemId: itemId ? String(itemId).trim() : null,
+    shareTarget,
+    sharedUrl,
+    sharedTitle,
   };
 }
 
 const bootParams = parseInitialRouteParams();
+let _pendingOpenItemId = bootParams.itemId || null;
+let _pendingShareDraft =
+  bootParams.shareTarget && (bootParams.sharedUrl || bootParams.sharedTitle)
+    ? { url: bootParams.sharedUrl || "", title: bootParams.sharedTitle || "" }
+    : null;
+
+function cleanHandledQueryParams(keys = []) {
+  if (typeof window === "undefined" || !window.history?.replaceState) return;
+  try {
+    const cleanUrl = new URL(window.location.href);
+    for (const k of keys) cleanUrl.searchParams.delete(k);
+    window.history.replaceState({}, "", cleanUrl.toString());
+  } catch {}
+}
+
+function applyPendingDeepLinks() {
+  if (!store.state.data.user?.isAuthenticated) return;
+  if (_pendingOpenItemId) {
+    const targetItem = getLinkById(_pendingOpenItemId);
+    if (targetItem) {
+      const targetId = _pendingOpenItemId;
+      _pendingOpenItemId = null;
+      cleanHandledQueryParams(["item"]);
+      store.navigate("linkDetail", {
+        activeLinkId: targetId,
+        viewportMode: store.state.ui.viewportMode === "web" ? "web" : "mobile",
+      });
+    }
+  }
+  if (_pendingShareDraft) {
+    const draft = _pendingShareDraft;
+    _pendingShareDraft = null;
+    cleanHandledQueryParams(["share_target", "url", "text", "title"]);
+    openSaveSheet(draft);
+    if (draft.url) {
+      apiClient.previewUrl(draft.url).then((pv) => {
+        if (pv?.ok && pv.data && store.state.ui.activeSheet?.type === "saveLink") {
+          store.state.ui.activeSheet.draft.title = pv.data.title || store.state.ui.activeSheet.draft.title;
+          store.state.ui.activeSheet.draft.platform = pv.data.platform || store.state.ui.activeSheet.draft.platform;
+          store.state.ui.activeSheet.draft.coverUrl = pv.data.image_url || store.state.ui.activeSheet.draft.coverUrl;
+          store.state.ui.activeSheet.draft.media_items = pv.data.media_items || [];
+          store.emit();
+        }
+      }).catch(() => {});
+    }
+  }
+}
 if (bootParams.inviteToken) {
   store.state.ui.pendingInviteToken = bootParams.inviteToken;
   store.state.ui.pendingInviteRole = bootParams.role;
@@ -2142,12 +2349,69 @@ store.subscribe(renderApp);
 renderApp();
 
 let _lastHydratedToken = "";
+let _jwtRefreshTimer = null;
+
+function ensureJwtAutoRefresh() {
+  if (_jwtRefreshTimer || typeof setInterval === "undefined") return;
+  _jwtRefreshTimer = setInterval(async () => {
+    const apiState = store.state.api;
+    if (apiState.mode !== "live" || !store.state.data.user?.isAuthenticated || !apiState.refreshToken) return;
+    const exp = Number(apiState.jwtClaims?.exp || 0);
+    if (!exp) return;
+    const secondsLeft = exp - Math.floor(Date.now() / 1000);
+    if (secondsLeft < 300) {
+      const res = await apiClient.refreshSession().catch(() => null);
+      if (res?.ok && store.state.api.bearerToken) {
+        refreshRealtimeAccessToken(store.state.api.bearerToken);
+      }
+    }
+  }, 60000);
+}
+
 function hydrateOnceIfNeeded() {
   const token = store.state.api.bearerToken || "";
   if (store.state.api.mode !== "live" || !store.state.data.user?.isAuthenticated || !token) return;
   if (_lastHydratedToken === token) return;
   _lastHydratedToken = token;
-  apiClient.hydrateWorkspace().catch(() => {});
+  apiClient
+    .hydrateWorkspace()
+    .then(() => applyPendingDeepLinks())
+    .catch(() => {});
+  startRealtimeSync({
+    getSupabaseConfig: () => ({
+      url: store.state.api.supabaseUrl,
+      anonKey: store.state.api.supabaseAnonKey,
+    }),
+    getAccessToken: () => store.state.api.bearerToken,
+    isAuthenticated: () =>
+      store.state.api.mode === "live" &&
+      Boolean(store.state.data.user?.isAuthenticated && store.state.api.bearerToken),
+    onSync: async () => {
+      await apiClient.hydrateWorkspace().catch(() => {});
+      applyPendingDeepLinks();
+    },
+  });
+  ensureJwtAutoRefresh();
+}
+
+if (typeof navigator !== "undefined" && navigator.serviceWorker?.addEventListener) {
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event?.data?.type === "OPEN_ITEM" && event.data?.itemId) {
+      const targetId = String(event.data.itemId);
+      const found = getLinkById(targetId);
+      if (found && store.state.data.user?.isAuthenticated) {
+        store.navigate("linkDetail", {
+          activeLinkId: targetId,
+          viewportMode: store.state.ui.viewportMode === "web" ? "web" : "mobile",
+        });
+      } else {
+        _pendingOpenItemId = targetId;
+        if (store.state.data.user?.isAuthenticated) {
+          apiClient.hydrateWorkspace().then(() => applyPendingDeepLinks()).catch(() => {});
+        }
+      }
+    }
+  });
 }
 
 if (bootParams.inviteToken) {
@@ -2186,6 +2450,7 @@ supabaseAuth
     ({ event, session, claims, user }) => {
       if (event === "SIGNED_OUT") {
         _lastHydratedToken = "";
+        stopRealtimeSync();
         if (getAuthMode(store.state) === "supabase" && store.state.data.user?.isAuthenticated) {
           store.clearSession({ redirectToLogin: store.state.ui.authGuardEnabled !== false });
         }

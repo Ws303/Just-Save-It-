@@ -2,18 +2,22 @@
   "use strict";
 
   const api = window.JustSaveItApi;
+  const CLOUD_WEB_URL = "https://just-save-it-web.onrender.com";
 
   const state = {
     authMode: "login",
+    activeViewMode: "save", // "save" | "recent"
     domMeta: null,
     previewMeta: null,
     lastSavedItemId: null,
     activeTabId: null,
+    allRecentItems: [],
     userTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Bangkok",
   };
 
   const els = {
     healthBadge: document.getElementById("healthBadge"),
+    openWebBtn: document.getElementById("openWebBtn"),
     toggleSettingsBtn: document.getElementById("toggleSettingsBtn"),
     settingsPanel: document.getElementById("settingsPanel"),
     presetCloudBtn: document.getElementById("presetCloudBtn"),
@@ -23,6 +27,7 @@
     feedbackBanner: document.getElementById("feedbackBanner"),
 
     authView: document.getElementById("authView"),
+    webConnectBtn: document.getElementById("webConnectBtn"),
     tabLoginBtn: document.getElementById("tabLoginBtn"),
     tabRegisterBtn: document.getElementById("tabRegisterBtn"),
     authForm: document.getElementById("authForm"),
@@ -39,6 +44,16 @@
     saverView: document.getElementById("saverView"),
     userLabel: document.getElementById("userLabel"),
     logoutBtn: document.getElementById("logoutBtn"),
+    tabSaveBtn: document.getElementById("tabSaveBtn"),
+    tabRecentBtn: document.getElementById("tabRecentBtn"),
+    recentCount: document.getElementById("recentCount"),
+    offlineQueueBar: document.getElementById("offlineQueueBar"),
+    offlineQueueCount: document.getElementById("offlineQueueCount"),
+    flushQueueBtn: document.getElementById("flushQueueBtn"),
+
+    savePane: document.getElementById("savePane"),
+    blockedTabCard: document.getElementById("blockedTabCard"),
+    openWebBlockedBtn: document.getElementById("openWebBlockedBtn"),
     previewImage: document.getElementById("previewImage"),
     previewPlaceholder: document.getElementById("previewPlaceholder"),
     platformBadge: document.getElementById("platformBadge"),
@@ -70,9 +85,9 @@
     aiSummarizeBtn: document.getElementById("aiSummarizeBtn"),
     aiResultBox: document.getElementById("aiResultBox"),
 
-    toggleRecentBtn: document.getElementById("toggleRecentBtn"),
-    recentCount: document.getElementById("recentCount"),
-    recentArrow: document.getElementById("recentArrow"),
+    recentPane: document.getElementById("recentPane"),
+    recentSearchInput: document.getElementById("recentSearchInput"),
+    refreshRecentBtn: document.getElementById("refreshRecentBtn"),
     recentList: document.getElementById("recentList"),
   };
 
@@ -87,9 +102,29 @@
     els.feedbackBanner.textContent = "";
   }
 
+  function getWebAppOrigin() {
+    return api.isLocalBackendUrl(els.backendUrlInput.value) ? "http://127.0.0.1:4173" : CLOUD_WEB_URL;
+  }
+
+  function openSharelyWeb() {
+    chrome.tabs.create({ url: getWebAppOrigin() });
+  }
+
+  async function refreshOfflineQueueBanner() {
+    if (!els.offlineQueueBar) return;
+    const queue = await api.getOfflineQueue();
+    if (queue.length > 0) {
+      els.offlineQueueCount.textContent = String(queue.length);
+      els.offlineQueueBar.classList.remove("hidden");
+    } else {
+      els.offlineQueueCount.textContent = "0";
+      els.offlineQueueBar.classList.add("hidden");
+    }
+  }
+
   async function updateHealthStatus(overrideUrl) {
     els.healthBadge.textContent = "Checking...";
-    els.healthBadge.className = "status-pill status-checking";
+    els.healthBadge.className = "status-pill";
     try {
       const health = await api.checkHealth(overrideUrl);
       const modeLabel = health.storage_mode === "supabase" ? "Cloud Online" : "Local Dev";
@@ -97,7 +132,7 @@
       els.healthBadge.className = "status-pill status-online";
       return true;
     } catch (_err) {
-      els.healthBadge.textContent = "Backend Offline";
+      els.healthBadge.textContent = "Offline";
       els.healthBadge.className = "status-pill status-offline";
       return false;
     }
@@ -111,6 +146,15 @@
     els.displayNameGroup.classList.toggle("hidden", !isRegister);
     els.authSubmitBtn.textContent = isRegister ? "สร้างบัญชีและเข้าสู่ระบบ" : "เข้าสู่ระบบ";
     clearBanner();
+  }
+
+  function setSaverPaneMode(mode) {
+    state.activeViewMode = mode === "recent" ? "recent" : "save";
+    const showRecent = state.activeViewMode === "recent";
+    els.tabSaveBtn.classList.toggle("active", !showRecent);
+    els.tabRecentBtn.classList.toggle("active", showRecent);
+    els.savePane.classList.toggle("hidden", showRecent);
+    els.recentPane.classList.toggle("hidden", !showRecent);
   }
 
   function renderPreviewThumbnail(imageUrl) {
@@ -152,15 +196,135 @@
     syncTagChipSelection();
   }
 
+  const STATUS_LABEL = {
+    inbox: "กล่องเข้า",
+    todo: "ต้องอ่าน",
+    done: "อ่านแล้ว",
+    archived: "เก็บถาวร",
+  };
+
+  function nextWorkflowStatus(current) {
+    const order = ["inbox", "todo", "done"];
+    const idx = order.indexOf(current);
+    return order[(idx + 1) % order.length];
+  }
+
+  function renderRecentItems(items) {
+    state.allRecentItems = Array.isArray(items) ? items : [];
+    els.recentCount.textContent = String(state.allRecentItems.length);
+    els.recentList.innerHTML = "";
+    if (!state.allRecentItems.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "ยังไม่มีลิงก์ที่บันทึกไว้ — ลองกดบันทึกลิงก์แรกด้านบนได้เลย";
+      els.recentList.appendChild(empty);
+      return;
+    }
+
+    for (const item of state.allRecentItems) {
+      const card = document.createElement("div");
+      card.className = "recent-item";
+
+      const head = document.createElement("div");
+      head.className = "recent-item-head";
+
+      const titleLink = document.createElement("a");
+      titleLink.className = "recent-item-title";
+      titleLink.textContent = item.title || item.url;
+      titleLink.href = api.isSaveableHttpUrl(item.url) ? item.url : "#";
+      titleLink.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        if (api.isSaveableHttpUrl(item.url)) {
+          chrome.tabs.create({ url: item.url });
+        }
+      });
+
+      const statusBtn = document.createElement("button");
+      statusBtn.type = "button";
+      statusBtn.className = "mini-action-btn";
+      const curStatus = item.status || "inbox";
+      statusBtn.textContent = STATUS_LABEL[curStatus] || curStatus;
+      statusBtn.title = "คลิกเพื่อสลับสถานะ";
+      statusBtn.addEventListener("click", async () => {
+        const next = nextWorkflowStatus(curStatus);
+        statusBtn.disabled = true;
+        try {
+          await api.updateItemStatus(item.id, next);
+          item.status = next;
+          statusBtn.textContent = STATUS_LABEL[next] || next;
+        } catch (err) {
+          showBanner(`เปลี่ยนสถานะไม่สำเร็จ: ${err.message}`, "error");
+        } finally {
+          statusBtn.disabled = false;
+        }
+      });
+
+      head.appendChild(titleLink);
+      head.appendChild(statusBtn);
+
+      const foot = document.createElement("div");
+      foot.className = "recent-item-foot";
+
+      const sub = document.createElement("span");
+      sub.className = "recent-item-sub";
+      sub.textContent = `${item.platform || "web"} · ${item.enrich_status || "saved"}`;
+
+      const actions = document.createElement("div");
+      actions.className = "recent-item-actions";
+
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "mini-action-btn";
+      copyBtn.textContent = "คัดลอก";
+      copyBtn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(item.url || "");
+          copyBtn.textContent = "คัดลอกแล้ว";
+          setTimeout(() => {
+            copyBtn.textContent = "คัดลอก";
+          }, 1500);
+        } catch (_err) {
+          showBanner("ไม่สามารถคัดลอก URL ได้", "error");
+        }
+      });
+
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.className = "mini-action-btn";
+      openBtn.textContent = "เปิดดู";
+      openBtn.addEventListener("click", () => {
+        chrome.tabs.create({ url: `${getWebAppOrigin()}/?item=${encodeURIComponent(item.id)}` });
+      });
+
+      actions.appendChild(copyBtn);
+      actions.appendChild(openBtn);
+      foot.appendChild(sub);
+      foot.appendChild(actions);
+
+      card.appendChild(head);
+      card.appendChild(foot);
+      els.recentList.appendChild(card);
+    }
+  }
+
+  async function refreshRecentList(search = "") {
+    try {
+      const itemsRes = await api.fetchRecentItems({ search, limit: 20 });
+      renderRecentItems(itemsRes.items || []);
+    } catch (err) {
+      showBanner(`โหลดรายการล่าสุดไม่สำเร็จ: ${err.message}`, "error");
+    }
+  }
+
   async function loadUserWorkspace() {
     const [foldersRes, tagsRes, itemsRes] = await Promise.all([
       api.apiRequest("/api/folders"),
       api.apiRequest("/api/tags"),
-      api.apiRequest("/api/items?limit=5"),
+      api.fetchRecentItems({ limit: 20 }),
     ]);
 
     const currentFolderId = els.folderSelect.value;
-    els.folderSelect.innerHTML = '<option value="">-- กล่องขาเข้า (Inbox) --</option>';
+    els.folderSelect.innerHTML = '<option value="">-- ยังไม่เลือกโฟลเดอร์ --</option>';
     for (const folder of foldersRes.folders || []) {
       const opt = document.createElement("option");
       opt.value = folder.id;
@@ -186,105 +350,82 @@
     renderRecentItems(itemsRes.items || []);
   }
 
-  function renderRecentItems(items) {
-    els.recentCount.textContent = String(items.length);
-    els.recentList.innerHTML = "";
-    if (!items.length) {
-      const empty = document.createElement("p");
-      empty.className = "hint";
-      empty.textContent = "ยังไม่มีลิงก์ที่บันทึกไว้ — ลองกดบันทึกลิงก์แรกด้านบนได้เลย";
-      els.recentList.appendChild(empty);
-      return;
-    }
-
-    for (const item of items) {
-      const link = document.createElement("a");
-      link.className = "recent-item";
-      link.href = item.url;
-      link.target = "_blank";
-      link.rel = "noreferrer noopener";
-
-      const textWrap = document.createElement("div");
-      textWrap.style.minWidth = "0";
-
-      const titleDiv = document.createElement("div");
-      titleDiv.className = "recent-item-title";
-      titleDiv.textContent = item.title || item.url;
-
-      const subDiv = document.createElement("div");
-      subDiv.className = "recent-item-sub";
-      subDiv.textContent = `${item.platform || "web"} · ${item.status || "inbox"} · enrich:${item.enrich_status || "pending"}`;
-
-      textWrap.appendChild(titleDiv);
-      textWrap.appendChild(subDiv);
-      link.appendChild(textWrap);
-      els.recentList.appendChild(link);
-    }
-  }
-
-  async function fetchPreviewForUrl(url, forceRefresh = false) {
-    if (!api.isSaveableHttpUrl(url)) {
-      els.previewSourceBadge.textContent = "URL ไม่ใช่ http/https";
-      return;
-    }
-
-    els.previewSourceBadge.textContent = "กำลังดึงข้อมูล...";
+  async function fetchPreviewForUrl(targetUrl, forceRefresh = false) {
+    if (!api.isSaveableHttpUrl(targetUrl)) return;
+    els.previewSourceBadge.textContent = "กำลังพรีวิว...";
     try {
-      const preview = await api.apiRequest("/api/preview", {
+      const preview = await api.apiRequest("/api/items/preview", {
         method: "POST",
-        body: { url, force_refresh: forceRefresh },
+        body: { url: targetUrl, force_refresh: forceRefresh },
       });
       state.previewMeta = preview;
-
       els.platformBadge.textContent = preview.platform || "web";
       els.contentTypeBadge.textContent = preview.content_type || "link";
-      els.siteNameLabel.textContent = preview.site_name || new URL(url).hostname;
-
-      const domThumb =
-        state.domMeta &&
-        Array.isArray(state.domMeta.media_items) &&
-        state.domMeta.media_items[0] &&
-        state.domMeta.media_items[0].url;
-      renderPreviewThumbnail(preview.image_url || domThumb || "");
+      els.previewSourceBadge.textContent = preview.cached ? "จากแคช" : "ดึงสดสำเร็จ";
 
       if (preview.title && (!els.titleInput.value.trim() || forceRefresh)) {
         els.titleInput.value = preview.title;
       }
-      els.previewSourceBadge.textContent = preview.cached ? "Server Cache" : "Server Unfurl";
+      if (preview.site_name) {
+        els.siteNameLabel.textContent = preview.site_name;
+      }
+
+      const firstMedia =
+        Array.isArray(preview.media_items) && preview.media_items[0] ? preview.media_items[0].url : null;
+      const thumb = preview.thumbnail_url || firstMedia;
+      if (thumb) {
+        renderPreviewThumbnail(thumb);
+      }
     } catch (_err) {
-      els.previewSourceBadge.textContent = state.domMeta ? "DOM Assist" : "กรอกหัวข้อเองได้";
+      els.previewSourceBadge.textContent = "ใช้ข้อมูลแท็บ";
+    }
+  }
+
+  async function ensureDomAssistPermission(url) {
+    if (!chrome.permissions || typeof chrome.permissions.contains !== "function") return true;
+    try {
+      const originPattern = new URL(url).origin + "/*";
+      const has = await chrome.permissions.contains({ origins: [originPattern] });
+      if (has) return true;
+      return await chrome.permissions.request({ origins: [originPattern] });
+    } catch (_err) {
+      return false;
     }
   }
 
   async function populateActiveTab() {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    const tab = tabs && tabs[0];
-    if (!tab) return;
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.url) return;
+
+    const rawUrl = tab.url.trim();
+    const saveable = api.isSaveableHttpUrl(rawUrl);
+    els.blockedTabCard.classList.toggle("hidden", saveable);
+    if (!saveable) {
+      els.platformBadge.textContent = "browser";
+      els.contentTypeBadge.textContent = "blocked";
+      els.previewSourceBadge.textContent = "ไม่รองรับแท็บนี้";
+      els.siteNameLabel.textContent = tab.title || "แท็บระบบเบราว์เซอร์";
+      return;
+    }
 
     state.activeTabId = tab.id || null;
-    const rawUrl = tab.url || "";
-    if (api.isSaveableHttpUrl(rawUrl)) {
-      els.urlInput.value = rawUrl;
-      try {
-        els.siteNameLabel.textContent = new URL(rawUrl).hostname;
-      } catch (_err) {
-        els.siteNameLabel.textContent = rawUrl;
-      }
-    }
-    if (tab.title) {
-      els.titleInput.value = tab.title;
-    }
+    els.urlInput.value = rawUrl;
+    els.titleInput.value = (tab.title || "").trim();
+    els.siteNameLabel.textContent = rawUrl;
 
-    const domMeta = await api.runDomAssist(state.activeTabId);
+    let domMeta = null;
+    if (tab.id && (await ensureDomAssistPermission(rawUrl))) {
+      domMeta = await api.runDomAssist(tab.id);
+    }
+    state.domMeta = domMeta;
     if (domMeta) {
-      state.domMeta = domMeta;
-      if (domMeta.title && !els.titleInput.value.trim()) {
+      if (domMeta.title && (!els.titleInput.value || domMeta.title.length > els.titleInput.value.length)) {
         els.titleInput.value = domMeta.title;
       }
       if (domMeta.site_name) {
         els.siteNameLabel.textContent = domMeta.site_name;
       }
-      if (domMeta.selected_text && !els.noteInput.value.trim()) {
+      if (domMeta.selected_text && !els.noteInput.value) {
         els.noteInput.value = domMeta.selected_text;
       }
       if (Array.isArray(domMeta.media_items) && domMeta.media_items[0]) {
@@ -292,9 +433,7 @@
       }
     }
 
-    if (api.isSaveableHttpUrl(rawUrl)) {
-      await fetchPreviewForUrl(rawUrl, false);
-    }
+    await fetchPreviewForUrl(rawUrl, false);
   }
 
   function buildReminderPayload() {
@@ -332,6 +471,8 @@
   async function enterSaverView() {
     els.authView.classList.add("hidden");
     els.saverView.classList.remove("hidden");
+    setSaverPaneMode("save");
+    await refreshOfflineQueueBanner();
 
     const session = await api.getSessionState();
     const userDisplay =
@@ -342,7 +483,8 @@
       const me = await api.apiRequest("/api/auth/me");
       const profile = me.user || me.profile || {};
       const name = profile.display_name || profile.email || userDisplay;
-      const quotaLeft = me.ai_quota && typeof me.ai_quota.remaining === "number" ? ` · AI เหลือ ${me.ai_quota.remaining}` : "";
+      const quotaLeft =
+        me.ai_quota && typeof me.ai_quota.remaining === "number" ? ` · AI เหลือ ${me.ai_quota.remaining}` : "";
       els.userLabel.textContent = `👤 ${name}${quotaLeft}`;
 
       await loadUserWorkspace();
@@ -354,7 +496,8 @@
         showBanner("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่อีกครั้ง", "error");
         return;
       }
-      showBanner(`โหลดข้อมูลเริ่มต้นไม่สำเร็จ: ${err.message}`, "error");
+      await populateActiveTab();
+      showBanner(`โหลดข้อมูลบางส่วนไม่สำเร็จ (${err.message}) — คุณยังสามารถบันทึกเข้าคิวออฟไลน์ได้`, "error");
     }
   }
 
@@ -362,6 +505,58 @@
     els.saverView.classList.add("hidden");
     els.authView.classList.remove("hidden");
     els.savedResultCard.classList.add("hidden");
+  }
+
+  async function handleWebConnect() {
+    clearBanner();
+    els.webConnectBtn.disabled = true;
+    try {
+      const tabs = await chrome.tabs.query({
+        url: [
+          "https://just-save-it-web.onrender.com/*",
+          "http://localhost:4173/*",
+          "http://127.0.0.1:4173/*",
+        ],
+      });
+      if (!tabs.length) {
+        openSharelyWeb();
+        showBanner("เปิดเว็บ Sharely แล้ว — กรุณาล็อกอินในเว็บแล้วกด 'เชื่อมต่อจากหน้าเว็บ Sharely' อีกครั้ง", "info");
+        return;
+      }
+      for (const tab of tabs) {
+        try {
+          const res = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => {
+              const raw = localStorage.getItem("sharely_test_state_v1");
+              if (!raw) return null;
+              const parsed = JSON.parse(raw);
+              return {
+                accessToken: parsed?.api?.bearerToken || "",
+                refreshToken: parsed?.api?.refreshToken || "",
+                apiBaseUrl: parsed?.api?.baseUrl || "",
+              };
+            },
+          });
+          const data = res && res[0] && res[0].result;
+          if (data && data.accessToken) {
+            if (data.apiBaseUrl) {
+              await api.setBackendUrl(data.apiBaseUrl);
+              els.backendUrlInput.value = await api.setBackendUrl(data.apiBaseUrl);
+            }
+            await api.loginWithAccessToken(data.accessToken, data.refreshToken || "");
+            await enterSaverView();
+            showBanner("เชื่อมต่อบัญชีจากหน้าเว็บ Sharely สำเร็จแล้ว!", "info");
+            return;
+          }
+        } catch (_err) {
+          // Try next matching tab
+        }
+      }
+      showBanner("พบแท็บ Sharely แต่ยังไม่ได้เข้าสู่ระบบ — กรุณาล็อกอินในหน้าเว็บก่อน แล้วลองอีกครั้ง", "error");
+    } finally {
+      els.webConnectBtn.disabled = false;
+    }
   }
 
   async function handleAuthSubmit(event) {
@@ -527,14 +722,20 @@
       els.aiResultBox.textContent = "";
       els.savedMetaText.textContent = `ID: ${saved.id} · platform: ${saved.platform || "web"} · enrich: ${saved.enrich_status || "pending"}`;
       els.savedResultCard.classList.remove("hidden");
+      els.blockedTabCard.classList.add("hidden");
 
-      const itemsRes = await api.apiRequest("/api/items?limit=5");
-      renderRecentItems(itemsRes.items || []);
+      await refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
     } catch (err) {
-      showBanner(`บันทึกลิงก์ไม่สำเร็จ: ${err.message}`, "error");
+      if (!err.status || err.status >= 500 || err.status === 429) {
+        await api.enqueueOfflineSave(payload, err.message || "offline");
+        await refreshOfflineQueueBanner();
+        showBanner("ออฟไลน์ชั่วคราว — เก็บลิงก์เข้าคิวซิงก์อัตโนมัติเรียบร้อย", "info");
+      } else {
+        showBanner(`บันทึกลิงก์ไม่สำเร็จ: ${err.message}`, "error");
+      }
     } finally {
       els.saveItemBtn.disabled = false;
-      els.saveItemBtn.textContent = "💾 บันทึกลิงก์ลง Backend";
+      els.saveItemBtn.textContent = "บันทึกลิงก์";
     }
   }
 
@@ -565,6 +766,8 @@
   }
 
   function bindEvents() {
+    els.openWebBtn.addEventListener("click", openSharelyWeb);
+    els.openWebBlockedBtn.addEventListener("click", openSharelyWeb);
     els.toggleSettingsBtn.addEventListener("click", () => {
       els.settingsPanel.classList.toggle("hidden");
     });
@@ -597,6 +800,9 @@
       });
     }
 
+    if (els.webConnectBtn) {
+      els.webConnectBtn.addEventListener("click", handleWebConnect);
+    }
     if (els.tokenLoginBtn) {
       els.tokenLoginBtn.addEventListener("click", handleTokenLogin);
     }
@@ -606,6 +812,41 @@
     els.authForm.addEventListener("submit", handleAuthSubmit);
     els.demoLoginBtn.addEventListener("click", handleDemoLogin);
 
+    els.tabSaveBtn.addEventListener("click", () => setSaverPaneMode("save"));
+    els.tabRecentBtn.addEventListener("click", async () => {
+      setSaverPaneMode("recent");
+      await refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
+    });
+
+    els.flushQueueBtn.addEventListener("click", async () => {
+      els.flushQueueBtn.disabled = true;
+      try {
+        const res = await api.flushOfflineQueue();
+        await refreshOfflineQueueBanner();
+        await refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
+        showBanner(`ซิงก์คิวออฟไลน์สำเร็จ ${res.flushed} รายการ (คงเหลือ ${res.remaining})`, "info");
+      } catch (err) {
+        showBanner(`ซิงก์คิวไม่สำเร็จ: ${err.message}`, "error");
+      } finally {
+        els.flushQueueBtn.disabled = false;
+      }
+    });
+
+    let searchTimer = null;
+    if (els.recentSearchInput) {
+      els.recentSearchInput.addEventListener("input", () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => {
+          refreshRecentList(els.recentSearchInput.value);
+        }, 280);
+      });
+    }
+    if (els.refreshRecentBtn) {
+      els.refreshRecentBtn.addEventListener("click", () => {
+        refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
+      });
+    }
+
     els.logoutBtn.addEventListener("click", async () => {
       try {
         await api.apiRequest("/api/auth/logout", { method: "POST" });
@@ -614,6 +855,12 @@
       }
       await api.clearAuthSession();
       enterAuthView();
+    });
+
+    els.urlInput.addEventListener("input", () => {
+      if (api.isSaveableHttpUrl(els.urlInput.value)) {
+        els.blockedTabCard.classList.add("hidden");
+      }
     });
 
     els.refreshPreviewBtn.addEventListener("click", () => {
@@ -643,12 +890,6 @@
 
     els.saveForm.addEventListener("submit", handleSaveItem);
     els.aiSummarizeBtn.addEventListener("click", handleAiSummarize);
-
-    els.toggleRecentBtn.addEventListener("click", () => {
-      const willOpen = els.recentList.classList.contains("hidden");
-      els.recentList.classList.toggle("hidden", !willOpen);
-      els.recentArrow.textContent = willOpen ? "▲" : "▼";
-    });
   }
 
   async function init() {

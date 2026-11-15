@@ -1,0 +1,31 @@
+{
+  "name": "Sharely — Just Save It",
+  "short_name": "Sharely",
+  "description": "บันทึกลิงก์ จัดระเบียบโฟลเดอร์ สรุปด้วย AI และตั้งเตือนดูทีหลัง",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FDFBF7",
+  "theme_color": "#D9383A",
+  "icons": [
+    {
+      "src": "/assets/icons/cherry-selected.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "/assets/covers/coffee.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "share_target": {
+    "action": "/?share_target=1",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}

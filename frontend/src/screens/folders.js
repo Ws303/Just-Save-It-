@@ -4,15 +4,45 @@
  * - Share Folder Bottom Sheet (319:3107), Generating State (319:3429), Error State (319:3751)
  * - Choose Share App & Preview Message
  */
-import { icons, escHtml, safeImgUrl } from "../components/icons.js";
+import { icons, escHtml, safeImgUrl, resolveMediaThumbUrl } from "../components/icons.js";
 import { COVER_CHOICES } from "../data/seed.js";
 import { filterLinks, getFolderById, getFolderCount, buildFolderInviteUrl } from "../state/store.js";
-import { renderBottomNav, renderFilterChips, renderLinkCard } from "./common.js";
+import { renderBottomNav, renderFilterChips, renderLinkCard, renderAdvancedFilterDrawer } from "./common.js";
+
+function renderMobileFolderCover(folder, links = [], isWatchLater = false) {
+  const linkThumbs = (links || [])
+    .filter((l) => (isWatchLater ? !l.folderId || l.folderId === folder?.id : l.folderId === folder?.id))
+    .map((l) => resolveMediaThumbUrl(l))
+    .filter(Boolean)
+    .slice(0, 4);
+
+  if (isWatchLater || (!folder?.cover && linkThumbs.length >= 2)) {
+    return `
+      <div class="pc-folder-collage">
+        ${[0, 1, 2, 3]
+          .map((idx) =>
+            linkThumbs[idx]
+              ? `<div class="pc-folder-collage-cell"><img src="${escHtml(linkThumbs[idx])}" alt="" /></div>`
+              : `<div class="pc-folder-collage-cell"><span>${icons.imagePlaceholder(14)}</span></div>`
+          )
+          .join("")}
+      </div>
+    `;
+  }
+
+  const cover = safeImgUrl(folder?.cover) || linkThumbs[0] || "";
+  if (cover) {
+    return `<img src="${escHtml(cover)}" alt="${escHtml(folder?.name || "")}" />`;
+  }
+  return `<div class="pc-folder-cover-empty">${escHtml(folder?.emoji || "📁")}</div>`;
+}
 
 export function renderFoldersScreen(state) {
-  const { folders } = state.data;
+  const { folders, links } = state.data;
   const q = (state.ui.folderSearch || "").trim().toLowerCase();
   const visible = q ? folders.filter((f) => f.name.toLowerCase().includes(q)) : folders;
+  const uncatLinks = (links || []).filter((l) => !l.folderId);
+  const hasUncatFolder = visible.some((f) => f.name === "ยังไม่จัดหมวด" || f.name === "รวมไว้ดูทีหลัง");
 
   return `
     <div class="screen-scroll with-nav-pad">
@@ -38,13 +68,26 @@ export function renderFoldersScreen(state) {
         <h2 class="section-title">โฟลเดอร์ทั้งหมด</h2>
 
         <div class="folder-grid">
+          ${
+            !hasUncatFolder && uncatLinks.length > 0 && !q
+              ? `<div class="folder-card" data-filter-chip="unread" data-filter-scope="home" data-nav="home">
+                   <div class="folder-cover-wrap">
+                     ${renderMobileFolderCover({ id: "__watch_later__", name: "รวมไว้ดูทีหลัง" }, links, true)}
+                   </div>
+                   <p class="folder-name">รวมไว้ดูทีหลัง</p>
+                   <p class="folder-meta">${uncatLinks.length} ลิงก์ · ยังไม่จัดหมวด</p>
+                 </div>`
+              : ""
+          }
           ${visible
             .map((f) => {
+              const isWatchLater = f.name === "ยังไม่จัดหมวด" || f.name === "รวมไว้ดูทีหลัง";
+              const displayName = f.name === "ยังไม่จัดหมวด" ? "รวมไว้ดูทีหลัง" : f.name;
               const shareText = f.sharedCount > 0 ? `แชร์กับ ${f.sharedCount} คน` : "ส่วนตัว";
               return `
               <div class="folder-card" data-open-folder="${escHtml(f.id)}">
                 <div class="folder-cover-wrap">
-                  <img src="${escHtml(safeImgUrl(f.cover))}" alt="${escHtml(f.name)}" />
+                  ${renderMobileFolderCover(f, links, isWatchLater)}
                   <button
                     type="button"
                     class="folder-edit-circle"
@@ -54,7 +97,7 @@ export function renderFoldersScreen(state) {
                     ${icons.pencil(14)}
                   </button>
                 </div>
-                <p class="folder-name">${escHtml(f.name)}</p>
+                <p class="folder-name">${escHtml(displayName)}</p>
                 <p class="folder-meta">${getFolderCount(f)} ลิงก์ · ${shareText}</p>
               </div>`;
             })
@@ -73,7 +116,10 @@ export function renderFolderDetailScreen(state) {
     return `<div class="app-pad"><button class="btn-outline-pill" data-nav="folders">กลับหน้าโฟลเดอร์</button></div>`;
   }
   const folderLinks = state.data.links.filter((l) => l.folderId === folder.id);
-  const filtered = filterLinks(folderLinks, state.ui.folderDetailSearch, state.ui.folderDetailFilter);
+  const filtered = filterLinks(folderLinks, state.ui.folderDetailSearch, state.ui.folderDetailFilter, {
+    platform: state.ui.folderPlatformFilter,
+    contentType: state.ui.folderContentTypeFilter,
+  });
   const count = getFolderCount(folder);
 
   return `
@@ -129,7 +175,8 @@ export function renderFolderDetailScreen(state) {
           />
         </div>
 
-        ${renderFilterChips(state.ui.folderDetailFilter, "dark")}
+        ${renderFilterChips(state.ui.folderDetailFilter, "dark", state)}
+        ${renderAdvancedFilterDrawer(state, "folder")}
 
         <div class="section-header-row" style="margin-bottom:0;margin-top:4px;">
           <h2 class="section-title">ลิงก์ในโฟลเดอร์ (${count})</h2>

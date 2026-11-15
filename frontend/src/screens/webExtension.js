@@ -6,29 +6,29 @@ import { icons, escHtml, safeHrefUrl, safeImgUrl, resolveMediaThumbUrl } from ".
 import { filterLinks, getFolderById, getFolderCount, getLinkById } from "../state/store.js";
 import { renderWebAuthView } from "./auth.js";
 import { renderNotificationsFullScreen } from "./home.js";
-import { renderLinkCard } from "./common.js";
+import { renderLinkCard, renderAdvancedFilterToggle, renderAdvancedFilterDrawer } from "./common.js";
 import { renderAiPanelBody } from "./ai.js";
 import { renderProfileBody, renderDisplayBody, renderSecurityBody, renderHelpBody } from "./profile.js";
 import { renderLinkDetailModals, renderRichPreviewBox, renderSavedPreviewScreen } from "./links.js";
 
-function renderDesktopFolderThumb(folder, allLinks = []) {
+function renderDesktopFolderThumb(folder, allLinks = [], isWatchLater = false) {
   const linkThumbs = (allLinks || [])
-    .filter((l) => l.folderId === folder?.id)
+    .filter((l) => (isWatchLater ? !l.folderId || l.folderId === folder?.id : l.folderId === folder?.id))
     .map((l) => resolveMediaThumbUrl(l))
     .filter(Boolean)
     .slice(0, 4);
 
-  if (linkThumbs.length >= 2) {
+  if (linkThumbs.length >= 2 || isWatchLater) {
     const coverFallback = safeImgUrl(folder?.cover) || "";
-    const slots = linkThumbs.length >= 4 ? [0, 1, 2, 3] : [0, 1];
+    const slots = [0, 1, 2, 3];
     return `
-      <div class="pc-folder-collage" style="${slots.length === 2 ? "grid-template-rows:1fr;" : ""}">
+      <div class="pc-folder-collage">
         ${slots
           .map((idx) => {
-            const src = linkThumbs[idx] || coverFallback;
+            const src = linkThumbs[idx] || (idx === 0 ? coverFallback : "");
             return src
               ? `<div class="pc-folder-collage-cell"><img src="${escHtml(src)}" alt="" /></div>`
-              : `<div class="pc-folder-collage-cell"><span>${icons.imagePlaceholder(18)}</span></div>`;
+              : `<div class="pc-folder-collage-cell"><span>${icons.imagePlaceholder(14)}</span></div>`;
           })
           .join("")}
       </div>
@@ -42,38 +42,55 @@ function renderDesktopFolderThumb(folder, allLinks = []) {
   return `<div class="pc-folder-cover-empty">${escHtml(folder?.emoji || "📁")}</div>`;
 }
 
-function renderDesktopFolderCard(folder, allLinks, activeFolderId) {
-  const selected = folder.id === activeFolderId;
+function renderDesktopFolderCard(folder, allLinks, activeFolderId, options = {}) {
+  const isWatchLater = Boolean(options.isWatchLater);
+  const selected = !isWatchLater && folder.id === activeFolderId;
+  const count = isWatchLater ? Number(options.watchLaterCount || 0) : getFolderCount(folder);
+  const shareLabel = isWatchLater
+    ? "ยังไม่จัดหมวด"
+    : folder.sharedCount > 0
+      ? `แชร์ ${folder.sharedCount} คน`
+      : "ส่วนตัว";
+  const clickAttr = isWatchLater
+    ? `data-filter-chip="unread" data-filter-scope="home"`
+    : `data-open-folder="${escHtml(folder.id)}"`;
+
   return `
-    <div class="pc-folder-card ${selected ? "active" : ""}" data-open-folder="${escHtml(folder.id)}" role="button" tabindex="0">
-      <div class="pc-folder-cover">
-        ${renderDesktopFolderThumb(folder, allLinks)}
-      </div>
+    <div class="pc-folder-card figma-style ${selected ? "active" : ""}" ${clickAttr} role="button" tabindex="0">
       <div class="pc-folder-info">
         <div class="pc-folder-info-text">
           <strong>${escHtml(folder.name)}</strong>
-          <span>${getFolderCount(folder)} รายการ</span>
+          <span>${count} รายการ</span>
+          <span class="pc-folder-share-tag">${escHtml(shareLabel)}</span>
         </div>
-        <div class="pc-folder-card-actions">
-          <button type="button" class="icon-btn" style="width:28px;height:28px;" data-open-edit-folder="${escHtml(folder.id)}" title="แก้ไขโฟลเดอร์">
-            ${icons.pencil(14)}
-          </button>
-          <button type="button" class="icon-btn" style="width:28px;height:28px;" data-open-invite-sheet="${escHtml(folder.id)}" title="แชร์โฟลเดอร์">
-            ${icons.share(14)}
-          </button>
-        </div>
+        ${
+          isWatchLater
+            ? ""
+            : `<div class="pc-folder-card-actions">
+                 <button type="button" class="icon-btn" style="width:26px;height:26px;" data-open-edit-folder="${escHtml(folder.id)}" title="แก้ไขโฟลเดอร์">
+                   ${icons.pencil(13)}
+                 </button>
+                 <button type="button" class="icon-btn" style="width:26px;height:26px;" data-open-invite-sheet="${escHtml(folder.id)}" title="แชร์โฟลเดอร์">
+                   ${icons.share(13)}
+                 </button>
+               </div>`
+        }
+      </div>
+      <div class="pc-folder-cover square-86">
+        ${renderDesktopFolderThumb(folder, allLinks, isWatchLater)}
       </div>
     </div>
   `;
 }
 
-function renderDesktopFilterPills(activeFilter, scope) {
+function renderDesktopFilterPills(activeFilter, scope, state = null) {
   const chips = [
     { id: "all", label: "ทั้งหมด" },
     { id: "unread", label: "ยังไม่ได้ดู" },
     { id: "read", label: "ดูแล้ว" },
     { id: "favorite", label: "ชื่นชอบ", cherry: true },
   ];
+  const drawerScope = scope === "dark" ? "folder" : "home";
   return `
     <div class="figma-filter-row" role="tablist">
       ${chips
@@ -90,7 +107,9 @@ function renderDesktopFilterPills(activeFilter, scope) {
         </button>`
         )
         .join("")}
+      ${state ? renderAdvancedFilterToggle(state, drawerScope, "figma-filter-pill") : ""}
     </div>
+    ${state ? renderAdvancedFilterDrawer(state, drawerScope) : ""}
   `;
 }
 
@@ -125,15 +144,15 @@ function renderDesktopLinkDetail(state) {
   const folderLabel = folder?.name || "ยังไม่จัดหมวด";
 
   return `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-      <button type="button" class="pc-back-link-btn" data-pc-section="${escHtml(backSection)}">
-        ${icons.back(16)}
-        <span>กลับไปยัง${backSection === "folderDetail" && folder ? ` ${escHtml(folder.name)}` : backSection === "favorite" ? " รายการที่ชื่นชอบ" : " หน้าหลัก"}</span>
+    <div class="pc-detail-head-bar">
+      <button type="button" class="pc-folder-back-title" data-pc-section="${escHtml(backSection)}">
+        ${icons.back(22)}
+        <span>รายละเอียด</span>
       </button>
-      <span class="figma-section-hint">${idx + 1} / ${Math.max(1, links.length)}</span>
+      <span class="figma-section-hint">${idx + 1}/${Math.max(1, links.length)} · ${escHtml(folderLabel)}</span>
     </div>
 
-    <div class="pc-detail-stage" data-node-id="383:8963">
+    <div class="pc-detail-stage" data-node-id="383:13673">
       <button
         type="button"
         class="pc-detail-arrow"
@@ -151,7 +170,7 @@ function renderDesktopLinkDetail(state) {
           <div class="figma-detail-post-info">
             <a
               class="figma-detail-post-title-link"
-              style="font-size:19px;"
+              style="font-size:20px;text-decoration:underline;text-underline-offset:4px;"
               href="${escHtml(safeHrefUrl(item.url))}"
               target="_blank"
               rel="noopener noreferrer"
@@ -160,19 +179,26 @@ function renderDesktopLinkDetail(state) {
               <span class="figma-detail-ext-icon">${icons.externalLink(18)}</span>
             </a>
             <p class="figma-detail-post-meta">
-              ${escHtml(item.platform || "Web")} · ${escHtml(item.savedAgo || "เมื่อสักครู่")} · ${escHtml(folderLabel)}
+              ${escHtml(item.platform || "Web")} · ${escHtml(folderLabel)} · ${escHtml(item.savedAgo || "เมื่อสักครู่")}
             </p>
           </div>
 
-          <button type="button" class="figma-detail-reminder-pill" data-open-reminder="${escHtml(item.id)}">
-            ${icons.clock(16)}
-            <span>${escHtml(item.reminder || "ยังไม่ได้ตั้งเตือน")}</span>
-          </button>
+          <a
+            class="figma-detail-open-btn"
+            href="${escHtml(safeHrefUrl(item.url))}"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            เปิดลิงก์ต้นฉบับ
+          </a>
         </div>
 
         <div class="pc-detail-meta-card">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
-            <strong style="font-size:16px;color:var(--ink-primary);">รายละเอียดและโน้ต</strong>
+            <button type="button" class="figma-detail-reminder-pill" style="margin:0;flex:1;justify-content:center;" data-open-reminder="${escHtml(item.id)}">
+              ${icons.clock(16)}
+              <span>${escHtml(item.reminder || "ยังไม่ได้ตั้งเตือน")}</span>
+            </button>
             <div style="display:flex;align-items:center;gap:6px;">
               <button type="button" class="cherry-btn ${item.favorite ? "active" : ""}" data-toggle-fav="${escHtml(item.id)}" title="ชื่นชอบ">
                 ${icons.cherry(18)}
@@ -245,7 +271,7 @@ function renderDesktopLinkDetail(state) {
             </div>
           </div>
 
-          <div class="figma-detail-ai-block">
+          <div class="figma-detail-ai-block" style="margin-top:auto;">
             ${
               item.aiSummary
                 ? `
@@ -264,15 +290,6 @@ function renderDesktopLinkDetail(state) {
               </button>`
             }
           </div>
-
-          <a
-            class="figma-detail-open-btn"
-            href="${escHtml(safeHrefUrl(item.url))}"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            เปิดลิงก์ต้นฉบับ
-          </a>
         </div>
       </div>
 
@@ -318,65 +335,78 @@ export function renderWebView(state) {
 
   let mainContent = "";
 
+  const uncatLinks = links.filter((l) => !l.folderId);
+  const uncatFolder = folders.find((f) => f.name === "ยังไม่จัดหมวด") || null;
+
   if (section === "home") {
-    const visibleLinks = filterLinks(links, ui.homeSearch, ui.homeFilter);
-    const resumeItem = links.find((l) => l.status !== "read") || links[0] || null;
-    const resumeThumb = resumeItem ? resolveMediaThumbUrl(resumeItem) : "";
+    const visibleLinks = filterLinks(links, ui.homeSearch, ui.homeFilter, {
+      platform: ui.homePlatformFilter,
+      contentType: ui.homeContentTypeFilter,
+    });
 
     mainContent = `
       <header class="pc-main-header">
         <div class="pc-main-title-wrap">
-          <h1 class="pc-main-title">หน้าหลัก</h1>
-          <span class="pc-main-sub">จัดการและกลับมาดูลิงก์ที่คุณบันทึกไว้</span>
+          <h1 class="pc-main-title">ลิงก์ที่บันทึกไว้</h1>
         </div>
         <div class="pc-main-actions">
-          <button type="button" class="figma-bell-btn" data-pc-section="notifications" title="การแจ้งเตือน">
+          <button type="button" class="figma-bell-btn pc-bell-circle" data-pc-section="notifications" title="การแจ้งเตือน">
             ${icons.bell(19)}
             ${unreadNotifications > 0 ? `<span class="figma-bell-dot"></span>` : ""}
           </button>
         </div>
       </header>
 
-      <div class="pc-search-filter-block">
+      <div class="pc-search-filter-block figma-col">
         <div class="pc-search-bar">
           <span class="figma-search-icon">${icons.search(17)}</span>
           <input
             type="search"
-            placeholder="ค้นหาลิงก์ โน้ต หรือแท็ก"
+            placeholder="ค้นหาลิงก์ โฟลเดอร์ หรือแท็ก..."
             value="${escHtml(ui.homeSearch || "")}"
             data-search-input="home"
           />
         </div>
-        ${renderDesktopFilterPills(ui.homeFilter || "all", "home")}
+        ${renderDesktopFilterPills(ui.homeFilter || "all", "home", state)}
       </div>
 
-      <div class="pc-resume-banner">
+      <div class="pc-resume-banner lavender-figma" data-node-id="383:9129">
         <div class="pc-resume-copy">
-          <strong>กลับมาดูสิ่งที่บันทึกไว้กันเถอะ</strong>
-          <button type="button" class="pc-resume-cta" data-open-preview="1">
+          <strong>กลับมาดู<br />สิ่งที่บันทึกไว้กันเถอะ</strong>
+          <button type="button" class="pc-resume-cta cream-pill" data-open-preview="1">
             <span>ดูรายการที่ยังไม่ได้ดู</span>
             ${icons.chevronRight(14)}
           </button>
         </div>
-        <div class="pc-resume-thumb">
-          ${resumeThumb ? `<img src="${escHtml(resumeThumb)}" alt="" />` : icons.imagePlaceholder(24)}
+        <div class="pc-resume-mascot">
+          <img src="./assets/icons/login-cherry-illustration.svg" alt="" />
         </div>
       </div>
 
       <section class="pc-section">
         <div class="pc-section-head">
           <h2>โฟลเดอร์ของฉัน</h2>
-          <button type="button" class="pc-section-link" data-pc-section="folders">ดูทั้งหมด</button>
+          <button type="button" class="pc-section-link" data-pc-section="folders">ดูทั้งหมด ${icons.chevronRight(14)}</button>
         </div>
         <div class="pc-folders-grid">
           ${
-            nonUncatFolders.length === 0
-              ? `<button type="button" class="pc-folder-card" data-open-create-folder="1" style="grid-column:1/-1;align-items:center;justify-content:center;padding:24px;">
+            uncatLinks.length > 0 || uncatFolder
+              ? renderDesktopFolderCard(
+                  { id: uncatFolder?.id || "__watch_later__", name: "รวมไว้ดูทีหลัง", cover: uncatFolder?.cover },
+                  links,
+                  null,
+                  { isWatchLater: !uncatFolder, watchLaterCount: uncatFolder ? getFolderCount(uncatFolder) : uncatLinks.length }
+                )
+              : ""
+          }
+          ${
+            nonUncatFolders.length === 0 && uncatLinks.length === 0 && !uncatFolder
+              ? `<button type="button" class="pc-folder-card figma-style" data-open-create-folder="1" style="grid-column:1/-1;align-items:center;justify-content:center;padding:24px;">
                    <span style="color:var(--theme-accent-text);">${icons.plus(22)}</span>
                    <strong style="font-size:14px;">สร้างโฟลเดอร์แรกของคุณ</strong>
                  </button>`
               : nonUncatFolders
-                  .slice(0, 4)
+                  .slice(0, uncatLinks.length > 0 || uncatFolder ? 3 : 4)
                   .map((f) => renderDesktopFolderCard(f, links, null))
                   .join("")
           }
@@ -395,7 +425,7 @@ export function renderWebView(state) {
                  <p>ไม่พบลิงก์ที่ตรงกับเงื่อนไข</p>
                  <button type="button" class="figma-primary-btn compact" data-open-save-sheet="1">+ เพิ่มลิงก์</button>
                </div>`
-            : `<div class="pc-link-grid">
+            : `<div class="pc-link-list">
                  ${visibleLinks.map((item) => renderLinkCard(item, { variant: "pc-row" })).join("")}
                </div>`
         }
@@ -443,64 +473,69 @@ export function renderWebView(state) {
   } else if (section === "folderDetail") {
     if (!activeFolder) {
       mainContent = `
-        <button type="button" class="pc-back-link-btn" data-pc-section="folders">${icons.back(16)}<span>กลับไปหน้าโฟลเดอร์</span></button>
+        <button type="button" class="pc-folder-back-title" data-pc-section="folders">${icons.back(20)}<span>กลับไปหน้าโฟลเดอร์</span></button>
         <div class="figma-empty-state"><p>ยังไม่มีโฟลเดอร์</p></div>
       `;
     } else {
       const folderLinks = links.filter((l) => l.folderId === activeFolder.id);
-      const filteredFolderLinks = filterLinks(folderLinks, ui.folderDetailSearch, ui.folderDetailFilter);
+      const filteredFolderLinks = filterLinks(folderLinks, ui.folderDetailSearch, ui.folderDetailFilter, {
+        platform: ui.folderPlatformFilter,
+        contentType: ui.folderContentTypeFilter,
+      });
       const count = getFolderCount(activeFolder);
       const cachedMembers = state.ui.folderMembers?.[activeFolder.id]?.members || [];
       const shareCount = Math.max(activeFolder.sharedCount || 0, Math.max(0, cachedMembers.length - 1));
+      const initials = cachedMembers.length
+        ? cachedMembers.slice(0, 3).map((m) => (m.display_name || m.email || m.user_id || "U").trim().charAt(0).toUpperCase())
+        : activeFolder.sharedUsers?.length
+          ? activeFolder.sharedUsers.slice(0, 3).map((u) => String(u).trim().charAt(0).toUpperCase())
+          : [userInitial];
 
       mainContent = `
-        <button type="button" class="pc-back-link-btn" data-pc-section="folders">
-          ${icons.back(16)}
-          <span>กลับไปโฟลเดอร์ทั้งหมด</span>
-        </button>
-
-        <div class="pc-folder-hero-card">
-          <div class="pc-folder-hero-meta">
-            <div class="pc-folder-hero-thumb">
-              ${
-                safeImgUrl(activeFolder.cover)
-                  ? `<img src="${escHtml(safeImgUrl(activeFolder.cover))}" alt="" />`
-                  : `<span style="font-size:28px;">${escHtml(activeFolder.emoji || "📁")}</span>`
-              }
-            </div>
-            <div class="pc-folder-hero-copy">
-              <h1>${escHtml(activeFolder.name)}</h1>
-              <p>${count} รายการ · ${shareCount > 0 ? `แชร์กับ ${shareCount} คน` : "โฟลเดอร์ส่วนตัว"}</p>
-            </div>
-          </div>
-
-          <div class="pc-folder-hero-actions">
-            <button type="button" class="pc-hero-pill-btn" data-open-edit-folder="${escHtml(activeFolder.id)}">
+        <header class="pc-main-header" data-node-id="383:9858">
+          <button type="button" class="pc-folder-back-title" data-pc-section="folders">
+            ${icons.back(22)}
+            <span>${escHtml(activeFolder.name)}</span>
+          </button>
+          <div class="pc-main-actions">
+            <button type="button" class="pc-invite-btn" data-open-edit-folder="${escHtml(activeFolder.id)}">
               ${icons.pencil(14)}
               <span>แก้ไข</span>
             </button>
-            <button type="button" class="pc-hero-pill-btn" data-open-invite-sheet="${escHtml(activeFolder.id)}">
-              ${icons.people(15)}
+            <button type="button" class="pc-invite-btn" data-open-invite-sheet="${escHtml(activeFolder.id)}">
               <span>เชิญเพื่อน</span>
             </button>
-            <button type="button" class="pc-hero-pill-btn solid" data-open-save-sheet="${escHtml(activeFolder.id)}">
-              ${icons.plus(15)}
-              <span>เพิ่มลิงก์</span>
-            </button>
           </div>
+        </header>
+
+        <div class="shared-bar" style="padding:0;background:transparent;">
+          <div class="avatar-stack">
+            ${initials.map((ch) => `<div class="avatar-circle">${escHtml(ch)}</div>`).join("")}
+          </div>
+          <span style="font-size:13.5px;color:var(--ink-secondary);">
+            ${shareCount > 0 ? `แชร์กับ ${shareCount} คน` : "โฟลเดอร์ส่วนตัว · กดเชิญเพื่อนเพื่อแชร์"}
+          </span>
         </div>
 
-        <div class="pc-search-filter-block">
+        <div class="pc-search-filter-block figma-col">
           <div class="pc-search-bar">
             <span class="figma-search-icon">${icons.search(17)}</span>
             <input
               type="search"
-              placeholder="ค้นหาลิงก์ในโฟลเดอร์นี้"
+              placeholder="ค้นหาลิงก์ในโฟลเดอร์"
               value="${escHtml(ui.folderDetailSearch || "")}"
               data-search-input="folderDetail"
             />
           </div>
-          ${renderDesktopFilterPills(ui.folderDetailFilter || "all", "dark")}
+          ${renderDesktopFilterPills(ui.folderDetailFilter || "all", "dark", state)}
+        </div>
+
+        <div class="pc-section-head">
+          <h2>ลิงก์ในโฟลเดอร์ (${count})</h2>
+          <button type="button" class="pc-add-inline-btn" data-open-save-sheet="${escHtml(activeFolder.id)}">
+            ${icons.plus(14)}
+            <span>เพิ่มลิงก์</span>
+          </button>
         </div>
 
         ${
@@ -510,7 +545,7 @@ export function renderWebView(state) {
                  <p>ยังไม่มีลิงก์ที่ตรงกับตัวกรองในโฟลเดอร์นี้</p>
                  <button type="button" class="figma-primary-btn compact" data-open-save-sheet="${escHtml(activeFolder.id)}">+ เพิ่มลิงก์ในโฟลเดอร์</button>
                </div>`
-            : `<div class="pc-link-grid">
+            : `<div class="pc-link-list">
                  ${filteredFolderLinks
                    .map((item) => renderLinkCard(item, { folderContextId: activeFolder.id, variant: "pc-row", selected: ui.activeLinkId === item.id }))
                    .join("")}
@@ -601,7 +636,7 @@ export function renderWebView(state) {
       <header class="pc-main-header">
         <div class="pc-main-title-wrap">
           <h1 class="pc-main-title">การแสดงผล</h1>
-          <span class="pc-main-sub">ปรับขนาดตัวอักษรและธีมสี</span>
+          <span class="pc-main-sub">เลือกธีมสี</span>
         </div>
       </header>
       <div class="pc-panel-card" style="max-width:680px;display:flex;flex-direction:column;gap:18px;">
@@ -639,50 +674,31 @@ export function renderWebView(state) {
 
   return `
     <div class="pc-shell" data-node-id="383:8963">
-      <aside class="pc-sidebar">
+      <aside class="pc-sidebar" data-node-id="384:3028">
         <div class="pc-sidebar-brand">
-          <div style="display:flex;align-items:center;gap:10px;">
-            <span class="pc-brand-logo-chip">${icons.bookmarkSolid(18)}</span>
-            <div>
-              <div class="pc-brand-title">Sharely</div>
-              <div class="pc-brand-sub">เซฟไว้ก่อน ค่อยกลับมาดู</div>
-            </div>
-          </div>
+          <span class="pc-brand-title">Sharely</span>
+          <span class="pc-brand-cherry">${icons.cherry(22)}</span>
         </div>
-
-        <button type="button" class="pc-add-primary-btn" data-open-save-sheet="${escHtml(addSheetFolderArg)}">
-          ${icons.plus(17)}
-          <span>เพิ่มลิงก์</span>
-        </button>
 
         <nav class="pc-nav-group" aria-label="PC Primary Navigation">
           <button type="button" class="pc-nav-item ${section === "home" ? "active" : ""}" data-pc-section="home">
             <span class="pc-nav-ico">${icons.home(18)}</span>
             <span class="pc-nav-label">หน้าหลัก</span>
-            <span class="pc-nav-badge">${links.length}</span>
           </button>
 
-          <button type="button" class="pc-nav-item ${section === "folders" ? "active" : ""}" data-pc-section="folders">
+          <button type="button" class="pc-nav-item ${section === "folders" || section === "folderDetail" ? "active" : ""}" data-pc-section="folders">
             <span class="pc-nav-ico">${icons.folder(18)}</span>
             <span class="pc-nav-label">โฟลเดอร์</span>
-            <span class="pc-nav-badge">${nonUncatFolders.length}</span>
           </button>
 
           <button type="button" class="pc-nav-item ${section === "favorite" ? "active" : ""}" data-pc-section="favorite">
             <span class="pc-nav-ico">${icons.cherry(18)}</span>
             <span class="pc-nav-label">ชื่นชอบ</span>
-            <span class="pc-nav-badge">${links.filter((l) => Boolean(l.favorite)).length}</span>
           </button>
 
           <button type="button" class="pc-nav-item ${section === "ai" ? "active" : ""}" data-pc-section="ai">
             <span class="pc-nav-ico">${icons.bot(18)}</span>
             <span class="pc-nav-label">AI</span>
-          </button>
-
-          <button type="button" class="pc-nav-item ${section === "notifications" ? "active" : ""}" data-pc-section="notifications">
-            <span class="pc-nav-ico">${icons.bell(18)}</span>
-            <span class="pc-nav-label">การแจ้งเตือน</span>
-            ${unreadNotifications > 0 ? `<span class="pc-nav-badge">${unreadNotifications}</span>` : ""}
           </button>
 
           <button type="button" class="pc-nav-item ${profileGroupActive ? "active" : ""}" data-pc-section="profile">
@@ -691,42 +707,10 @@ export function renderWebView(state) {
           </button>
         </nav>
 
-        <div class="pc-folder-sidebar-head">
-          <span>โฟลเดอร์ของฉัน</span>
-          <button type="button" class="pc-folder-plus-btn" data-open-create-folder="1" title="สร้างโฟลเดอร์">+</button>
-        </div>
-
-        <div class="pc-folder-nav-list">
-          ${folders
-            .map((f) => {
-              const isActive = section === "folderDetail" && f.id === activeFolder?.id;
-              return `
-                <button
-                  type="button"
-                  class="pc-nav-item compact ${isActive ? "active" : ""}"
-                  data-open-folder="${escHtml(f.id)}"
-                >
-                  <span class="pc-nav-emoji">${escHtml(f.emoji || "📁")}</span>
-                  <span class="pc-nav-label">${escHtml(f.name)}</span>
-                  <span class="pc-nav-badge">${getFolderCount(f)}</span>
-                </button>`;
-            })
-            .join("")}
-        </div>
-
-        <div class="pc-sidebar-footer">
-          <div class="pc-user-pill" data-pc-section="profile" role="button" tabindex="0">
-            <span class="pc-user-avatar">${escHtml(userInitial)}</span>
-            <div class="pc-user-meta">
-              <strong>${escHtml(displayName)}</strong>
-              <span>${escHtml(user.email || "")}</span>
-            </div>
-          </div>
-          <button type="button" class="pc-logout-btn" data-open-logout-dialog="1" title="ออกจากระบบ">
-            ${icons.signout(16)}
-            <span>ออกจากระบบ</span>
-          </button>
-        </div>
+        <button type="button" class="pc-add-primary-btn figma-pill" data-open-save-sheet="${escHtml(addSheetFolderArg)}">
+          ${icons.plus(16)}
+          <span>เพิ่มลิงก์</span>
+        </button>
       </aside>
 
       <main class="pc-main">

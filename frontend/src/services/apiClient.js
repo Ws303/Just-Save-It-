@@ -36,6 +36,14 @@ function formatRemindIsoInBangkok(remIso, fallbackTime = "18:00") {
   };
 }
 
+export function normalizeWorkflowStatus(status) {
+  const s = String(status || "inbox").toLowerCase();
+  if (s === "done" || s === "read") return "done";
+  if (s === "archived") return "archived";
+  if (s === "todo") return "todo";
+  return "inbox";
+}
+
 export function mapBackendStatusToUi(status) {
   const s = String(status || "inbox").toLowerCase();
   if (s === "done" || s === "read" || s === "archived") return "read";
@@ -46,7 +54,26 @@ export function mapUiStatusToBackend(status) {
   const s = String(status || "unread").toLowerCase();
   if (s === "read" || s === "done") return "done";
   if (s === "archived") return "archived";
+  if (s === "todo") return "todo";
   return "inbox";
+}
+
+export function inferContentType(item = {}) {
+  const raw = String(item.content_type || item.contentType || "").trim().toLowerCase();
+  const embedType = String(item.embed_type || "none").toLowerCase();
+  const platform = String(item.platform || "").toLowerCase();
+  const url = String(item.url || "").toLowerCase();
+  const mediaItems = Array.isArray(item.media_items) ? item.media_items.filter(Boolean) : [];
+  if (raw === "video" || embedType === "youtube" || embedType === "tiktok" || embedType === "vimeo" || platform === "youtube" || platform === "tiktok" || /youtube\.com|youtu\.be|tiktok\.com|vimeo\.com|\.mp4\b/i.test(url)) {
+    return "video";
+  }
+  if (raw === "image" || (mediaItems.length > 0 && embedType === "none" && !["instagram", "facebook", "x", "reddit"].includes(platform)) || /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url)) {
+    return "image";
+  }
+  if (raw === "social" || raw === "post" || ["instagram", "facebook", "x", "twitter", "reddit", "threads", "lemon8"].includes(platform) || ["instagram", "facebook", "x", "reddit"].includes(embedType)) {
+    return "social";
+  }
+  return "article";
 }
 
 export function mapFeedbackCategory(rawCategory) {
@@ -90,6 +117,8 @@ export function mapBackendItemToUi(item, reminderMap = {}) {
     savedAgo: item.savedAgo || "เมื่อสักครู่",
     savedAt: item.saved_at || null,
     status: mapBackendStatusToUi(item.status),
+    workflowStatus: normalizeWorkflowStatus(item.status),
+    contentType: inferContentType({ ...item, platform: item.platform || inferredPlat, media_items: mediaItems }),
     favorite: Boolean(item.is_favorite ?? item.favorite),
     tags,
     note: item.note ?? item.user_note ?? "",
@@ -632,6 +661,11 @@ export const apiClient = {
     if (!item) return null;
     const prevSnapshot = { ...item, tags: Array.isArray(item.tags) ? [...item.tags] : [] };
     Object.assign(item, updates);
+    if ("status" in updates) {
+      const nextWorkflow = normalizeWorkflowStatus(updates.status);
+      item.status = mapBackendStatusToUi(nextWorkflow);
+      item.workflowStatus = nextWorkflow;
+    }
     store.emit();
 
     const body = {};
@@ -675,6 +709,54 @@ export const apiClient = {
     store.rebuildNotificationsFromWorkspace();
     store.emit();
     return item;
+  },
+
+  async refreshItemPreview(itemId) {
+    const item = getLinkById(itemId);
+    if (!item) return { ok: false, status: 404, error: "ไม่พบรายการ" };
+    const res = await dispatchRequest({
+      method: "POST",
+      path: `/api/items/${itemId}/refresh-preview`,
+      body: null,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({
+        status: 200,
+        data: {
+          status: "ok",
+          item: {
+            id: item.id,
+            title: item.title,
+            description: item.description,
+            thumbnail_url: item.coverUrl,
+            media_items: item.media_items || [],
+            embed_url: item.embed_url || null,
+            embed_type: item.embed_type || "none",
+            platform: item.platform,
+            url: item.url,
+          },
+        },
+      }),
+    });
+    if (!res.ok) {
+      store.showToast(res.error || "รีเฟรชพรีวิวลิงก์ไม่สำเร็จ");
+      return res;
+    }
+    const rawUpdated = res.data?.item || res.data;
+    if (rawUpdated && typeof rawUpdated === "object") {
+      const mapped = mapBackendItemToUi({
+        ...rawUpdated,
+        id: item.id,
+        url: rawUpdated.url || item.url,
+        folder_id: rawUpdated.folder_id !== undefined ? rawUpdated.folder_id : item.folderId,
+        tags: rawUpdated.tags || item.tags,
+        note: rawUpdated.note ?? item.note,
+        status: rawUpdated.status || item.workflowStatus || item.status,
+      });
+      Object.assign(item, mapped, { savedAgo: item.savedAgo });
+      store.emit();
+    }
+    store.showToast("รีเฟรชพรีวิวลิงก์แล้ว");
+    return res;
   },
 
   async deleteLink(itemId) {
@@ -1538,46 +1620,132 @@ export const apiClient = {
   },
 
   async createMcpToken(name) {
+    const cleanName = String(name || "").trim() || "MCP Client";
     const res = await dispatchRequest({
       method: "POST",
       path: "/api/auth/tokens",
-      body: { name: name || "Testbed Client" },
+      body: { name: cleanName },
       mockHandler: () => ({
         status: 201,
         data: {
           id: generateUuid(),
-          name: name || "Testbed Client",
+          name: cleanName,
           token: `jsi_live_mock_${generateUuid().replace(/-/g, "")}`,
-          token_prefix: "jsi_live_mock...",
+          token_prefix: "jsi_live_mock",
           created_at: new Date().toISOString(),
         },
       }),
     });
     if (res.ok && res.data?.token) {
       store.state.api.mcpApiToken = res.data.token;
+      store.state.ui.latestMcpRawToken = res.data.token;
+      const existing = Array.isArray(store.state.ui.mcpTokens) ? store.state.ui.mcpTokens : [];
+      store.state.ui.mcpTokens = [
+        {
+          id: res.data.id || generateUuid(),
+          name: res.data.name || cleanName,
+          token_prefix: res.data.token_prefix || res.data.token.slice(0, 16),
+          created_at: res.data.created_at || new Date().toISOString(),
+          revoked_at: null,
+        },
+        ...existing,
+      ];
       store.emit();
     }
     return res;
   },
 
   async listMcpTokens() {
-    return dispatchRequest({
+    const res = await dispatchRequest({
       method: "GET",
       path: "/api/auth/tokens",
       body: null,
+      skipUnauthRedirect: true,
       mockHandler: () => ({
         status: 200,
-        data: [
-          {
-            id: generateUuid(),
-            name: "Claude Desktop",
-            token_prefix: "jsi_live_abcd...",
-            created_at: new Date().toISOString(),
-            is_active: true,
-          },
-        ],
+        data: {
+          tokens: Array.isArray(store.state.ui.mcpTokens) ? store.state.ui.mcpTokens : [],
+        },
       }),
     });
+    if (res.ok) {
+      const tokens = Array.isArray(res.data?.tokens)
+        ? res.data.tokens
+        : Array.isArray(res.data)
+          ? res.data
+          : [];
+      store.state.ui.mcpTokens = tokens.filter((t) => !t?.revoked_at);
+      store.emit();
+    }
+    return res;
+  },
+
+  async revokeMcpToken(tokenId) {
+    if (!tokenId) return { ok: false, status: 400, error: "ไม่พบ Token ID" };
+    const res = await dispatchRequest({
+      method: "DELETE",
+      path: `/api/auth/tokens/${encodeURIComponent(tokenId)}`,
+      body: null,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({
+        status: 200,
+        data: { revoked: true, id: tokenId, revoked_at: new Date().toISOString() },
+      }),
+    });
+    if (res.ok) {
+      store.state.ui.mcpTokens = (store.state.ui.mcpTokens || []).filter((t) => t.id !== tokenId);
+      store.emit();
+    }
+    return res;
+  },
+
+  async deleteAccount() {
+    const res = await dispatchRequest({
+      method: "DELETE",
+      path: "/api/auth/me",
+      body: null,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({ status: 200, data: { deleted: true } }),
+    });
+    if (res.ok) {
+      if (typeof store.clearSession === "function") {
+        store.clearSession({ clearWorkspace: true });
+      }
+      store.showToast("ลบบัญชีและข้อมูลทั้งหมดเรียบร้อยแล้ว");
+    }
+    return res;
+  },
+
+  async exportWorkspaceJson() {
+    const res = await dispatchRequest({
+      method: "GET",
+      path: "/api/export",
+      body: null,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({
+        status: 200,
+        data: {
+          exported_at: new Date().toISOString(),
+          user: {
+            id: store.state.data.user?.id || null,
+            email: store.state.data.user?.email || null,
+            display_name: store.state.data.user?.nickname || null,
+          },
+          folders: store.state.data.folders || [],
+          tags: store.state.data.tags || [],
+          items: store.state.data.links || [],
+          reminders: (store.state.data.links || [])
+            .filter((l) => l.reminder)
+            .map((l) => ({
+              item_id: l.id,
+              reminder: l.reminder,
+              schedule_type: l.scheduleType,
+              repeat_every_days: l.repeatEveryDays,
+            })),
+        },
+      }),
+    });
+    return res;
   },
 
   async signInGoogle() {
