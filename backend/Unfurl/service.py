@@ -155,7 +155,7 @@ async def preview_url_readonly(
             }
 
     try:
-        result = await extract_unfurl_metadata(canon_url)
+        result = await extract_unfurl_metadata(canon_url, fetch_full_description=force_refresh)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -256,7 +256,7 @@ async def enrich_item(
 
     # 2. Live 0-token extraction + Cover #1 WebP upload
     try:
-        result = await extract_unfurl_metadata(canon_url)
+        result = await extract_unfurl_metadata(canon_url, fetch_full_description=force_refresh)
         final_cover, uploaded_to_storage = await process_and_upload_cover(
             result.image_url,
             url_hash=url_hash,

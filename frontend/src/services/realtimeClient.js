@@ -36,13 +36,50 @@ function clearTimers() {
   }
 }
 
-function scheduleSync(reason = "realtime") {
+const LOCAL_ECHO_SUPPRESS_MS = 3500;
+let lastLocalMutationAt = 0;
+let pendingDeltas = [];
+let pendingForceFullSync = false;
+
+export function noteLocalMutation() {
+  lastLocalMutationAt = Date.now();
+  pendingDeltas = [];
+  pendingForceFullSync = false;
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+}
+
+export function extractRealtimeDelta(msg) {
+  const data = msg?.payload?.data || msg?.payload || {};
+  const table = data.table || msg?.table || null;
+  const type = String(data.type || msg?.event || "").toUpperCase();
+  const record = data.record || data.new || null;
+  const oldRecord = data.old_record || data.old || null;
+  if (!table || (!record && !oldRecord)) return null;
+  return { table, type, record, oldRecord };
+}
+
+function scheduleSync(reason = "realtime", delta = null) {
   if (!running || !currentOptions?.onSync) return;
+  if (reason === "realtime" && Date.now() - lastLocalMutationAt < LOCAL_ECHO_SUPPRESS_MS) {
+    return;
+  }
+  if (delta) {
+    pendingDeltas.push(delta);
+  } else {
+    pendingForceFullSync = true;
+  }
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     debounceTimer = null;
+    const deltas = pendingDeltas.slice();
+    const forceFullSync = pendingForceFullSync || deltas.length === 0;
+    pendingDeltas = [];
+    pendingForceFullSync = false;
     if (running && currentOptions?.onSync) {
-      Promise.resolve(currentOptions.onSync(reason)).catch(() => {});
+      Promise.resolve(currentOptions.onSync(reason, { deltas, forceFullSync })).catch(() => {});
     }
   }, 600);
 }
@@ -126,7 +163,7 @@ function connectWebSocket() {
         msg?.event === "UPDATE" ||
         msg?.event === "DELETE"
       ) {
-        scheduleSync("realtime");
+        scheduleSync("realtime", extractRealtimeDelta(msg));
       }
     } catch {
       // ignore malformed frames
@@ -196,6 +233,7 @@ export function refreshRealtimeAccessToken(token) {
 }
 
 export function broadcastLocalChange(reason = "mutation") {
+  noteLocalMutation();
   if (typeof BroadcastChannel === "undefined") return;
   try {
     const ch = bc || new BroadcastChannel(CHANNEL_NAME);

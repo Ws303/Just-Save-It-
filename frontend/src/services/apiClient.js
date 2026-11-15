@@ -9,8 +9,172 @@ import { store, generateUuid, inferPlatform, getFolderById, getLinkById, filterL
 import { getAuthMode } from "./routeGuard.js";
 import { buildAuthRedirectUrl, extractClaimsSummary, supabaseAuth } from "./supabaseAuth.js";
 import { disableWebPush } from "./pushClient.js";
+import { broadcastLocalChange, noteLocalMutation } from "./realtimeClient.js";
 
+const WORKSPACE_CACHE_PREFIX = "sharely_workspace_cache_v1:";
+const WORKSPACE_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
 let _refreshInFlightPromise = null;
+let _hydrateInFlightPromise = null;
+
+function resolveCacheUserId(userId) {
+  return String(userId || store.state.data.user?.id || store.state.api?.jwtClaims?.sub || "").trim();
+}
+
+export function loadWorkspaceCache(userId) {
+  const uid = resolveCacheUserId(userId);
+  if (!uid || typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(`${WORKSPACE_CACHE_PREFIX}${uid}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || parsed.userId !== uid) return null;
+    if (parsed.savedAt && Date.now() - Number(parsed.savedAt) > WORKSPACE_CACHE_MAX_AGE_MS) {
+      localStorage.removeItem(`${WORKSPACE_CACHE_PREFIX}${uid}`);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function saveWorkspaceCache(userId) {
+  const uid = resolveCacheUserId(userId);
+  if (!uid || store.state.api?.mode !== "live" || !store.state.data.user?.isAuthenticated) return;
+  if (typeof localStorage === "undefined") return;
+  try {
+    const payload = {
+      version: 1,
+      userId: uid,
+      savedAt: Date.now(),
+      user: {
+        displayName: store.state.data.user.displayName || "",
+        email: store.state.data.user.email || "",
+        tier: store.state.data.user.tier || "free",
+        timezone: store.state.data.user.timezone || "Asia/Bangkok",
+        aiLanguage: store.state.data.aiConfig?.language || "th",
+        freeQuotaRemaining: store.state.data.freeQuotaRemaining,
+        freeQuotaLimit: store.state.data.freeQuotaLimit,
+        freeQuotaTotal: store.state.data.freeQuotaTotal,
+        freeQuotaUsed: store.state.data.freeQuotaUsed,
+      },
+      folders: (store.state.data.folders || []).slice(0, 100),
+      links: (store.state.data.links || []).filter((l) => !l?._optimistic).slice(0, 150),
+      serverTags: (store.state.data.serverTags || []).slice(0, 200),
+    };
+    localStorage.setItem(`${WORKSPACE_CACHE_PREFIX}${uid}`, JSON.stringify(payload));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+export function clearWorkspaceCache(userId) {
+  const uid = resolveCacheUserId(userId);
+  if (!uid || typeof localStorage === "undefined") return;
+  try {
+    localStorage.removeItem(`${WORKSPACE_CACHE_PREFIX}${uid}`);
+  } catch {}
+}
+
+function mapBackendFolder(f, idx) {
+  return {
+    sharedUsers: [],
+    inviteSlug: String(f.id || "").slice(0, 8),
+    baseExternalCount: 0,
+    ...f,
+    cover: f.cover_url || f.cover || COVER_CHOICES[idx % COVER_CHOICES.length]?.src || "./assets/covers/coffee.png",
+    sharedCount: f.member_count ?? f.sharedCount ?? (f.is_shared ? 2 : 0),
+  };
+}
+
+function applyWorkspaceCacheSnapshot(cached) {
+  if (!cached || !store.state.data.user?.isAuthenticated) return false;
+  if ((store.state.data.links?.length || 0) > 0 || (store.state.data.folders?.length || 0) > 0) {
+    return false;
+  }
+  const u = cached.user || {};
+  if (u.displayName) store.state.data.user.displayName = u.displayName;
+  if (u.email) store.state.data.user.email = u.email;
+  if (u.tier) store.state.data.user.tier = u.tier;
+  if (u.timezone) store.state.data.user.timezone = u.timezone;
+  if (u.aiLanguage) store.state.data.aiConfig.language = u.aiLanguage;
+  if (typeof u.freeQuotaRemaining === "number") {
+    store.state.data.freeQuotaRemaining = u.freeQuotaRemaining;
+    store.state.data.freeQuotaLimit = u.freeQuotaLimit ?? store.state.data.freeQuotaLimit;
+    store.state.data.freeQuotaTotal = u.freeQuotaTotal ?? store.state.data.freeQuotaTotal;
+    store.state.data.freeQuotaUsed = u.freeQuotaUsed ?? 0;
+  }
+  if (Array.isArray(cached.folders)) {
+    store.state.data.folders = cached.folders;
+    if (!store.state.ui.activeFolderId) {
+      store.state.ui.activeFolderId = cached.folders[0]?.id || null;
+    }
+  }
+  if (Array.isArray(cached.links)) {
+    store.state.data.links = cached.links;
+    if (!store.state.ui.activeLinkId) {
+      store.state.ui.activeLinkId = cached.links[0]?.id || null;
+    }
+  }
+  if (Array.isArray(cached.serverTags)) {
+    store.state.data.serverTags = cached.serverTags;
+  }
+  store.rebuildNotificationsFromWorkspace();
+  store.emit();
+  return true;
+}
+
+function applyWorkspacePayload({ meData = null, folders = null, itemRows = null, tags = null, reminders = null }) {
+  if (meData && typeof meData === "object") {
+    const prof = meData.profile || {};
+    if (meData.display_name || prof.display_name) {
+      store.state.data.user.displayName = meData.display_name || prof.display_name;
+    }
+    if (meData.email || prof.email) {
+      store.state.data.user.email = meData.email || prof.email;
+    }
+    store.state.data.user.tier = meData.tier || prof.tier || store.state.data.user.tier || "free";
+    if (prof.preferred_summary_language) {
+      store.state.data.aiConfig.language = prof.preferred_summary_language;
+    }
+    if (prof.default_timezone) {
+      store.state.data.user.timezone = prof.default_timezone;
+    }
+    if (meData.ai_quota && typeof meData.ai_quota.remaining === "number") {
+      const lim = meData.ai_quota.limit ?? store.state.data.freeQuotaTotal ?? 50;
+      store.state.data.freeQuotaRemaining = meData.ai_quota.remaining;
+      store.state.data.freeQuotaLimit = lim;
+      store.state.data.freeQuotaTotal = lim;
+      store.state.data.freeQuotaUsed = meData.ai_quota.used ?? 0;
+    }
+  }
+
+  const remMap = {};
+  for (const rem of reminders || []) {
+    if (rem?.item_id) remMap[rem.item_id] = rem;
+  }
+
+  if (Array.isArray(folders)) {
+    store.state.data.folders = folders.map(mapBackendFolder);
+    if (!store.state.data.folders.some((f) => f.id === store.state.ui.activeFolderId)) {
+      store.state.ui.activeFolderId = store.state.data.folders[0]?.id || null;
+    }
+  }
+
+  if (Array.isArray(itemRows)) {
+    store.state.data.links = itemRows.map((row) => mapBackendItemToUi(row, remMap));
+    if (!store.state.data.links.some((l) => l.id === store.state.ui.activeLinkId)) {
+      store.state.ui.activeLinkId = store.state.data.links[0]?.id || null;
+    }
+  }
+
+  if (Array.isArray(tags)) {
+    store.state.data.serverTags = tags;
+  }
+
+  store.rebuildNotificationsFromWorkspace();
+  store.emit();
+}
 
 function formatRemindIsoInBangkok(remIso, fallbackTime = "18:00") {
   if (!remIso) return { date: null, time: fallbackTime };
@@ -532,7 +696,7 @@ export const apiClient = {
     const backendTags = tags.map((t) => String(t).replace(/^#/, "").trim()).filter(Boolean);
 
     let previewData = {};
-    if (cleanUrl && store.state.api.mode === "live" && !payload.skipPreview) {
+    if (cleanUrl && store.state.api.mode === "live" && payload.waitForPreview === true && !payload.skipPreview) {
       try {
         const pv = await this.previewUrl(cleanUrl);
         if (pv.ok && pv.data) previewData = pv.data;
@@ -622,6 +786,18 @@ export const apiClient = {
       sourceApp: payload.sourceApp || reqBody.platform,
     };
 
+    const isLiveMode = store.state.api.mode === "live";
+    const folder = getFolderById(localFallback.folderId);
+    let optimisticItem = null;
+    if (isLiveMode) {
+      optimisticItem = { ...localFallback, pending: true, _optimistic: true };
+      store.state.data.links.unshift(optimisticItem);
+      if (folder) folder.baseExternalCount = (folder.baseExternalCount || 0) + 1;
+      store.state.ui.highlightLinkId = optimisticItem.id;
+      noteLocalMutation();
+      store.emit();
+    }
+
     const res = await dispatchRequest({
       method: "POST",
       path: "/api/items",
@@ -630,16 +806,29 @@ export const apiClient = {
       mockHandler: () => ({ status: 201, data: localFallback }),
     });
 
-    if (store.state.api.mode === "live" && !res.ok) {
+    if (isLiveMode && !res.ok) {
+      if (optimisticItem) {
+        const optIdx = store.state.data.links.indexOf(optimisticItem);
+        if (optIdx !== -1) store.state.data.links.splice(optIdx, 1);
+        if (folder && folder.baseExternalCount > 0) folder.baseExternalCount -= 1;
+      }
       store.showToast(res.error || "บันทึกโพสต์ไม่สำเร็จ");
+      store.emit();
       return null;
     }
 
     const newItem = res.ok && res.data?.id ? { ...localFallback, ...mapBackendItemToUi(res.data) } : localFallback;
-    store.state.data.links.unshift(newItem);
-
-    const folder = getFolderById(newItem.folderId);
-    if (folder) folder.baseExternalCount = (folder.baseExternalCount || 0) + 1;
+    if (optimisticItem) {
+      const optIdx = store.state.data.links.indexOf(optimisticItem);
+      if (optIdx !== -1) {
+        store.state.data.links.splice(optIdx, 1, newItem);
+      } else {
+        store.state.data.links.unshift(newItem);
+      }
+    } else {
+      store.state.data.links.unshift(newItem);
+      if (folder) folder.baseExternalCount = (folder.baseExternalCount || 0) + 1;
+    }
 
     store.state.data.lastSharedEvent = {
       id: newItem.id,
@@ -656,7 +845,26 @@ export const apiClient = {
     };
     store.state.ui.highlightLinkId = newItem.id;
     store.rebuildNotificationsFromWorkspace();
+    saveWorkspaceCache();
+    broadcastLocalChange("createLink");
     store.emit();
+
+    const needsBackgroundEnrich =
+      isLiveMode &&
+      res.ok &&
+      newItem.id &&
+      cleanUrl &&
+      !payload.skipPreview &&
+      payload.waitForPreview !== true &&
+      (!newItem.coverUrl ||
+        !newItem.description ||
+        newItem.title === newItem.url ||
+        String(newItem.title || "").startsWith("โพสต์ใหม่จาก "));
+    if (needsBackgroundEnrich) {
+      Promise.resolve()
+        .then(() => this.refreshItemPreview(newItem.id, { silent: true }))
+        .catch(() => {});
+    }
     return newItem;
   },
 
@@ -711,6 +919,8 @@ export const apiClient = {
       return null;
     }
     store.rebuildNotificationsFromWorkspace();
+    saveWorkspaceCache();
+    broadcastLocalChange("patchLink");
     store.emit();
     return item;
   },
@@ -757,6 +967,8 @@ export const apiClient = {
         status: rawUpdated.status || item.workflowStatus || item.status,
       });
       Object.assign(item, mapped, { savedAgo: item.savedAgo });
+      saveWorkspaceCache();
+      broadcastLocalChange("refreshItemPreview");
       store.emit();
     }
     if (!silent) store.showToast("รีเฟรชพรีวิวลิงก์แล้ว");
@@ -769,6 +981,7 @@ export const apiClient = {
     const [removed] = store.state.data.links.splice(idx, 1);
     const folder = getFolderById(removed.folderId);
     if (folder && folder.baseExternalCount > 0) folder.baseExternalCount -= 1;
+    noteLocalMutation();
     store.emit();
     const res = await dispatchRequest({
       method: "DELETE",
@@ -785,6 +998,8 @@ export const apiClient = {
       return false;
     }
     store.rebuildNotificationsFromWorkspace();
+    saveWorkspaceCache();
+    broadcastLocalChange("deleteLink");
     store.emit();
     return true;
   },
@@ -843,6 +1058,8 @@ export const apiClient = {
     const finalFolder = res.ok && res.data?.id ? { ...fallbackFolder, ...res.data, cover: res.data.cover_url || resolvedCover } : fallbackFolder;
     store.state.data.folders.push(finalFolder);
     store.rebuildNotificationsFromWorkspace();
+    saveWorkspaceCache();
+    broadcastLocalChange("saveFolder");
     store.emit();
     return finalFolder;
   },
@@ -861,6 +1078,7 @@ export const apiClient = {
     if (store.state.ui.activeFolderId === folderId) {
       store.state.ui.activeFolderId = store.state.data.folders[0]?.id || null;
     }
+    noteLocalMutation();
     store.emit();
     const res = await dispatchRequest({
       method: "DELETE",
@@ -880,6 +1098,8 @@ export const apiClient = {
       return res;
     }
     store.rebuildNotificationsFromWorkspace();
+    saveWorkspaceCache();
+    broadcastLocalChange("deleteFolder");
     store.emit();
     return res;
   },
@@ -1013,6 +1233,7 @@ export const apiClient = {
         scheduleType === "every_n_days"
           ? `ทุก ${item.repeatEveryDays} วัน · ${timeShort}`
           : `${datePart} ${timeShort}`;
+      noteLocalMutation();
       store.emit();
     }
 
@@ -1029,6 +1250,8 @@ export const apiClient = {
       return res;
     }
     store.rebuildNotificationsFromWorkspace();
+    saveWorkspaceCache();
+    broadcastLocalChange("saveReminder");
     store.emit();
     return res;
   },
@@ -1049,6 +1272,7 @@ export const apiClient = {
       item.reminderDate = null;
       item.scheduleType = "once";
       item.repeatEveryDays = null;
+      noteLocalMutation();
       store.emit();
     }
     const res = await dispatchRequest({
@@ -1064,6 +1288,8 @@ export const apiClient = {
       return res;
     }
     store.rebuildNotificationsFromWorkspace();
+    saveWorkspaceCache();
+    broadcastLocalChange("deleteReminder");
     store.emit();
     return res;
   },
@@ -1101,128 +1327,195 @@ export const apiClient = {
     if (!isAuthenticatedLive) {
       return { ok: false, hydrated: false };
     }
-    const [meRes, foldersRes, itemsRes, tagsRes, remindersRes] = await Promise.all([
-      dispatchRequest({
-        method: "GET",
-        path: "/api/auth/me",
-        body: null,
-        skipUnauthRedirect: true,
-        mockHandler: () => ({ status: 200, data: { user: store.state.data.user } }),
-      }),
-      dispatchRequest({
-        method: "GET",
-        path: "/api/folders",
-        body: null,
-        skipUnauthRedirect: true,
-        mockHandler: () => ({ status: 200, data: { folders: store.state.data.folders } }),
-      }),
-      dispatchRequest({
-        method: "GET",
-        path: "/api/items?limit=100",
-        body: null,
-        skipUnauthRedirect: true,
-        mockHandler: () => ({ status: 200, data: { items: [] } }),
-      }),
-      dispatchRequest({
-        method: "GET",
-        path: "/api/tags",
-        body: null,
-        skipUnauthRedirect: true,
-        mockHandler: () => ({ status: 200, data: { tags: [] } }),
-      }),
-      dispatchRequest({
-        method: "GET",
-        path: "/api/reminders",
-        body: null,
-        skipUnauthRedirect: true,
-        mockHandler: () => ({ status: 200, data: { reminders: [] } }),
-      }),
-    ]);
 
-    if (!store.state.data.user?.isAuthenticated) {
-      return { ok: false, hydrated: false };
+    const cached = loadWorkspaceCache(resolveCacheUserId());
+    if (cached) {
+      applyWorkspaceCacheSnapshot(cached);
     }
 
-    if (meRes?.ok && meRes.data) {
-      const m = meRes.data;
-      const prof = m.profile || {};
-      if (m.display_name || prof.display_name) {
-        store.state.data.user.displayName = m.display_name || prof.display_name;
-      }
-      if (m.email || prof.email) {
-        store.state.data.user.email = m.email || prof.email;
-      }
-      store.state.data.user.tier = m.tier || prof.tier || store.state.data.user.tier || "free";
-      if (prof.preferred_summary_language) {
-        store.state.data.aiConfig.language = prof.preferred_summary_language;
-      }
-      if (prof.default_timezone) {
-        store.state.data.user.timezone = prof.default_timezone;
-      }
-      if (m.ai_quota && typeof m.ai_quota.remaining === "number") {
-        const lim = m.ai_quota.limit ?? store.state.data.freeQuotaTotal ?? 50;
-        store.state.data.freeQuotaRemaining = m.ai_quota.remaining;
-        store.state.data.freeQuotaLimit = lim;
-        store.state.data.freeQuotaTotal = lim;
-        store.state.data.freeQuotaUsed = m.ai_quota.used ?? 0;
-      }
+    if (_hydrateInFlightPromise) {
+      return _hydrateInFlightPromise;
     }
 
-    const remMap = {};
-    for (const rem of remindersRes?.data?.reminders || []) {
-      if (rem?.item_id) remMap[rem.item_id] = rem;
-    }
-
-    const mapBackendFolder = (f, idx) => ({
-      sharedUsers: [],
-      inviteSlug: String(f.id || "").slice(0, 8),
-      baseExternalCount: 0,
-      ...f,
-      cover: f.cover_url || f.cover || COVER_CHOICES[idx % COVER_CHOICES.length]?.src || "./assets/covers/coffee.png",
-      sharedCount: f.member_count ?? f.sharedCount ?? (f.is_shared ? 2 : 0),
-    });
-
-    if (foldersRes?.ok && Array.isArray(foldersRes.data?.folders)) {
-      store.state.data.folders = foldersRes.data.folders.map(mapBackendFolder);
-      if (!store.state.data.folders.some((f) => f.id === store.state.ui.activeFolderId)) {
-        store.state.ui.activeFolderId = store.state.data.folders[0]?.id || null;
-      }
-    }
-
-    if (itemsRes?.ok && Array.isArray(itemsRes.data?.items)) {
-      const allRows = [...itemsRes.data.items];
-      let offset = allRows.length;
-      while (store.state.api.mode === "live" && allRows.length === offset && offset > 0 && offset < 500) {
-        const nextPage = await dispatchRequest({
+    _hydrateInFlightPromise = (async () => {
+      try {
+        const wsRes = await dispatchRequest({
           method: "GET",
-          path: `/api/items?limit=100&offset=${offset}`,
+          path: "/api/workspace?limit=100",
           body: null,
           skipUnauthRedirect: true,
-          mockHandler: () => ({ status: 200, data: { items: [] } }),
+          mockHandler: () => ({ status: 404, data: null }),
         });
-        const batch = nextPage?.ok && Array.isArray(nextPage.data?.items) ? nextPage.data.items : [];
-        if (batch.length === 0) break;
-        allRows.push(...batch);
-        if (batch.length < 100) break;
-        offset += 100;
+
+        if (!store.state.data.user?.isAuthenticated) {
+          return { ok: false, hydrated: false };
+        }
+
+        if (wsRes?.ok && wsRes.data && Array.isArray(wsRes.data.items)) {
+          const d = wsRes.data;
+          const allRows = [...d.items];
+          let offset = allRows.length;
+          while (d.next_cursor && allRows.length === offset && offset > 0 && offset < 500) {
+            const nextPage = await dispatchRequest({
+              method: "GET",
+              path: `/api/items?limit=100&offset=${offset}`,
+              body: null,
+              skipUnauthRedirect: true,
+              mockHandler: () => ({ status: 200, data: { items: [] } }),
+            });
+            const batch = nextPage?.ok && Array.isArray(nextPage.data?.items) ? nextPage.data.items : [];
+            if (batch.length === 0) break;
+            allRows.push(...batch);
+            if (batch.length < 100) break;
+            offset += 100;
+          }
+          applyWorkspacePayload({
+            meData: d,
+            folders: d.folders,
+            itemRows: allRows,
+            tags: d.tags,
+            reminders: d.reminders,
+          });
+          saveWorkspaceCache();
+          return {
+            ok: true,
+            folders: store.state.data.folders.length,
+            links: store.state.data.links.length,
+          };
+        }
+
+        // Legacy fallback when backend has not rolled /api/workspace yet
+        const [meRes, foldersRes, itemsRes, tagsRes, remindersRes] = await Promise.all([
+          dispatchRequest({
+            method: "GET",
+            path: "/api/auth/me",
+            body: null,
+            skipUnauthRedirect: true,
+            mockHandler: () => ({ status: 200, data: { user: store.state.data.user } }),
+          }),
+          dispatchRequest({
+            method: "GET",
+            path: "/api/folders",
+            body: null,
+            skipUnauthRedirect: true,
+            mockHandler: () => ({ status: 200, data: { folders: store.state.data.folders } }),
+          }),
+          dispatchRequest({
+            method: "GET",
+            path: "/api/items?limit=100",
+            body: null,
+            skipUnauthRedirect: true,
+            mockHandler: () => ({ status: 200, data: { items: [] } }),
+          }),
+          dispatchRequest({
+            method: "GET",
+            path: "/api/tags",
+            body: null,
+            skipUnauthRedirect: true,
+            mockHandler: () => ({ status: 200, data: { tags: [] } }),
+          }),
+          dispatchRequest({
+            method: "GET",
+            path: "/api/reminders",
+            body: null,
+            skipUnauthRedirect: true,
+            mockHandler: () => ({ status: 200, data: { reminders: [] } }),
+          }),
+        ]);
+
+        if (!store.state.data.user?.isAuthenticated) {
+          return { ok: false, hydrated: false };
+        }
+
+        let itemRows = null;
+        if (itemsRes?.ok && Array.isArray(itemsRes.data?.items)) {
+          itemRows = [...itemsRes.data.items];
+          let offset = itemRows.length;
+          while (store.state.api.mode === "live" && itemRows.length === offset && offset > 0 && offset < 500) {
+            const nextPage = await dispatchRequest({
+              method: "GET",
+              path: `/api/items?limit=100&offset=${offset}`,
+              body: null,
+              skipUnauthRedirect: true,
+              mockHandler: () => ({ status: 200, data: { items: [] } }),
+            });
+            const batch = nextPage?.ok && Array.isArray(nextPage.data?.items) ? nextPage.data.items : [];
+            if (batch.length === 0) break;
+            itemRows.push(...batch);
+            if (batch.length < 100) break;
+            offset += 100;
+          }
+        }
+
+        applyWorkspacePayload({
+          meData: meRes?.ok ? meRes.data : null,
+          folders: foldersRes?.ok ? foldersRes.data?.folders : null,
+          itemRows,
+          tags: tagsRes?.ok ? tagsRes.data?.tags : null,
+          reminders: remindersRes?.ok ? remindersRes.data?.reminders : null,
+        });
+        saveWorkspaceCache();
+        return {
+          ok: Boolean(foldersRes?.ok || itemsRes?.ok),
+          folders: store.state.data.folders.length,
+          links: store.state.data.links.length,
+        };
+      } finally {
+        _hydrateInFlightPromise = null;
       }
-      store.state.data.links = allRows.map((row) => mapBackendItemToUi(row, remMap));
-      if (!store.state.data.links.some((l) => l.id === store.state.ui.activeLinkId)) {
-        store.state.ui.activeLinkId = store.state.data.links[0]?.id || null;
+    })();
+
+    return _hydrateInFlightPromise;
+  },
+
+  async applyRealtimeDelta(syncMeta = {}) {
+    const deltas = Array.isArray(syncMeta?.deltas) ? syncMeta.deltas : [];
+    const forceFullSync = Boolean(syncMeta?.forceFullSync) || deltas.length === 0;
+    if (!forceFullSync) {
+      let handledAll = true;
+      let mutated = false;
+      for (const delta of deltas) {
+        if (delta.table === "items" && delta.type === "DELETE" && delta.oldRecord?.id) {
+          const before = store.state.data.links.length;
+          store.state.data.links = store.state.data.links.filter((l) => l.id !== delta.oldRecord.id);
+          if (store.state.data.links.length !== before) mutated = true;
+        } else if (delta.table === "items" && delta.type === "UPDATE" && delta.record?.id) {
+          const existing = getLinkById(delta.record.id);
+          if (existing) {
+            const mapped = mapBackendItemToUi(delta.record);
+            Object.assign(existing, {
+              folderId: mapped.folderId,
+              title: mapped.title,
+              description: mapped.description,
+              coverUrl: mapped.coverUrl || existing.coverUrl,
+              media_items: mapped.media_items?.length ? mapped.media_items : existing.media_items,
+              embed_url: mapped.embed_url ?? existing.embed_url,
+              embed_type: mapped.embed_type || existing.embed_type,
+              status: mapped.status,
+              workflowStatus: mapped.workflowStatus,
+              favorite: mapped.favorite,
+              note: mapped.note,
+              aiSummary: mapped.aiSummary,
+              aiCached: mapped.aiCached,
+            });
+            mutated = true;
+          } else {
+            handledAll = false;
+          }
+        } else {
+          handledAll = false;
+        }
+      }
+      if (handledAll) {
+        if (mutated) {
+          store.rebuildNotificationsFromWorkspace();
+          saveWorkspaceCache();
+          store.emit();
+        }
+        return { ok: true, mode: "delta" };
       }
     }
-
-    if (tagsRes?.ok && Array.isArray(tagsRes.data?.tags)) {
-      store.state.data.serverTags = tagsRes.data.tags;
-    }
-
-    store.rebuildNotificationsFromWorkspace();
-    store.emit();
-    return {
-      ok: Boolean(foldersRes?.ok || itemsRes?.ok),
-      folders: store.state.data.folders.length,
-      links: store.state.data.links.length,
-    };
+    return this.hydrateWorkspace();
   },
 
   async previewInvite(token) {

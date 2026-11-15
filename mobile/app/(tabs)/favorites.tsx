@@ -11,17 +11,38 @@ import {
 import { useFocusEffect, useRouter } from "expo-router";
 import { fetchWorkspace, patchLinkItem } from "../../src/api";
 import { planIosLocalNotifications } from "../../src/notifications";
-import type { MobileLinkItem, MobileReminderItem } from "../../src/storage";
+import {
+  getMemoryCachedWorkspace,
+  loadCachedWorkspace,
+  loadSession,
+  type MobileLinkItem,
+  type MobileReminderItem,
+} from "../../src/storage";
 
 export default function FavoritesScreen() {
   const router = useRouter();
-  const [favorites, setFavorites] = useState<MobileLinkItem[]>([]);
-  const [reminders, setReminders] = useState<MobileReminderItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const initialCache = getMemoryCachedWorkspace();
+  const [favorites, setFavorites] = useState<MobileLinkItem[]>(() =>
+    (initialCache?.items || []).filter((it) => Boolean(it.is_favorite)),
+  );
+  const [reminders, setReminders] = useState<MobileReminderItem[]>(() => initialCache?.reminders || []);
+  const [loading, setLoading] = useState<boolean>(() => !(initialCache?.items?.length || initialCache?.reminders?.length));
   const [refreshing, setRefreshing] = useState(false);
   const [tab, setTab] = useState<"fav" | "rem">("fav");
 
   const loadData = useCallback(async () => {
+    const sess = await loadSession();
+    if (!sess?.access_token) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+    const cached = await loadCachedWorkspace();
+    if (cached.items.length > 0 || cached.reminders.length > 0) {
+      setFavorites((prev) => (prev.length ? prev : cached.items.filter((it) => Boolean(it.is_favorite))));
+      setReminders((prev) => (prev.length ? prev : cached.reminders));
+      setLoading(false);
+    }
     const ws = await fetchWorkspace();
     setFavorites(ws.items.filter((it) => Boolean(it.is_favorite)));
     setReminders(ws.reminders);

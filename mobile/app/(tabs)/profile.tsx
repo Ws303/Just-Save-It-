@@ -28,20 +28,28 @@ import {
 import { registerMobilePushToken, syncLocalRemindersWithOs } from "../../src/notifications";
 import {
   buildBoundedExportPayloadJson,
+  getDebugBannerEnabled,
+  getMemoryCachedWorkspace,
   getThemePageBg,
+  loadCachedWorkspace,
+  loadSession,
   loadThemeMode,
   saveThemeMode,
+  setDebugBannerEnabled,
+  subscribeDebugBanner,
   type AppThemeMode,
 } from "../../src/storage";
 
 export default function ProfileScreen() {
   const router = useRouter();
+  const initialCache = getMemoryCachedWorkspace();
   const [name, setName] = useState("ผู้ใช้งาน");
   const [email, setEmail] = useState("");
-  const [itemCount, setItemCount] = useState(0);
-  const [folderCount, setFolderCount] = useState(0);
+  const [itemCount, setItemCount] = useState<number>(() => initialCache?.items?.length || 0);
+  const [folderCount, setFolderCount] = useState<number>(() => initialCache?.folders?.length || 0);
   const [queueCount, setQueueCount] = useState(0);
   const [themeMode, setThemeMode] = useState<AppThemeMode>("cream");
+  const [debugBannerOn, setDebugBannerOn] = useState<boolean>(getDebugBannerEnabled);
   const [pushStatus, setPushStatus] = useState("ยังไม่ได้ลงทะเบียนอุปกรณ์นี้");
 
   const [tokens, setTokens] = useState<McpTokenRecord[]>([]);
@@ -54,6 +62,18 @@ export default function ProfileScreen() {
   const [busyAction, setBusyAction] = useState("");
 
   const loadProfile = useCallback(async () => {
+    setDebugBannerOn(getDebugBannerEnabled());
+    const sess = await loadSession();
+    if (!sess?.access_token) return;
+    if (sess.user?.email) setEmail(sess.user.email);
+    if (sess.user?.display_name) setName(sess.user.display_name);
+
+    const cached = await loadCachedWorkspace();
+    if (cached.items.length > 0 || cached.folders.length > 0) {
+      setItemCount((prev) => (prev > 0 ? prev : cached.items.length));
+      setFolderCount((prev) => (prev > 0 ? prev : cached.folders.length));
+    }
+
     const [ws, qCount, savedTheme, tokRes] = await Promise.all([
       fetchWorkspace(),
       getOfflineQueueCount(),
@@ -67,15 +87,18 @@ export default function ProfileScreen() {
     setName(
       (typeof ws.me?.display_name === "string" && ws.me.display_name) ||
         (typeof ws.me?.email === "string" && ws.me.email.split("@")[0]) ||
+        sess.user?.display_name ||
         "ผู้ใช้งาน Sharely",
     );
-    setEmail(typeof ws.me?.email === "string" ? ws.me.email : "");
+    setEmail(typeof ws.me?.email === "string" ? ws.me.email : sess.user?.email || "");
     setTokens(Array.isArray(tokRes.data?.tokens) ? tokRes.data.tokens : []);
   }, []);
 
   useFocusEffect(
     useCallback(() => {
+      const unsub = subscribeDebugBanner((next) => setDebugBannerOn(next));
       void loadProfile();
+      return () => unsub();
     }, [loadProfile]),
   );
 
@@ -307,6 +330,14 @@ export default function ProfileScreen() {
         </Pressable>
         <Pressable style={styles.rowBtn} onPress={() => setPdpaOpen(true)}>
           <Text style={styles.rowBtnText}>🛡️ นโยบายความเป็นส่วนตัว (PDPA)</Text>
+        </Pressable>
+        <Pressable
+          style={styles.rowBtn}
+          onPress={() => setDebugBannerEnabled(!debugBannerOn)}
+        >
+          <Text style={styles.rowBtnText}>
+            🔍 {debugBannerOn ? "ปิด Deep Link / Auth Debug Banner" : "เปิด Deep Link / Auth Debug Banner"}
+          </Text>
         </Pressable>
         <Pressable
           style={[styles.rowBtn, styles.dangerRowBtn]}

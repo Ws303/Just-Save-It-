@@ -495,3 +495,248 @@ test("L-NEW-2 / H-NEW-1: SIGNED_OUT resets hydration without ReferenceError, rAF
     unsub();
   }
 });
+
+test("C2 Extension ShareSheet 319:541 structure & /api/workspace fetchWorkspace w/ 404 fallback", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const popupHtml = fs.readFileSync(path.resolve("..", "extension", "popup.html"), "utf8");
+  for (const id of [
+    "openWebBtn",
+    "tabSaveBtn",
+    "tabRecentBtn",
+    "toggleSettingsBtn",
+    "reminderTriggerBtn",
+    "titleInput",
+    "toggleUrlEditBtn",
+    "folderChipWrap",
+    "tagSuggestions",
+    "noteInput",
+    "saveItemBtn",
+  ]) {
+    assert.ok(popupHtml.includes(`id="${id}"`), `Missing ShareSheet 319:541 element #${id}`);
+  }
+  assert.match(popupHtml, /class="figma-ext-link-preview"/);
+
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const extApi = require("../../extension/api.js");
+  assert.equal(typeof extApi.fetchWorkspace, "function");
+
+  const mockJsonResponse = (status, data) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => JSON.stringify(data),
+    json: async () => data,
+  });
+
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  try {
+    await extApi.setBackendUrl("https://api.test.local");
+    await extApi.saveAuthSession({ access_token: "tok-1", refresh_token: "", user: null });
+
+    globalThis.fetch = async (url) => {
+      calls.push(String(url));
+      if (String(url).includes("/api/workspace")) {
+        return mockJsonResponse(200, {
+          id: "u1",
+          email: "u1@example.com",
+          folders: [{ id: "f1", name: "Reading" }],
+          tags: [{ name: "news" }],
+          items: [{ id: "i1", title: "Fast Workspace Item", url: "https://example.com" }],
+          reminders: [],
+        });
+      }
+      return mockJsonResponse(200, {});
+    };
+    const ws = await extApi.fetchWorkspace({ limit: 50 });
+    assert.equal(ws.items.length, 1);
+    assert.equal(ws.folders.length, 1);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /\/api\/workspace\?limit=50/);
+
+    // 404 fallback to legacy parallel endpoints
+    calls.length = 0;
+    globalThis.fetch = async (url) => {
+      calls.push(String(url));
+      if (String(url).includes("/api/workspace")) {
+        return mockJsonResponse(404, { detail: "Not found" });
+      }
+      if (String(url).includes("/api/auth/me")) return mockJsonResponse(200, { id: "u1" });
+      if (String(url).includes("/api/folders")) return mockJsonResponse(200, { folders: [] });
+      if (String(url).includes("/api/tags")) return mockJsonResponse(200, { tags: [] });
+      if (String(url).includes("/api/items")) return mockJsonResponse(200, { items: [] });
+      return mockJsonResponse(200, {});
+    };
+    const fallbackWs = await extApi.fetchWorkspace({ limit: 50 });
+    assert.equal(fallbackWs.id, "u1");
+    assert.equal(calls.length, 5);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("C3 WebApp SWR user-scoped cache, /api/workspace hydration, optimistic createLink, search helpers & realtime delta", async () => {
+  const { loadWorkspaceCache, saveWorkspaceCache } = await import("../src/services/apiClient.js");
+  const {
+    extractRealtimeDelta,
+    noteLocalMutation,
+    startRealtimeSync,
+    stopRealtimeSync,
+  } = await import("../src/services/realtimeClient.js");
+  const { renderHomeLinksSectionInner } = await import("../src/screens/home.js");
+  const { renderFoldersGridInner, renderFolderDetailLinksInner } = await import("../src/screens/folders.js");
+  const {
+    renderPcHomeLinksSectionInner,
+    renderPcFoldersGridInner,
+    renderPcFolderDetailLinksInner,
+    renderPcFavoriteListInner,
+  } = await import("../src/screens/webExtension.js");
+
+  const mockResp = (status, data) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => JSON.stringify(data),
+    json: async () => data,
+  });
+
+  const memStore = new Map();
+  const origLocalStorage = globalThis.localStorage;
+  const origFetch = globalThis.fetch;
+  globalThis.localStorage = {
+    getItem: (k) => (memStore.has(k) ? memStore.get(k) : null),
+    setItem: (k, v) => memStore.set(k, String(v)),
+    removeItem: (k) => memStore.delete(k),
+  };
+
+  try {
+    store.resetSeed();
+    store.state.api.mode = "live";
+    store.state.api.bearerToken = "jwt-user-a";
+    store.state.data.user.isAuthenticated = true;
+    store.state.data.user.id = "user-a";
+    store.state.data.links = [{ id: "cached-a1", url: "https://a.example.com", title: "Cached A1", tags: [] }];
+    saveWorkspaceCache("user-a");
+
+    assert.equal(loadWorkspaceCache("user-b"), null, "User A cache must not leak to User B");
+    assert.equal(loadWorkspaceCache("user-a").links[0].id, "cached-a1");
+
+    // hydrateWorkspace hits /api/workspace once and serves SWR cache first
+    store.state.data.links = [];
+    store.state.data.folders = [];
+    const fetchPaths = [];
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      fetchPaths.push(`${init.method || "GET"} ${u}`);
+      if (u.includes("/api/workspace")) {
+        return mockResp(200, {
+          id: "user-a",
+          email: "a@example.com",
+          display_name: "User A",
+          folders: [{ id: "f-live-1", name: "Cloud Folder" }],
+          tags: [{ name: "fast" }],
+          items: [
+            {
+              id: "item-live-1",
+              folder_id: "f-live-1",
+              url: "https://example.com/live-1",
+              title: "Live 1",
+              description: "Saved from server",
+              thumbnail_url: "https://cdn.example.com/1.jpg",
+              tags: ["fast"],
+              status: "inbox",
+              is_favorite: true,
+            },
+          ],
+          reminders: [],
+        });
+      }
+      if (u.endsWith("/api/items") && init.method === "POST") {
+        assert.equal(store.state.data.links[0]?._optimistic, true);
+        return mockResp(201, {
+          id: "item-created-1",
+          folder_id: "f-live-1",
+          url: "https://example.com/fast-save",
+          title: "Fast Optimistic Save",
+          description: "Quick desc",
+          thumbnail_url: "https://cdn.example.com/ok.jpg",
+          tags: ["speed"],
+          status: "inbox",
+        });
+      }
+      if (u.includes("/refresh-preview")) {
+        return mockResp(200, { status: "ok", item: { id: "item-created-1" } });
+      }
+      return mockResp(200, {});
+    };
+
+    const hyd = await apiClient.hydrateWorkspace();
+    assert.equal(hyd.ok, true);
+    assert.equal(fetchPaths.length, 1);
+    assert.match(fetchPaths[0], /GET .*\/api\/workspace\?limit=100/);
+    assert.equal(store.state.data.links[0].id, "item-live-1");
+
+    // Verify extracted search section renderers
+    store.state.ui.homeSearch = "Live";
+    store.state.ui.folderSearch = "Cloud";
+    store.state.ui.folderDetailSearch = "Live";
+    store.state.ui.activeFolderId = "f-live-1";
+    assert.match(renderHomeLinksSectionInner(store.state), /Live 1/);
+    assert.match(renderFoldersGridInner(store.state), /Cloud Folder/);
+    assert.match(renderFolderDetailLinksInner(store.state), /Live 1/);
+    assert.match(renderPcHomeLinksSectionInner(store.state), /Live 1/);
+    assert.match(renderPcFoldersGridInner(store.state), /Cloud Folder/);
+    assert.match(renderPcFolderDetailLinksInner(store.state), /Live 1/);
+    assert.match(renderPcFavoriteListInner(store.state), /Live 1/);
+
+    // Optimistic createLink skips blocking /api/preview
+    fetchPaths.length = 0;
+    const saved = await apiClient.createLink({
+      url: "https://example.com/fast-save",
+      title: "Fast Optimistic Save",
+      thumbnail_url: "https://cdn.example.com/ok.jpg",
+      description: "Quick desc",
+      tags: ["#speed"],
+    });
+    assert.equal(saved.id, "item-created-1");
+    assert.ok(!fetchPaths.some((p) => p.includes("/api/preview")), "createLink must not block on /api/preview");
+
+    // Delta update/delete via applyRealtimeDelta avoids redundant /api/workspace
+    fetchPaths.length = 0;
+    const delta = extractRealtimeDelta({
+      event: "postgres_changes",
+      payload: {
+        data: {
+          table: "items",
+          type: "UPDATE",
+          record: { id: "item-live-1", url: "https://example.com/live-1", title: "Live 1 Updated", status: "done" },
+        },
+      },
+    });
+    assert.equal(delta.table, "items");
+    await apiClient.applyRealtimeDelta({ deltas: [delta], forceFullSync: false });
+    assert.equal(fetchPaths.length, 0);
+    assert.equal(store.state.data.links.find((l) => l.id === "item-live-1").title, "Live 1 Updated");
+
+    // clearSession drops cached workspace for current user
+    store.clearSession({ redirectToLogin: true, clearWorkspace: true });
+    assert.equal(loadWorkspaceCache("user-a"), null);
+
+    // realtime suppression after local mutation
+    noteLocalMutation();
+    let syncCalled = 0;
+    startRealtimeSync({
+      getSupabaseConfig: () => ({ url: "", anonKey: "" }),
+      getAccessToken: () => "",
+      isAuthenticated: () => false,
+      onSync: () => {
+        syncCalled += 1;
+      },
+    });
+    stopRealtimeSync();
+    assert.equal(syncCalled, 0);
+  } finally {
+    globalThis.fetch = origFetch;
+    globalThis.localStorage = origLocalStorage;
+  }
+});

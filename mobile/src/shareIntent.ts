@@ -4,30 +4,98 @@ export interface ExtractedSharePayload {
   sourceText: string;
 }
 
+export interface ParsedOAuthCallback {
+  isAuthCallback: boolean;
+  accessToken: string;
+  refreshToken: string;
+  code: string;
+  error: string;
+  errorDescription: string;
+}
+
 const URL_REGEX = /https?:\/\/[^\s"'<>]+/i;
 
 function cleanTrailingPunctuation(rawUrl: string): string {
   return rawUrl.replace(/[),.;!?\]}>]+$/g, "");
 }
 
-function parseQueryParam(query: string, key: string): string {
-  const clean = query.startsWith("?") ? query.slice(1) : query;
-  if (!clean) return "";
+function parseParamsBlock(block: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const clean = block.replace(/^[?#]/, "");
+  if (!clean) return out;
   for (const part of clean.split("&")) {
+    if (!part) continue;
     const eqIdx = part.indexOf("=");
-    if (eqIdx < 0) continue;
-    const k = decodeURIComponent(part.slice(0, eqIdx).replace(/\+/g, " "));
-    if (k === key) {
-      return decodeURIComponent(part.slice(eqIdx + 1).replace(/\+/g, " "));
+    const rawKey = eqIdx >= 0 ? part.slice(0, eqIdx) : part;
+    const rawVal = eqIdx >= 0 ? part.slice(eqIdx + 1) : "";
+    try {
+      const k = decodeURIComponent(rawKey.replace(/\+/g, " "));
+      const v = decodeURIComponent(rawVal.replace(/\+/g, " "));
+      if (k) out[k] = v;
+    } catch {
+      if (rawKey) out[rawKey] = rawVal;
     }
   }
-  return "";
+  return out;
+}
+
+export function parseOAuthCallbackUrl(rawInput: string | null | undefined): ParsedOAuthCallback {
+  const empty: ParsedOAuthCallback = {
+    isAuthCallback: false,
+    accessToken: "",
+    refreshToken: "",
+    code: "",
+    error: "",
+    errorDescription: "",
+  };
+  if (!rawInput || typeof rawInput !== "string") return empty;
+  const trimmed = rawInput.trim();
+  if (!trimmed) return empty;
+
+  const qIdx = trimmed.indexOf("?");
+  const hIdx = trimmed.indexOf("#");
+  const queryPart =
+    qIdx >= 0 ? trimmed.slice(qIdx + 1, hIdx > qIdx ? hIdx : trimmed.length) : "";
+  const hashPart = hIdx >= 0 ? trimmed.slice(hIdx + 1) : "";
+  const qMap = parseParamsBlock(queryPart);
+  const hMap = parseParamsBlock(hashPart);
+
+  const accessToken = hMap.access_token || qMap.access_token || "";
+  const refreshToken = hMap.refresh_token || qMap.refresh_token || "";
+  const code = qMap.code || hMap.code || "";
+  const error = hMap.error || qMap.error || "";
+  const errorDescription = hMap.error_description || qMap.error_description || "";
+  const looksLikeAuthRoute = /(?:sharely|justsaveit):\/\/\/*auth-callback|\/auth-callback(?:[/?#]|$)/i.test(
+    trimmed,
+  );
+  const hasAuthParams = Boolean(accessToken || code || error || errorDescription);
+
+  if (!looksLikeAuthRoute && !hasAuthParams) {
+    return empty;
+  }
+
+  return {
+    isAuthCallback: true,
+    accessToken,
+    refreshToken,
+    code,
+    error,
+    errorDescription,
+  };
+}
+
+function parseQueryParam(query: string, key: string): string {
+  const map = parseParamsBlock(query);
+  return map[key] || "";
 }
 
 export function extractSharedUrlFromIntent(rawInput: string | null | undefined): ExtractedSharePayload | null {
   if (!rawInput || typeof rawInput !== "string") return null;
   const trimmed = rawInput.trim();
   if (!trimmed) return null;
+  if (/(?:sharely|justsaveit):\/\/\/*auth-callback|\/auth-callback(?:[/?#]|$)/i.test(trimmed)) {
+    return null;
+  }
 
   // 1. Handle custom scheme or web share_target URLs first, e.g.:
   // sharely://share?url=https%3A%2F%2Fexample.com&title=Test

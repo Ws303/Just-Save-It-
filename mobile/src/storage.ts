@@ -90,9 +90,23 @@ const KEYS = {
   offlineQueue: "jsi_mobile_offline_queue",
   cache: "jsi_mobile_cache",
   theme: "jsi_mobile_theme",
+  pkceVerifier: "jsi_mobile_pkce_verifier",
 };
 
 const memoryStore = new Map<string, string>();
+const memoryStorageBackend: StorageBackend = {
+  async getItem(key: string) {
+    return memoryStore.has(key) ? memoryStore.get(key) ?? null : null;
+  },
+  async setItem(key: string, value: string) {
+    memoryStore.set(key, value);
+  },
+  async removeItem(key: string) {
+    memoryStore.delete(key);
+  },
+};
+let _memWorkspaceCache: CachedWorkspace | null = null;
+let _memPkceVerifier = "";
 let asyncStoragePromise: Promise<StorageBackend | null> | null = null;
 let secureStoragePromise: Promise<StorageBackend | null> | null = null;
 
@@ -154,17 +168,7 @@ async function getStorageBackend(): Promise<StorageBackend> {
   }
   const backend = await asyncStoragePromise;
   if (backend) return backend;
-  return {
-    async getItem(key: string) {
-      return memoryStore.has(key) ? memoryStore.get(key) ?? null : null;
-    },
-    async setItem(key: string, value: string) {
-      memoryStore.set(key, value);
-    },
-    async removeItem(key: string) {
-      memoryStore.delete(key);
-    },
-  };
+  return memoryStorageBackend;
 }
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
@@ -217,12 +221,38 @@ export async function saveSession(session: StoredSession): Promise<void> {
 }
 
 export async function clearSession(): Promise<void> {
+  _memWorkspaceCache = null;
+  _memPkceVerifier = "";
   const secureBackend = await getSecureSessionBackend();
   await secureBackend.removeItem(KEYS.session);
   const fallbackBackend = await getStorageBackend();
   if (secureBackend !== fallbackBackend) {
     await fallbackBackend.removeItem(KEYS.session);
   }
+  await fallbackBackend.removeItem(KEYS.cache);
+  await fallbackBackend.removeItem(KEYS.pkceVerifier);
+}
+
+export async function savePkceVerifier(verifier: string): Promise<void> {
+  const clean = String(verifier || "").trim();
+  _memPkceVerifier = clean;
+  const backend = await getStorageBackend();
+  if (clean) {
+    await backend.setItem(KEYS.pkceVerifier, clean);
+  } else {
+    await backend.removeItem(KEYS.pkceVerifier);
+  }
+}
+
+export async function consumePkceVerifier(): Promise<string> {
+  let value = _memPkceVerifier;
+  _memPkceVerifier = "";
+  const backend = await getStorageBackend();
+  if (!value) {
+    value = (await backend.getItem(KEYS.pkceVerifier)) || "";
+  }
+  await backend.removeItem(KEYS.pkceVerifier);
+  return value.trim();
 }
 
 export async function loadOfflineQueue(): Promise<QueuedLinkPayload[]> {
@@ -285,20 +315,103 @@ export async function flushOfflineQueueWithSender(
   return { flushed, remaining: remaining.length, dropped, failed: remaining };
 }
 
+export function getMemoryCachedWorkspace(): CachedWorkspace | null {
+  return _memWorkspaceCache;
+}
+
 export async function loadCachedWorkspace(): Promise<CachedWorkspace> {
-  return readJson<CachedWorkspace>(KEYS.cache, {
+  if (_memWorkspaceCache) {
+    return _memWorkspaceCache;
+  }
+  const data = await readJson<CachedWorkspace>(KEYS.cache, {
     items: [],
     folders: [],
     reminders: [],
     updated_at: "",
   });
+  if (data.updated_at || data.items.length > 0 || data.folders.length > 0) {
+    _memWorkspaceCache = data;
+  }
+  return data;
 }
 
 export async function saveCachedWorkspace(data: Omit<CachedWorkspace, "updated_at">): Promise<void> {
-  await writeJson(KEYS.cache, {
+  const stamped: CachedWorkspace = {
     ...data,
     updated_at: new Date().toISOString(),
-  });
+  };
+  _memWorkspaceCache = stamped;
+  await writeJson(KEYS.cache, stamped);
+}
+
+export interface AuthDebugEvent {
+  at: string;
+  stage: string;
+  detail: string;
+}
+
+const MAX_DEBUG_EVENTS = 25;
+let _authDebugEvents: AuthDebugEvent[] = [];
+type DebugListener = (events: AuthDebugEvent[]) => void;
+const _debugListeners = new Set<DebugListener>();
+
+function redactAuthSensitive(text: string): string {
+  return String(text || "").replace(
+    /(access_token|refresh_token|code|code_verifier)=([^&#\s]+)/gi,
+    (_m, key) => `${key}=***`,
+  );
+}
+
+export function recordAuthDebugEvent(stage: string, detail = ""): void {
+  const entry: AuthDebugEvent = {
+    at: new Date().toLocaleTimeString("th-TH", { hour12: false }),
+    stage: String(stage || "event"),
+    detail: redactAuthSensitive(detail).slice(0, 180),
+  };
+  _authDebugEvents = [entry, ..._authDebugEvents].slice(0, MAX_DEBUG_EVENTS);
+  for (const listener of _debugListeners) {
+    listener(_authDebugEvents);
+  }
+}
+
+export function getAuthDebugEvents(): AuthDebugEvent[] {
+  return _authDebugEvents;
+}
+
+export function clearAuthDebugEvents(): void {
+  _authDebugEvents = [];
+  for (const listener of _debugListeners) {
+    listener(_authDebugEvents);
+  }
+}
+
+export function subscribeAuthDebugEvents(listener: DebugListener): () => void {
+  _debugListeners.add(listener);
+  return () => {
+    _debugListeners.delete(listener);
+  };
+}
+
+let _debugBannerEnabled = false;
+type BannerListener = (enabled: boolean) => void;
+const _bannerListeners = new Set<BannerListener>();
+
+export function getDebugBannerEnabled(): boolean {
+  return _debugBannerEnabled;
+}
+
+export function setDebugBannerEnabled(enabled: boolean): void {
+  _debugBannerEnabled = Boolean(enabled);
+  for (const listener of _bannerListeners) {
+    listener(_debugBannerEnabled);
+  }
+}
+
+export function subscribeDebugBanner(listener: BannerListener): () => void {
+  _bannerListeners.add(listener);
+  return () => {
+    _bannerListeners.delete(listener);
+  };
 }
 
 export function getThemePageBg(mode: AppThemeMode): string {

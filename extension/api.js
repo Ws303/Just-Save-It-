@@ -375,6 +375,28 @@
     return apiRequest("/api/reminders");
   }
 
+  async function fetchWorkspace({ limit = 50 } = {}) {
+    try {
+      return await apiRequest(`/api/workspace?limit=${encodeURIComponent(String(limit))}`);
+    } catch (err) {
+      if (err && err.status === 404) {
+        const [me, foldersRes, tagsRes, itemsRes] = await Promise.all([
+          apiRequest("/api/auth/me"),
+          apiRequest("/api/folders"),
+          apiRequest("/api/tags"),
+          fetchRecentItems({ limit }),
+        ]);
+        return {
+          ...me,
+          folders: (foldersRes && foldersRes.folders) || [],
+          tags: (tagsRes && tagsRes.tags) || [],
+          items: (itemsRes && itemsRes.items) || [],
+        };
+      }
+      throw err;
+    }
+  }
+
   const exportedApi = {
     CLOUD_BACKEND_URL,
     LOCAL_BACKEND_URL,
@@ -402,6 +424,7 @@
     enqueueOfflineSave,
     flushOfflineQueue,
     fetchRecentItems,
+    fetchWorkspace,
     updateItemStatus,
     fetchReminders,
   };

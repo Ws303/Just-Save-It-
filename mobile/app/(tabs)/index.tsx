@@ -21,7 +21,14 @@ import {
   patchLinkItem,
   saveLinkItem,
 } from "../../src/api";
-import type { MobileFolderItem, MobileLinkItem, WorkflowStatus } from "../../src/storage";
+import {
+  getMemoryCachedWorkspace,
+  loadCachedWorkspace,
+  loadSession,
+  type MobileFolderItem,
+  type MobileLinkItem,
+  type WorkflowStatus,
+} from "../../src/storage";
 
 const STATUS_LABELS: Record<WorkflowStatus, string> = {
   inbox: "กล่องรับ",
@@ -49,11 +56,12 @@ function inferDomain(url: string): string {
 export default function HomeFeedScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ sharedUrl?: string; sharedTitle?: string }>();
+  const initialCache = getMemoryCachedWorkspace();
 
   const [displayName, setDisplayName] = useState("เพื่อน");
-  const [items, setItems] = useState<MobileLinkItem[]>([]);
-  const [folders, setFolders] = useState<MobileFolderItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState<MobileLinkItem[]>(() => initialCache?.items || []);
+  const [folders, setFolders] = useState<MobileFolderItem[]>(() => initialCache?.folders || []);
+  const [loading, setLoading] = useState<boolean>(() => !(initialCache?.items?.length || initialCache?.folders?.length));
   const [refreshing, setRefreshing] = useState(false);
   const [offline, setOffline] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
@@ -75,6 +83,20 @@ export default function HomeFeedScreen() {
   const [saving, setSaving] = useState(false);
 
   const loadAll = useCallback(async () => {
+    const sess = await loadSession();
+    if (!sess?.access_token) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
+    const cached = await loadCachedWorkspace();
+    if (cached.items.length > 0 || cached.folders.length > 0) {
+      setItems((prev) => (prev.length ? prev : cached.items));
+      setFolders((prev) => (prev.length ? prev : cached.folders));
+      setLoading(false);
+    }
+
     const flushed = await flushOfflineQueue();
     const pendingCount = flushed.remaining || (await getOfflineQueueCount());
     setQueueCount(pendingCount);
@@ -86,6 +108,7 @@ export default function HomeFeedScreen() {
     const nameFromProfile =
       (typeof ws.me?.display_name === "string" && ws.me.display_name) ||
       (typeof ws.me?.email === "string" && ws.me.email.split("@")[0]) ||
+      sess.user?.display_name ||
       "เพื่อน";
     setDisplayName(nameFromProfile);
     setLoading(false);

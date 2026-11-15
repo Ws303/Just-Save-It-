@@ -14,14 +14,32 @@ import {
 } from "react-native";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
-import { useRouter } from "expo-router";
-import { getGoogleOAuthUrl, loginWithPassword, signupWithPassword } from "../src/api";
-import { AppThemeMode, getThemePageBg, loadThemeMode, saveSession, subscribeThemeMode } from "../src/storage";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import {
+  completeOAuthWithTokens,
+  exchangeOAuthCode,
+  loginWithPassword,
+  prepareGoogleOAuthUrl,
+  signupWithPassword,
+} from "../src/api";
+import { parseOAuthCallbackUrl } from "../src/shareIntent";
+import {
+  AppThemeMode,
+  getDebugBannerEnabled,
+  getThemePageBg,
+  loadSession,
+  loadThemeMode,
+  recordAuthDebugEvent,
+  setDebugBannerEnabled,
+  subscribeDebugBanner,
+  subscribeThemeMode,
+} from "../src/storage";
 
 WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen() {
   const router = useRouter();
+  const { oauthError } = useLocalSearchParams<{ oauthError?: string }>();
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -29,11 +47,23 @@ export default function LoginScreen() {
   const [busy, setBusy] = useState(false);
   const [errorText, setErrorText] = useState("");
   const [themeMode, setThemeMode] = useState<AppThemeMode>("cream");
+  const [debugOn, setDebugOn] = useState<boolean>(getDebugBannerEnabled);
 
   useEffect(() => {
     void loadThemeMode().then((m) => setThemeMode(m)).catch(() => {});
-    return subscribeThemeMode((m) => setThemeMode(m));
+    const unsubTheme = subscribeThemeMode((m) => setThemeMode(m));
+    const unsubDbg = subscribeDebugBanner((next) => setDebugOn(next));
+    return () => {
+      unsubTheme();
+      unsubDbg();
+    };
   }, []);
+
+  useEffect(() => {
+    if (oauthError) {
+      setErrorText(String(oauthError));
+    }
+  }, [oauthError]);
 
   async function handleSubmit() {
     if (!email.trim() || !password) {
@@ -73,27 +103,59 @@ export default function LoginScreen() {
     setErrorText("");
     try {
       const redirectUri = Linking.createURL("auth-callback");
-      const authUrl = getGoogleOAuthUrl(redirectUri);
+      const authUrl = await prepareGoogleOAuthUrl(redirectUri);
+      recordAuthDebugEvent("oauth_start", redirectUri);
       const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+      recordAuthDebugEvent("oauth_browser_result", result.type);
+
       if (result.type === "success" && result.url) {
-        const hashIdx = result.url.indexOf("#");
-        const query = hashIdx >= 0 ? result.url.slice(hashIdx + 1) : result.url.split("?")[1] || "";
-        const params = new URLSearchParams(query);
-        const accessToken = params.get("access_token");
-        const refreshToken = params.get("refresh_token") || "";
-        if (accessToken) {
-          await saveSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-            user: null,
-          });
+        const parsed = parseOAuthCallbackUrl(result.url);
+        if (parsed.error || parsed.errorDescription) {
+          const msg = parsed.errorDescription || parsed.error;
+          recordAuthDebugEvent("oauth_result_error", msg);
           setBusy(false);
-          router.replace("/(tabs)");
+          setErrorText(`เข้าสู่ระบบด้วย Google ไม่สำเร็จ: ${msg}`);
           return;
         }
+        if (parsed.accessToken) {
+          const res = await completeOAuthWithTokens(parsed.accessToken, parsed.refreshToken);
+          setBusy(false);
+          if (res.ok) {
+            router.replace("/(tabs)");
+          } else {
+            setErrorText(res.error || "บันทึกเซสชัน Google ไม่สำเร็จ");
+          }
+          return;
+        }
+        if (parsed.code) {
+          const res = await exchangeOAuthCode(parsed.code);
+          setBusy(false);
+          if (res.ok) {
+            router.replace("/(tabs)");
+          } else {
+            setErrorText(res.error || "แลกรหัสเข้าสู่ระบบ Google ไม่สำเร็จ (PKCE)");
+          }
+          return;
+        }
+        setBusy(false);
+        setErrorText("ไม่พบ Token หรือ Code จากหน้าต่าง Google กรุณาลองใหม่อีกครั้ง");
+        return;
       }
+
+      // On Android Chrome Custom Tabs, OS Intent may deliver the token directly to auth-callback
+      await new Promise((r) => setTimeout(r, 250));
+      const existing = await loadSession().catch(() => null);
+      if (existing?.access_token) {
+        setBusy(false);
+        router.replace("/(tabs)");
+        return;
+      }
+
       setBusy(false);
-    } catch {
+      setErrorText("ยกเลิกการเข้าสู่ระบบด้วย Google หรือหน้าต่างถูกปิดก่อนเสร็จสิ้น");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "unknown error";
+      recordAuthDebugEvent("oauth_open_exception", msg);
       setBusy(false);
       setErrorText("ไม่สามารถเปิดหน้าต่างเข้าสู่ระบบ Google ได้");
     }
@@ -203,6 +265,15 @@ export default function LoginScreen() {
             onPress={() => void handleGoogleLogin()}
           >
             <Text style={styles.googleBtnText}>G  ดำเนินการต่อด้วย Google</Text>
+          </Pressable>
+
+          <Pressable
+            style={{ marginTop: 14, alignItems: "center", paddingVertical: 6 }}
+            onPress={() => setDebugBannerEnabled(!debugOn)}
+          >
+            <Text style={{ fontSize: 12, color: "#78716C", fontWeight: "600" }}>
+              {debugOn ? "ซ่อน Auth / Deep Link Debug" : "🔍 Debug Deep Link / Auth"}
+            </Text>
           </Pressable>
         </View>
       </ScrollView>

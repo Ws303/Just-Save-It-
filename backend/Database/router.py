@@ -9,6 +9,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 _logger = logging.getLogger("just_save_it.database.router")
 
 from Login.auth_dep import get_current_user_id
+from Login.dependencies import CurrentUser, get_current_user
+from Login.router import build_user_me_payload
+from Reminders.service import list_reminders_for_user
 from .client import get_db
 from .repository import (
     accept_folder_invite,
@@ -87,6 +90,41 @@ def create_item_endpoint(
     ):
         background_tasks.add_task(_run_local_enrichment, db, str(item["id"]))
     return item
+
+
+@router.get("/workspace")
+def get_workspace_endpoint(
+    limit: int = Query(default=100, ge=1, le=100),
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Return profile/quota, folders, tags, latest items, and reminders in 1 roundtrip."""
+    user_id = current_user.id
+    me_payload = build_user_me_payload(db, current_user)
+    folders = list_folders_for_user(db, user_id)
+    accessible_ids = {str(f["id"]) for f in folders if f.get("id")}
+    tags = list_tags_for_user(db, user_id)
+    items = list_and_search_items(
+        db=db,
+        user_id=user_id,
+        limit=limit,
+        accessible_folders=accessible_ids,
+    )
+    next_cursor: Optional[str] = None
+    if len(items) == limit and items and items[-1].get("saved_at") and items[-1].get("id"):
+        next_cursor = f"{items[-1]['saved_at']}|{items[-1]['id']}"
+    reminders_resp = list_reminders_for_user(db, user_id)
+    reminders = [r.model_dump() for r in reminders_resp.reminders]
+    return {
+        **me_payload,
+        "folders": folders,
+        "tags": tags,
+        "items": items,
+        "count": len(items),
+        "next_cursor": next_cursor,
+        "reminders": reminders,
+        "reminders_total": len(reminders),
+    }
 
 
 @router.get("/items")

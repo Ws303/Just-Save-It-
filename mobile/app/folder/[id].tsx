@@ -12,20 +12,48 @@ import {
 } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { createFolderInvite, fetchWorkspace } from "../../src/api";
-import type { MobileFolderItem, MobileLinkItem } from "../../src/storage";
+import {
+  getMemoryCachedWorkspace,
+  loadCachedWorkspace,
+  type MobileFolderItem,
+  type MobileLinkItem,
+} from "../../src/storage";
 
 export default function FolderDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const [folder, setFolder] = useState<MobileFolderItem | null>(null);
-  const [items, setItems] = useState<MobileLinkItem[]>([]);
+  const isVirtualInbox = id === "virtual-inbox";
+  const initialCache = getMemoryCachedWorkspace();
+
+  const [folder, setFolder] = useState<MobileFolderItem | null>(() => {
+    if (!initialCache) return null;
+    if (isVirtualInbox) return { id: "virtual-inbox", name: "รวมไว้ดูทีหลัง", icon: "🔖" };
+    return initialCache.folders.find((f) => f.id === id) || null;
+  });
+  const [items, setItems] = useState<MobileLinkItem[]>(() => {
+    if (!initialCache) return [];
+    return isVirtualInbox
+      ? initialCache.items.filter((it) => !it.folder_id)
+      : initialCache.items.filter((it) => it.folder_id === id);
+  });
   const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState<boolean>(() => !initialCache);
   const [inviting, setInviting] = useState(false);
 
-  const isVirtualInbox = id === "virtual-inbox";
-
   const loadFolder = useCallback(async () => {
+    const cached = await loadCachedWorkspace();
+    if (cached.items.length > 0 || cached.folders.length > 0) {
+      if (isVirtualInbox) {
+        setFolder({ id: "virtual-inbox", name: "รวมไว้ดูทีหลัง", icon: "🔖" });
+        setItems(cached.items.filter((it) => !it.folder_id));
+      } else {
+        const found = cached.folders.find((f) => f.id === id);
+        if (found) setFolder(found);
+        setItems(cached.items.filter((it) => it.folder_id === id));
+      }
+      setLoading(false);
+    }
+
     const ws = await fetchWorkspace();
     if (isVirtualInbox) {
       setFolder({ id: "virtual-inbox", name: "รวมไว้ดูทีหลัง", icon: "🔖" });

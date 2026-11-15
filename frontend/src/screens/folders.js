@@ -37,13 +37,69 @@ function renderMobileFolderCover(folder, links = [], isWatchLater = false) {
   return `<div class="pc-folder-cover-empty">${escHtml(folder?.emoji || "📁")}</div>`;
 }
 
-export function renderFoldersScreen(state) {
+export function renderFoldersGridInner(state) {
   const { folders, links } = state.data;
   const q = (state.ui.folderSearch || "").trim().toLowerCase();
   const visible = q ? folders.filter((f) => f.name.toLowerCase().includes(q)) : folders;
   const uncatLinks = (links || []).filter((l) => !l.folderId);
   const hasUncatFolder = visible.some((f) => f.name === "ยังไม่จัดหมวด" || f.name === "รวมไว้ดูทีหลัง");
 
+  return `
+    ${
+      !hasUncatFolder && uncatLinks.length > 0 && !q
+        ? `<div class="folder-card" data-filter-chip="unread" data-filter-scope="home" data-nav="home">
+             <div class="folder-cover-wrap">
+               ${renderMobileFolderCover({ id: "__watch_later__", name: "รวมไว้ดูทีหลัง" }, links, true)}
+             </div>
+             <p class="folder-name">รวมไว้ดูทีหลัง</p>
+             <p class="folder-meta">${uncatLinks.length} ลิงก์ · ยังไม่จัดหมวด</p>
+           </div>`
+        : ""
+    }
+    ${visible
+      .map((f) => {
+        const isWatchLater = f.name === "ยังไม่จัดหมวด" || f.name === "รวมไว้ดูทีหลัง";
+        const displayName = f.name === "ยังไม่จัดหมวด" ? "รวมไว้ดูทีหลัง" : f.name;
+        const shareText = f.sharedCount > 0 ? `แชร์กับ ${f.sharedCount} คน` : "ส่วนตัว";
+        return `
+        <div class="folder-card" data-open-folder="${escHtml(f.id)}">
+          <div class="folder-cover-wrap">
+            ${renderMobileFolderCover(f, links, isWatchLater)}
+            <button
+              type="button"
+              class="folder-edit-circle"
+              data-open-edit-folder="${escHtml(f.id)}"
+              title="แก้ไขโฟลเดอร์"
+            >
+              ${icons.pencil(14)}
+            </button>
+          </div>
+          <p class="folder-name">${escHtml(displayName)}</p>
+          <p class="folder-meta">${getFolderCount(f)} ลิงก์ · ${shareText}</p>
+        </div>`;
+      })
+      .join("")}
+  `;
+}
+
+export function renderFolderDetailLinksInner(state, folderOverride = null) {
+  const folder = folderOverride || getFolderById(state.ui.activeFolderId) || state.data.folders[0];
+  if (!folder) return "";
+  const folderLinks = state.data.links.filter((l) => l.folderId === folder.id);
+  const filtered = filterLinks(folderLinks, state.ui.folderDetailSearch, state.ui.folderDetailFilter, {
+    platform: state.ui.folderPlatformFilter,
+    contentType: state.ui.folderContentTypeFilter,
+  });
+  return filtered.length === 0
+    ? `<div class="ai-summary-card" style="text-align:center;color:var(--ink-secondary);">
+         ยังไม่มีลิงก์ที่ตรงกับตัวกรองในโฟลเดอร์นี้
+       </div>`
+    : `<div class="link-list">
+         ${filtered.map((item) => renderLinkCard(item, { folderContextId: folder.id })).join("")}
+       </div>`;
+}
+
+export function renderFoldersScreen(state) {
   return `
     <div class="screen-scroll with-nav-pad">
       <div class="home-topbar">
@@ -67,41 +123,8 @@ export function renderFoldersScreen(state) {
 
         <h2 class="section-title">โฟลเดอร์ทั้งหมด</h2>
 
-        <div class="folder-grid">
-          ${
-            !hasUncatFolder && uncatLinks.length > 0 && !q
-              ? `<div class="folder-card" data-filter-chip="unread" data-filter-scope="home" data-nav="home">
-                   <div class="folder-cover-wrap">
-                     ${renderMobileFolderCover({ id: "__watch_later__", name: "รวมไว้ดูทีหลัง" }, links, true)}
-                   </div>
-                   <p class="folder-name">รวมไว้ดูทีหลัง</p>
-                   <p class="folder-meta">${uncatLinks.length} ลิงก์ · ยังไม่จัดหมวด</p>
-                 </div>`
-              : ""
-          }
-          ${visible
-            .map((f) => {
-              const isWatchLater = f.name === "ยังไม่จัดหมวด" || f.name === "รวมไว้ดูทีหลัง";
-              const displayName = f.name === "ยังไม่จัดหมวด" ? "รวมไว้ดูทีหลัง" : f.name;
-              const shareText = f.sharedCount > 0 ? `แชร์กับ ${f.sharedCount} คน` : "ส่วนตัว";
-              return `
-              <div class="folder-card" data-open-folder="${escHtml(f.id)}">
-                <div class="folder-cover-wrap">
-                  ${renderMobileFolderCover(f, links, isWatchLater)}
-                  <button
-                    type="button"
-                    class="folder-edit-circle"
-                    data-open-edit-folder="${escHtml(f.id)}"
-                    title="แก้ไขโฟลเดอร์"
-                  >
-                    ${icons.pencil(14)}
-                  </button>
-                </div>
-                <p class="folder-name">${escHtml(displayName)}</p>
-                <p class="folder-meta">${getFolderCount(f)} ลิงก์ · ${shareText}</p>
-              </div>`;
-            })
-            .join("")}
+        <div class="folder-grid" data-search-list-host="mobile-folders">
+          ${renderFoldersGridInner(state)}
         </div>
       </div>
 
@@ -115,11 +138,6 @@ export function renderFolderDetailScreen(state) {
   if (!folder) {
     return `<div class="app-pad"><button class="btn-outline-pill" data-nav="folders">กลับหน้าโฟลเดอร์</button></div>`;
   }
-  const folderLinks = state.data.links.filter((l) => l.folderId === folder.id);
-  const filtered = filterLinks(folderLinks, state.ui.folderDetailSearch, state.ui.folderDetailFilter, {
-    platform: state.ui.folderPlatformFilter,
-    contentType: state.ui.folderContentTypeFilter,
-  });
   const count = getFolderCount(folder);
 
   return `
@@ -186,15 +204,9 @@ export function renderFolderDetailScreen(state) {
           </button>
         </div>
 
-        ${
-          filtered.length === 0
-            ? `<div class="ai-summary-card" style="text-align:center;color:var(--ink-secondary);">
-                 ยังไม่มีลิงก์ที่ตรงกับตัวกรองในโฟลเดอร์นี้
-               </div>`
-            : `<div class="link-list">
-                 ${filtered.map((item) => renderLinkCard(item, { folderContextId: folder.id })).join("")}
-               </div>`
-        }
+        <div data-search-list-host="mobile-folder-detail">
+          ${renderFolderDetailLinksInner(state, folder)}
+        </div>
       </div>
 
       ${renderBottomNav("folders")}

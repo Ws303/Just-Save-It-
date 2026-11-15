@@ -696,6 +696,7 @@ export const store = {
     const hasBrowserDom = typeof window !== "undefined";
     const hadRealAuth = Boolean(this.state.api.bearerToken) || !runtimeApiConfig.isLocalHost || hasBrowserDom;
     const shouldClearWorkspace = typeof clearWorkspace === "boolean" ? clearWorkspace : hadRealAuth && this.state.api.mode !== "mock";
+    const clearedUserId = String(this.state.data.user?.id || this.state.api?.jwtClaims?.sub || "").trim();
     this.state.data.user.isAuthenticated = false;
     this.state.api.bearerToken = "";
     this.state.api.refreshToken = "";
@@ -727,6 +728,9 @@ export const store = {
       localStorage.setItem(LOGOUT_FLAG_KEY, "1");
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(SESSION_STORAGE_KEY);
+      if (shouldClearWorkspace && clearedUserId) {
+        localStorage.removeItem(`sharely_workspace_cache_v1:${clearedUserId}`);
+      }
     } catch {}
     if (redirectToLogin) {
       this.state.ui.viewportMode = resolveDefaultViewportMode();

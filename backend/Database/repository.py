@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import secrets
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import uuid
 from zoneinfo import ZoneInfo
 
@@ -105,24 +105,114 @@ def _get_accessible_folder_ids(db: Any, user_id: str) -> List[str]:
     return folder_ids
 
 
-def _attach_tags_to_item(db: Any, user_id: str, item_id: str, tag_names: List[str]) -> List[str]:
-    attached: List[str] = []
+def _bulk_insert_rows(db: Any, table_name: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Insert multiple rows in 1 batch query when supported, falling back to single-dict inserts for test mocks."""
+    if not rows:
+        return []
+    if len(rows) == 1:
+        res = db.table(table_name).insert(rows[0]).execute()
+        return [dict(r) for r in (getattr(res, "data", None) or [])]
+    res = db.table(table_name).insert(rows).execute()
+    data = getattr(res, "data", None) or []
+    if len(data) == len(rows):
+        return [dict(r) for r in data]
+    inserted: List[Dict[str, Any]] = [dict(r) for r in data]
+    for entry in rows[len(inserted) :]:
+        single_res = db.table(table_name).insert(entry).execute()
+        if getattr(single_res, "data", None):
+            inserted.append(dict(single_res.data[0]))
+    return inserted
+
+
+def _attach_tags_to_item(
+    db: Any,
+    user_id: str,
+    item_id: str,
+    tag_names: List[str],
+    *,
+    links_cleared: bool = False,
+) -> List[str]:
+    """Attach normalized tags to an item using <=3 batched queries."""
+    clean_names: List[str] = []
+    seen_names: Set[str] = set()
     for raw_name in tag_names:
         tag_name = clean_text_field(raw_name, unescape_html=False)
-        if not tag_name:
-            continue
-        existing = db.table("tags").select("id, name").eq("owner_id", user_id).eq("name", tag_name).execute()
-        if existing.data:
-            tag_id = existing.data[0]["id"]
-        else:
-            created = db.table("tags").insert({"owner_id": user_id, "name": tag_name}).execute()
-            tag_id = created.data[0]["id"] if created.data else None
+        if tag_name and tag_name not in seen_names:
+            seen_names.add(tag_name)
+            clean_names.append(tag_name)
+    if not clean_names:
+        return []
 
-        if tag_id:
-            link_check = db.table("item_tags").select("item_id").eq("item_id", item_id).eq("tag_id", tag_id).execute()
-            if not link_check.data:
-                db.table("item_tags").insert({"item_id": item_id, "tag_id": tag_id}).execute()
-            attached.append(tag_name)
+    existing = (
+        db.table("tags")
+        .select("id, name")
+        .eq("owner_id", user_id)
+        .in_("name", clean_names)
+        .execute()
+    )
+    tag_id_by_name: Dict[str, Any] = {
+        str(row["name"]): row["id"]
+        for row in (getattr(existing, "data", None) or [])
+        if row.get("name") and row.get("id")
+    }
+
+    missing_names = [name for name in clean_names if name not in tag_id_by_name]
+    if missing_names:
+        missing_payloads = [{"owner_id": user_id, "name": name} for name in missing_names]
+        try:
+            created_rows = _bulk_insert_rows(db, "tags", missing_payloads)
+        except Exception as exc:
+            err_msg = str(exc).lower()
+            if "23505" in err_msg or "duplicate" in err_msg or "unique" in err_msg:
+                refetch = (
+                    db.table("tags")
+                    .select("id, name")
+                    .eq("owner_id", user_id)
+                    .in_("name", missing_names)
+                    .execute()
+                )
+                created_rows = [dict(r) for r in (getattr(refetch, "data", None) or [])]
+            else:
+                raise
+        for row in created_rows:
+            if row.get("name") and row.get("id"):
+                tag_id_by_name[str(row["name"])] = row["id"]
+
+    attached: List[str] = []
+    ordered_tag_ids: List[Any] = []
+    for name in clean_names:
+        tid = tag_id_by_name.get(name)
+        if tid:
+            attached.append(name)
+            ordered_tag_ids.append(tid)
+    if not ordered_tag_ids:
+        return []
+
+    link_rows = [{"item_id": item_id, "tag_id": tid} for tid in ordered_tag_ids]
+    if links_cleared:
+        _bulk_insert_rows(db, "item_tags", link_rows)
+        return attached
+
+    item_tags_tbl = db.table("item_tags")
+    upsert_fn = getattr(item_tags_tbl, "upsert", None)
+    if callable(upsert_fn):
+        try:
+            upsert_fn(link_rows, on_conflict="item_id,tag_id", ignore_duplicates=True).execute()
+            return attached
+        except Exception as exc:
+            logger.debug("Batch upsert on item_tags fell back to diff insert: %s", exc)
+
+    existing_links = (
+        db.table("item_tags")
+        .select("tag_id")
+        .eq("item_id", item_id)
+        .in_("tag_id", ordered_tag_ids)
+        .execute()
+    )
+    linked_ids = {row.get("tag_id") for row in (getattr(existing_links, "data", None) or []) if row.get("tag_id")}
+    missing_links = [row for row in link_rows if row["tag_id"] not in linked_ids]
+    if missing_links:
+        _bulk_insert_rows(db, "item_tags", missing_links)
     return attached
 
 
@@ -361,14 +451,24 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
         item_id = item.get("id", "")
         deduplicated = False
 
+    attached_tags: Optional[List[str]] = None
     if req.tags and item_id:
-        _attach_tags_to_item(db, user_id, item_id, req.tags)
+        attached_tags = _attach_tags_to_item(
+            db,
+            user_id,
+            item_id,
+            req.tags,
+            links_cleared=(not deduplicated),
+        )
 
     if req.reminder and item_id:
         rem = upsert_item_reminder(db, user_id, item_id, item.get("title"), req.reminder)
         item["reminder"] = rem
 
-    item["tags"] = _fetch_item_tags(db, item_id) if item_id else []
+    if not deduplicated:
+        item["tags"] = attached_tags if attached_tags is not None else []
+    else:
+        item["tags"] = _fetch_item_tags(db, item_id) if item_id else []
     item["deduplicated"] = deduplicated
     return _with_item_compat_fields(item)
 
@@ -446,16 +546,15 @@ def list_and_search_items(
     limit: int = 20,
     offset: int = 0,
     cursor: Optional[str] = None,
+    accessible_folders: Optional[Set[str]] = None,
 ) -> List[Dict[str, Any]]:
     """List and search accessible items across all 4 text fields + url with optional keyset cursor."""
     cursor_tuple = _parse_keyset_cursor(cursor)
 
-    if folder_id:
+    if accessible_folders is None:
         accessible_folders = set(_get_accessible_folder_ids(db, user_id))
-        if folder_id not in accessible_folders:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to folder.")
-    else:
-        accessible_folders = set(_get_accessible_folder_ids(db, user_id))
+    if folder_id and folder_id not in accessible_folders:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to folder.")
 
     if (
         hasattr(db, "rpc")
@@ -646,9 +745,15 @@ def update_item_for_user(db: Any, user_id: str, item_id: str, req: ItemUpdateReq
     if "tags" in fields_set and req.tags is not None:
         db.table("item_tags").delete().eq("item_id", item_id).execute()
         tag_owner_id = str(item.get("owner_id") or user_id)
-        _attach_tags_to_item(db, tag_owner_id, item_id, req.tags)
-
-    item["tags"] = _fetch_item_tags(db, item_id)
+        item["tags"] = _attach_tags_to_item(
+            db,
+            tag_owner_id,
+            item_id,
+            req.tags,
+            links_cleared=True,
+        )
+    else:
+        item["tags"] = _fetch_item_tags(db, item_id)
     return _with_item_compat_fields(item)
 
 
@@ -692,16 +797,25 @@ def list_folders_for_user(db: Any, user_id: str) -> List[Dict[str, Any]]:
         seen.add(f["id"])
 
     memberships = db.table("folder_members").select("folder_id, role").eq("user_id", user_id).execute()
+    role_by_fid: Dict[str, Any] = {}
+    shared_ids: List[str] = []
     for m in memberships.data or []:
         fid = m.get("folder_id")
-        if not fid or fid in seen:
+        if not fid or fid in seen or fid in role_by_fid:
             continue
-        f_res = db.table("folders").select("*").eq("id", fid).execute()
-        if f_res.data:
-            f = dict(f_res.data[0])
-            f["role"] = m.get("role")
-            folders.append(f)
-            seen.add(fid)
+        role_by_fid[fid] = m.get("role")
+        shared_ids.append(fid)
+
+    if shared_ids:
+        shared_res = db.table("folders").select("*").in_("id", shared_ids).execute()
+        shared_by_id = {row["id"]: row for row in (getattr(shared_res, "data", None) or []) if row.get("id")}
+        for fid in shared_ids:
+            row = shared_by_id.get(fid)
+            if row:
+                f = dict(row)
+                f["role"] = role_by_fid[fid]
+                folders.append(f)
+                seen.add(fid)
     _attach_folder_member_counts(db, folders)
     return folders
 

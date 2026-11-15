@@ -5,6 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "sharely",
+    "backgroundColor": "#F6F3EC",
     "userInterfaceStyle": "light",
     "owner": "woraset",
     "icon": "./assets/icon.png",

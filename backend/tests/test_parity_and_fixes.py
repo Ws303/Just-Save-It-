@@ -541,7 +541,7 @@ def test_mcp_create_item_rejects_ssrf_targets(isolated_db):
 
 @pytest.mark.asyncio
 async def test_extract_youtube_and_x_fetch_real_html_description_and_images():
-    """YouTube fetches HTML meta description even with oEmbed present; X fetches HTML images even with title present."""
+    """YouTube/TikTok skip slow HTML fetch on fast path when oEmbed has title+thumb+embed, fetch HTML on refresh; X fetches images."""
     from Unfurl.extractors import extract_unfurl_metadata
 
     yt_oembed = {
@@ -559,11 +559,35 @@ async def test_extract_youtube_and_x_fetch_real_html_description_and_images():
         patch("Unfurl.extractors._fetch_json_safely", new=AsyncMock(return_value=yt_oembed)),
         patch("Unfurl.extractors._fetch_generic_html_meta", new=AsyncMock(return_value=yt_html_meta)) as mock_html,
     ):
-        res_yt = await extract_unfurl_metadata("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        res_fast = await extract_unfurl_metadata("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        mock_html.assert_not_awaited()
+        assert res_fast.title == "Demo Video Title"
+        assert res_fast.description == "By CreatorChannel"
+        assert res_fast.embed_url == "https://www.youtube.com/embed/dQw4w9WgXcQ"
+        assert len(res_fast.media_items) >= 1
+
+        res_yt_full = await extract_unfurl_metadata(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            fetch_full_description=True,
+        )
         mock_html.assert_awaited_once()
-        assert res_yt.description == "Full real video description extracted from YouTube meta tag."
-        assert res_yt.embed_url == "https://www.youtube.com/embed/dQw4w9WgXcQ"
-        assert len(res_yt.media_items) >= 1
+        assert res_yt_full.description == "Full real video description extracted from YouTube meta tag."
+
+    tt_oembed = {
+        "title": "Coffee Pour Over",
+        "author_name": "barista_th",
+        "thumbnail_url": "https://p16-sign.tiktokcdn-us.com/cover_7123.jpg",
+        "html": '<blockquote class="tiktok-embed" data-video-id="7123456789012345678"></blockquote>',
+    }
+    with (
+        patch("Unfurl.extractors._fetch_json_safely", new=AsyncMock(return_value=tt_oembed)),
+        patch("Unfurl.extractors._fetch_generic_html_meta", new=AsyncMock()) as mock_tt_html,
+    ):
+        res_tt = await extract_unfurl_metadata("https://www.tiktok.com/@barista_th/video/7123456789012345678")
+        mock_tt_html.assert_not_awaited()
+        assert res_tt.title == "Coffee Pour Over"
+        assert res_tt.description == "@barista_th"
+        assert res_tt.embed_url == "https://www.tiktok.com/embed/v2/7123456789012345678"
 
     x_oembed = {
         "author_name": "AliceDev",
@@ -661,8 +685,8 @@ async def test_fetch_url_safely_strips_content_encoding_on_stream_bytes():
 
 
 @pytest.mark.asyncio
-async def test_verify_live_user_exists_rejects_not_found_exception_without_stale_cache():
-    """Live revocation check rejects get_user_by_id not-found exceptions immediately without 30s TTL cache."""
+async def test_verify_live_user_exists_uses_ttl_cache_and_fails_closed_on_revocation():
+    """Live check uses short-TTL cache to skip repeat queries, while mark_user_deleted and TTL expiry still fail closed."""
     from fastapi import HTTPException
     from Login import auth_dep
 
@@ -695,16 +719,149 @@ async def test_verify_live_user_exists_rejects_not_found_exception_without_stale
         auth=SimpleNamespace(admin=_FakeAuthAdmin()),
     )
 
+    auth_dep.clear_live_user_cache(uid)
+    auth_dep._DELETED_USER_IDS.discard(uid)
     try:
         with patch("Login.auth_dep.is_supabase_configured", return_value=True), patch(
             "Login.auth_dep.get_supabase_client", return_value=fake_db
         ):
-            # 1st check succeeds while profile exists
+            # 1st check hits DB once and populates short-TTL cache
             auth_dep._verify_live_user_exists(uid)
-            # 2nd check immediately sees deleted profile & 404 auth exception without stale cache window
+            assert profiles_calls == 1
+
+            # 2nd check within TTL serves from memory with 0 DB queries
+            auth_dep._verify_live_user_exists(uid)
+            assert profiles_calls == 1
+
+            # After TTL expires (or cache clears), 404 from Supabase auth rejects immediately
+            auth_dep.clear_live_user_cache(uid)
             with pytest.raises(HTTPException) as exc_info:
                 auth_dep._verify_live_user_exists(uid)
             assert exc_info.value.status_code == 401
             assert auth_dep.is_user_deleted(uid) is True
+            assert profiles_calls == 2
+
+            # Direct mark_user_deleted also evicts an active positive cache entry immediately
+            auth_dep._DELETED_USER_IDS.discard(uid)
+            auth_dep._cache_live_user_verified(uid)
+            assert auth_dep._is_cached_live_user(uid) is True
+            auth_dep.mark_user_deleted(uid)
+            assert auth_dep._is_cached_live_user(uid) is False
+            with pytest.raises(HTTPException) as rev_exc:
+                auth_dep._verify_live_user_exists(uid)
+            assert rev_exc.value.status_code == 401
     finally:
+        auth_dep.clear_live_user_cache(uid)
         auth_dep._DELETED_USER_IDS.discard(uid)
+
+
+def test_attach_tags_batch_and_shared_folders_query_count(isolated_db):
+    """_attach_tags_to_item runs in <=3 queries regardless of tag count, and list_folders_for_user batches shared folders."""
+    from Database.repository import _attach_tags_to_item
+
+    uid = "11111111-1111-4111-8111-111111111111"
+    other_uid = "22222222-2222-4222-8222-222222222222"
+
+    # Seed an item directly
+    created = create_or_bump_item(
+        isolated_db,
+        uid,
+        ItemCreateRequest(url="https://example.com/batch-tags-test", title="Batch Test"),
+    )
+    item_id = created["id"]
+
+    # Seed 3 folders owned by other_uid where uid is collaborator
+    for idx in range(3):
+        fid = f"f-shared-{idx}"
+        isolated_db.table("folders").insert(
+            {"id": fid, "owner_id": other_uid, "name": f"Shared {idx}", "is_shared": True}
+        ).execute()
+        isolated_db.table("folder_members").insert(
+            {"folder_id": fid, "user_id": uid, "role": "editor"}
+        ).execute()
+
+    table_calls = []
+    orig_table = isolated_db.table
+
+    def counting_table(name: str):
+        table_calls.append(name)
+        return orig_table(name)
+
+    with patch.object(isolated_db, "table", side_effect=counting_table):
+        attached = _attach_tags_to_item(
+            isolated_db,
+            uid,
+            item_id,
+            ["alpha", "beta", "gamma", "delta", "epsilon"],
+            links_cleared=True,
+        )
+        assert attached == ["alpha", "beta", "gamma", "delta", "epsilon"]
+        assert len(table_calls) <= 3
+
+        table_calls.clear()
+        attached_again = _attach_tags_to_item(
+            isolated_db,
+            uid,
+            item_id,
+            ["alpha", "beta", "zeta"],
+            links_cleared=False,
+        )
+        assert attached_again == ["alpha", "beta", "zeta"]
+        assert len(table_calls) <= 3
+
+        table_calls.clear()
+        folders = list_folders_for_user(isolated_db, uid)
+        shared_found = [f for f in folders if f.get("role") == "editor"]
+        assert len(shared_found) == 3
+        # owned folders (1) + memberships (1) + shared folders batch (1) + member_counts batch (1)
+        assert table_calls.count("folders") == 2
+
+
+def test_workspace_endpoint_and_pooled_client_singleton(isolated_db, monkeypatch):
+    """GET /api/workspace returns bundled profile, quota, folders, tags, items, reminders; pooled client reuses singleton."""
+    from Database import client as db_client
+    from Database import supabase_client as sc
+
+    monkeypatch.setenv("ENV", "development")
+    monkeypatch.setenv("ALLOW_DEV_AUTH_BYPASS", "true")
+    uid = "11111111-1111-4111-8111-111111111111"
+
+    test_client = TestClient(app)
+    assert test_client.get("/api/workspace").status_code == 401
+
+    resp = test_client.get("/api/workspace?limit=50", headers={"X-User-Id": uid})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == uid
+    assert "profile" in body
+    assert "ai_quota" in body
+    assert isinstance(body["folders"], list)
+    assert isinstance(body["tags"], list)
+    assert isinstance(body["items"], list)
+    assert isinstance(body["reminders"], list)
+    assert "count" in body
+
+    # Verify Database.client reuses singleton from Database.supabase_client
+    set_override_supabase_client(None)
+    monkeypatch.setenv("SUPABASE_URL", "https://demo-pool.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "srv-secret-key")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-secret-key")
+    fake_pool_calls = 0
+
+    def _fake_create(url, key):
+        nonlocal fake_pool_calls
+        fake_pool_calls += 1
+        return SimpleNamespace(url=url, key=key)
+
+    sc._service_client_instance = None
+    sc._service_client_key = None
+    try:
+        with patch("Database.supabase_client.create_client", side_effect=_fake_create):
+            c1 = db_client.get_supabase_client()
+            c2 = db_client.get_supabase_client()
+            assert c1 is c2
+            assert fake_pool_calls == 1
+    finally:
+        sc._service_client_instance = None
+        sc._service_client_key = None
+        set_override_supabase_client(isolated_db)

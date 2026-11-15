@@ -32,6 +32,12 @@
     "พ.ย.",
     "ธ.ค.",
   ];
+  const STATUS_LABEL = {
+    inbox: "กล่องเข้า",
+    todo: "ต้องอ่าน",
+    done: "อ่านแล้ว",
+    archived: "เก็บถาวร",
+  };
 
   function getBangkokTodayIso(now = new Date()) {
     try {
@@ -80,6 +86,20 @@
     return `${parts[2]} ${THAI_MONTH_SHORT[parts[1] - 1] || ""}`.trim();
   }
 
+  function formatDomainDisplay(rawUrl, siteName = "") {
+    if (siteName && !/^https?:\/\//i.test(siteName)) {
+      return siteName;
+    }
+    try {
+      const parsed = new URL(rawUrl);
+      const host = parsed.hostname.replace(/^www\./, "");
+      const path = parsed.pathname && parsed.pathname !== "/" ? "/..." : "";
+      return `${host}${path}`;
+    } catch (_err) {
+      return rawUrl || "ลิงก์เว็บ";
+    }
+  }
+
   function normalizeMediaUrlList(rawList, fallbackImageUrl = "") {
     const urls = [];
     const candidates = Array.isArray(rawList) ? rawList : [];
@@ -103,16 +123,19 @@
 
   const state = {
     authMode: "login",
-    activeViewMode: "save", // "save" | "recent"
+    activeViewMode: "save",
     domMeta: null,
     domMetaUrl: "",
     previewMeta: null,
     previewUrl: "",
     lastSavedItemId: null,
     activeTabId: null,
+    selectedFolderId: "",
+    selectedTags: [],
     allRecentItems: [],
     cachedFolders: [],
     cachedTags: [],
+    cachedUser: null,
     userTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Bangkok",
     reminder: {
       pickerOpen: false,
@@ -120,7 +143,7 @@
       presetKey: "none",
       selectedDate: "",
       time: "18:00",
-      scheduleType: "once", // "once" | "every_n_days"
+      scheduleType: "once",
       repeatEveryDays: 3,
       viewYearMonth: getBangkokTodayIso().slice(0, 7),
     },
@@ -131,6 +154,7 @@
     openWebBtn: document.getElementById("openWebBtn"),
     toggleSettingsBtn: document.getElementById("toggleSettingsBtn"),
     settingsPanel: document.getElementById("settingsPanel"),
+    submenuAccountRow: document.getElementById("submenuAccountRow"),
     presetCloudBtn: document.getElementById("presetCloudBtn"),
     presetLocalBtn: document.getElementById("presetLocalBtn"),
     backendUrlInput: document.getElementById("backendUrlInput"),
@@ -165,10 +189,10 @@
     savePane: document.getElementById("savePane"),
     blockedTabCard: document.getElementById("blockedTabCard"),
     openWebBlockedBtn: document.getElementById("openWebBlockedBtn"),
+    toggleUrlEditBtn: document.getElementById("toggleUrlEditBtn"),
+    urlEditRow: document.getElementById("urlEditRow"),
     previewImage: document.getElementById("previewImage"),
     previewPlaceholder: document.getElementById("previewPlaceholder"),
-    platformBadge: document.getElementById("platformBadge"),
-    contentTypeBadge: document.getElementById("contentTypeBadge"),
     previewSourceBadge: document.getElementById("previewSourceBadge"),
     siteNameLabel: document.getElementById("siteNameLabel"),
     urlInput: document.getElementById("urlInput"),
@@ -176,19 +200,27 @@
     titleInput: document.getElementById("titleInput"),
 
     saveForm: document.getElementById("saveForm"),
+    folderChipWrap: document.getElementById("folderChipWrap"),
     folderSelect: document.getElementById("folderSelect"),
     toggleNewFolderBtn: document.getElementById("toggleNewFolderBtn"),
     newFolderBox: document.getElementById("newFolderBox"),
     newFolderEmoji: document.getElementById("newFolderEmoji"),
     newFolderName: document.getElementById("newFolderName"),
     createFolderBtn: document.getElementById("createFolderBtn"),
+
+    toggleTagInputBtn: document.getElementById("toggleTagInputBtn"),
+    quickTagRow: document.getElementById("quickTagRow"),
+    quickTagInput: document.getElementById("quickTagInput"),
+    addQuickTagBtn: document.getElementById("addQuickTagBtn"),
     tagsInput: document.getElementById("tagsInput"),
     tagSuggestions: document.getElementById("tagSuggestions"),
     noteInput: document.getElementById("noteInput"),
     statusSelect: document.getElementById("statusSelect"),
 
     reminderTriggerBtn: document.getElementById("reminderTriggerBtn"),
+    reminderSummaryChip: document.getElementById("reminderSummaryChip"),
     reminderSummaryLabel: document.getElementById("reminderSummaryLabel"),
+    clearReminderInlineBtn: document.getElementById("clearReminderInlineBtn"),
     reminderPickerCard: document.getElementById("reminderPickerCard"),
     recurOnceBtn: document.getElementById("recurOnceBtn"),
     recurRepeatBtn: document.getElementById("recurRepeatBtn"),
@@ -205,6 +237,7 @@
     saveItemBtn: document.getElementById("saveItemBtn"),
 
     savedResultCard: document.getElementById("savedResultCard"),
+    savedTitleLabel: document.getElementById("savedTitleLabel"),
     savedMetaText: document.getElementById("savedMetaText"),
     aiSummarizeBtn: document.getElementById("aiSummarizeBtn"),
     aiResultBox: document.getElementById("aiResultBox"),
@@ -216,8 +249,9 @@
   };
 
   function showBanner(message, type = "info") {
+    const tone = type === "error" ? "error" : type === "success" ? "success" : "info";
     els.feedbackBanner.textContent = message;
-    els.feedbackBanner.className = `banner ${type === "error" ? "banner-error" : "banner-info"}`;
+    els.feedbackBanner.className = `banner ${tone}`;
     els.feedbackBanner.classList.remove("hidden");
   }
 
@@ -252,12 +286,11 @@
   }
 
   async function updateHealthStatus(overrideUrl) {
-    els.healthBadge.textContent = "Checking...";
-    els.healthBadge.className = "status-pill";
+    els.healthBadge.textContent = "Sync";
+    els.healthBadge.className = "status-pill status-checking";
     try {
       const health = await api.checkHealth(overrideUrl);
-      const modeLabel = health.storage_mode === "supabase" ? "Cloud Online" : "Local Dev";
-      els.healthBadge.textContent = modeLabel;
+      els.healthBadge.textContent = health.storage_mode === "supabase" ? "Online" : "Local";
       els.healthBadge.className = "status-pill status-online";
       return true;
     } catch (_err) {
@@ -286,7 +319,7 @@
     els.recentPane.classList.toggle("hidden", !showRecent);
   }
 
-  function renderPreviewThumbnail(imageUrl) {
+  function renderPreviewThumbnail(imageUrl, fallbackLetter = "") {
     if (imageUrl && api.isSaveableHttpUrl(imageUrl)) {
       els.previewImage.src = imageUrl;
       els.previewImage.classList.remove("hidden");
@@ -295,77 +328,165 @@
     }
     els.previewImage.classList.add("hidden");
     els.previewImage.removeAttribute("src");
+    els.previewPlaceholder.textContent = (fallbackLetter || "L").charAt(0).toUpperCase();
     els.previewPlaceholder.classList.remove("hidden");
   }
 
+  function syncTagsHiddenInput() {
+    if (els.tagsInput) {
+      els.tagsInput.value = state.selectedTags.join(", ");
+    }
+  }
+
   function parseTagList() {
-    return els.tagsInput.value
-      .split(",")
-      .map((t) => t.trim())
-      .filter((t, idx, arr) => t && arr.indexOf(t) === idx);
+    return state.selectedTags.slice();
   }
 
   function syncTagChipSelection() {
-    const activeTags = new Set(parseTagList().map((t) => t.toLowerCase()));
-    for (const chip of els.tagSuggestions.querySelectorAll(".tag-chip")) {
+    const active = new Set(state.selectedTags.map((t) => t.toLowerCase()));
+    for (const chip of els.tagSuggestions.querySelectorAll("[data-tag-name]")) {
       const name = String(chip.dataset.tagName || "").toLowerCase();
-      chip.classList.toggle("selected", activeTags.has(name));
+      chip.classList.toggle("selected", active.has(name));
     }
+    syncTagsHiddenInput();
   }
 
   function toggleTagChip(tagName) {
-    const current = parseTagList();
-    const existsIdx = current.findIndex((t) => t.toLowerCase() === tagName.toLowerCase());
-    if (existsIdx >= 0) {
-      current.splice(existsIdx, 1);
+    const clean = String(tagName || "").replace(/^#+/, "").trim();
+    if (!clean) return;
+    const idx = state.selectedTags.findIndex((t) => t.toLowerCase() === clean.toLowerCase());
+    if (idx >= 0) {
+      state.selectedTags.splice(idx, 1);
     } else {
-      current.push(tagName);
+      state.selectedTags.push(clean);
     }
-    els.tagsInput.value = current.join(", ");
     syncTagChipSelection();
   }
 
-  const STATUS_LABEL = {
-    inbox: "กล่องเข้า",
-    todo: "ต้องอ่าน",
-    done: "อ่านแล้ว",
-    archived: "เก็บถาวร",
-  };
+  function addQuickTagsFromInput() {
+    const raw = els.quickTagInput ? els.quickTagInput.value : "";
+    const parts = raw
+      .split(",")
+      .map((t) => t.replace(/^#+/, "").trim())
+      .filter(Boolean);
+    if (!parts.length) return;
 
-  function nextWorkflowStatus(current) {
-    const order = ["inbox", "todo", "done"];
-    const idx = order.indexOf(current);
-    return order[(idx + 1) % order.length];
+    for (const name of parts) {
+      if (!state.selectedTags.some((t) => t.toLowerCase() === name.toLowerCase())) {
+        state.selectedTags.push(name);
+      }
+      if (!state.cachedTags.some((t) => String(t.name || "").toLowerCase() === name.toLowerCase())) {
+        state.cachedTags.unshift({ name });
+      }
+    }
+    els.quickTagInput.value = "";
+    renderTagChips(state.cachedTags);
+  }
+
+  function selectFolder(folderId) {
+    state.selectedFolderId = folderId || "";
+    if (els.folderSelect) {
+      els.folderSelect.value = state.selectedFolderId;
+    }
+    if (els.folderChipWrap) {
+      for (const btn of els.folderChipWrap.querySelectorAll("[data-folder-choice]")) {
+        const fid = btn.getAttribute("data-folder-choice") || "";
+        btn.classList.toggle("selected", fid === state.selectedFolderId);
+      }
+    }
   }
 
   function renderFoldersDropdown(folders) {
     state.cachedFolders = Array.isArray(folders) ? folders : [];
-    const currentFolderId = els.folderSelect.value;
-    els.folderSelect.innerHTML = '<option value="">-- ยังไม่เลือกโฟลเดอร์ --</option>';
-    for (const folder of state.cachedFolders) {
-      const opt = document.createElement("option");
-      opt.value = folder.id;
-      opt.textContent = `${folder.emoji || "📁"} ${folder.name}`;
-      els.folderSelect.appendChild(opt);
+    const currentId = state.selectedFolderId;
+    const validCurrent = currentId && state.cachedFolders.some((f) => f.id === currentId) ? currentId : "";
+    state.selectedFolderId = validCurrent;
+
+    if (els.folderSelect) {
+      els.folderSelect.innerHTML = '<option value="">-- ยังไม่เลือกโฟลเดอร์ --</option>';
+      for (const folder of state.cachedFolders) {
+        const opt = document.createElement("option");
+        opt.value = folder.id;
+        opt.textContent = `${folder.emoji ? folder.emoji + " " : ""}${folder.name}`;
+        els.folderSelect.appendChild(opt);
+      }
+      els.folderSelect.value = validCurrent;
     }
-    if (currentFolderId && state.cachedFolders.some((f) => f.id === currentFolderId)) {
-      els.folderSelect.value = currentFolderId;
+
+    if (!els.folderChipWrap) return;
+    for (const oldChip of els.folderChipWrap.querySelectorAll("[data-folder-choice]")) {
+      oldChip.remove();
+    }
+
+    const createBtn = (label, fid) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `figma-pill-choice${fid === validCurrent ? " selected" : ""}`;
+      btn.setAttribute("data-folder-choice", fid);
+      btn.textContent = label;
+      btn.addEventListener("click", () => selectFolder(fid));
+      return btn;
+    };
+
+    els.folderChipWrap.insertBefore(createBtn("ไม่ใส่โฟลเดอร์", ""), els.toggleNewFolderBtn);
+    for (const folder of state.cachedFolders) {
+      const prefix = folder.emoji ? `${folder.emoji} ` : "";
+      els.folderChipWrap.insertBefore(createBtn(`${prefix}${folder.name}`, folder.id), els.toggleNewFolderBtn);
     }
   }
 
   function renderTagChips(tags) {
     state.cachedTags = Array.isArray(tags) ? tags : [];
+    const mergedNames = [];
+    const seen = new Set();
+    for (const tag of state.cachedTags) {
+      const name = String(tag && tag.name ? tag.name : tag || "").replace(/^#+/, "").trim();
+      if (name && !seen.has(name.toLowerCase())) {
+        seen.add(name.toLowerCase());
+        mergedNames.push(name);
+      }
+    }
+    for (const sel of state.selectedTags) {
+      const clean = String(sel || "").replace(/^#+/, "").trim();
+      if (clean && !seen.has(clean.toLowerCase())) {
+        seen.add(clean.toLowerCase());
+        mergedNames.push(clean);
+      }
+    }
+
     els.tagSuggestions.innerHTML = "";
-    for (const tag of state.cachedTags.slice(0, 12)) {
+    if (!mergedNames.length) {
+      const hintChip = document.createElement("button");
+      hintChip.type = "button";
+      hintChip.className = "figma-pill-choice";
+      hintChip.textContent = "+ สร้างแท็กแรกของคุณ";
+      hintChip.addEventListener("click", () => {
+        if (els.quickTagRow) {
+          els.quickTagRow.classList.remove("hidden");
+          els.quickTagInput?.focus();
+        }
+      });
+      els.tagSuggestions.appendChild(hintChip);
+      syncTagsHiddenInput();
+      return;
+    }
+
+    for (const name of mergedNames.slice(0, 14)) {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "tag-chip";
-      btn.dataset.tagName = tag.name;
-      btn.textContent = `#${tag.name}`;
-      btn.addEventListener("click", () => toggleTagChip(tag.name));
+      btn.className = "figma-pill-choice";
+      btn.dataset.tagName = name;
+      btn.textContent = `#${name}`;
+      btn.addEventListener("click", () => toggleTagChip(name));
       els.tagSuggestions.appendChild(btn);
     }
     syncTagChipSelection();
+  }
+
+  function nextWorkflowStatus(current) {
+    const order = ["inbox", "todo", "done"];
+    const idx = order.indexOf(current);
+    return order[(idx + 1) % order.length];
   }
 
   function renderRecentItems(items) {
@@ -384,11 +505,8 @@
       const card = document.createElement("div");
       card.className = "recent-item";
 
-      const head = document.createElement("div");
-      head.className = "recent-item-head";
-
       const titleLink = document.createElement("a");
-      titleLink.className = "recent-item-title";
+      titleLink.className = "recent-title";
       titleLink.textContent = item.title || item.url;
       titleLink.href = api.isSaveableHttpUrl(item.url) ? item.url : "#";
       titleLink.addEventListener("click", (ev) => {
@@ -398,14 +516,19 @@
         }
       });
 
+      const metaRow = document.createElement("div");
+      metaRow.className = "recent-meta-row";
+
+      const sub = document.createElement("span");
+      sub.textContent = `${item.platform || "web"} · ${formatDomainDisplay(item.url, item.site_name || "")}`;
+
       const statusBtn = document.createElement("button");
       statusBtn.type = "button";
-      statusBtn.className = "mini-action-btn";
+      statusBtn.className = "recent-status-btn";
       const curStatus = item.status || "inbox";
       statusBtn.textContent = STATUS_LABEL[curStatus] || curStatus;
-      statusBtn.title = "คลิกเพื่อสลับสถานะ";
       statusBtn.addEventListener("click", async () => {
-        const next = nextWorkflowStatus(curStatus);
+        const next = nextWorkflowStatus(item.status || "inbox");
         statusBtn.disabled = true;
         try {
           await api.updateItemStatus(item.id, next);
@@ -418,29 +541,22 @@
         }
       });
 
-      head.appendChild(titleLink);
-      head.appendChild(statusBtn);
-
-      const foot = document.createElement("div");
-      foot.className = "recent-item-foot";
-
-      const sub = document.createElement("span");
-      sub.className = "recent-item-sub";
-      sub.textContent = `${item.platform || "web"} · ${item.enrich_status || "saved"}`;
+      metaRow.appendChild(sub);
+      metaRow.appendChild(statusBtn);
 
       const actions = document.createElement("div");
-      actions.className = "recent-item-actions";
+      actions.className = "recent-actions";
 
       const copyBtn = document.createElement("button");
       copyBtn.type = "button";
-      copyBtn.className = "mini-action-btn";
-      copyBtn.textContent = "คัดลอก";
+      copyBtn.className = "btn-chip";
+      copyBtn.textContent = "คัดลอกลิงก์";
       copyBtn.addEventListener("click", async () => {
         try {
           await navigator.clipboard.writeText(item.url || "");
           copyBtn.textContent = "คัดลอกแล้ว";
           setTimeout(() => {
-            copyBtn.textContent = "คัดลอก";
+            copyBtn.textContent = "คัดลอกลิงก์";
           }, 1500);
         } catch (_err) {
           showBanner("ไม่สามารถคัดลอก URL ได้", "error");
@@ -449,36 +565,38 @@
 
       const openBtn = document.createElement("button");
       openBtn.type = "button";
-      openBtn.className = "mini-action-btn";
-      openBtn.textContent = "เปิดดู";
+      openBtn.className = "btn-chip";
+      openBtn.textContent = "เปิดดู ↗";
       openBtn.addEventListener("click", () => {
         chrome.tabs.create({ url: `${getWebAppOrigin()}/?item=${encodeURIComponent(item.id)}` });
       });
 
       actions.appendChild(copyBtn);
       actions.appendChild(openBtn);
-      foot.appendChild(sub);
-      foot.appendChild(actions);
-
-      card.appendChild(head);
-      card.appendChild(foot);
+      card.appendChild(titleLink);
+      card.appendChild(metaRow);
+      card.appendChild(actions);
       els.recentList.appendChild(card);
     }
   }
 
   function renderReminderPicker() {
     const r = state.reminder;
+    const hasActive = Boolean(r.enabled && r.selectedDate);
     if (els.reminderPickerCard) {
       els.reminderPickerCard.classList.toggle("hidden", !r.pickerOpen);
     }
     if (els.reminderTriggerBtn) {
-      els.reminderTriggerBtn.classList.toggle("has-reminder", Boolean(r.enabled && r.selectedDate));
+      els.reminderTriggerBtn.classList.toggle("active", hasActive || r.pickerOpen);
+    }
+    if (els.reminderSummaryChip) {
+      els.reminderSummaryChip.classList.toggle("hidden", !hasActive);
     }
     if (els.reminderSummaryLabel) {
-      if (!r.enabled || !r.selectedDate) {
+      if (!hasActive) {
         els.reminderSummaryLabel.textContent = "⏰ ไม่ตั้งเตือน";
       } else if (r.scheduleType === "every_n_days") {
-        els.reminderSummaryLabel.textContent = `🔁 ทุก ${r.repeatEveryDays} วัน · ${r.time}`;
+        els.reminderSummaryLabel.textContent = `🔁 ซ้ำทุก ${r.repeatEveryDays} วัน · ${r.time}`;
       } else {
         els.reminderSummaryLabel.textContent = `📅 ${formatThaiDateShort(r.selectedDate)} · ${r.time}`;
       }
@@ -590,7 +708,7 @@
         return `${match[1]}${match[2].padStart(2, "0")}:${(match[3] || "00").padStart(2, "0")}`;
       }
     } catch (_err) {
-      // Fall back to Asia/Bangkok offset below
+      // Fall back to +07:00
     }
     return "+07:00";
   }
@@ -632,7 +750,7 @@
 
   async function refreshRecentList(search = "") {
     try {
-      const itemsRes = await api.fetchRecentItems({ search, limit: 20 });
+      const itemsRes = await api.fetchRecentItems({ search, limit: 30 });
       const items = itemsRes.items || [];
       renderRecentItems(items);
       if (!search) {
@@ -640,6 +758,7 @@
           folders: state.cachedFolders,
           tags: state.cachedTags,
           recentItems: items,
+          user: state.cachedUser,
         }).catch(() => {});
       }
     } catch (err) {
@@ -647,25 +766,29 @@
     }
   }
 
-  async function loadUserWorkspace(profileUser = null) {
-    const [foldersRes, tagsRes, itemsRes] = await Promise.all([
-      api.apiRequest("/api/folders"),
-      api.apiRequest("/api/tags"),
-      api.fetchRecentItems({ limit: 20 }),
-    ]);
+  function applyWorkspaceSnapshot(ws, fallbackDisplay = "บัญชี Sharely") {
+    const folders = Array.isArray(ws && ws.folders) ? ws.folders : [];
+    const tags = Array.isArray(ws && ws.tags) ? ws.tags : [];
+    const items = Array.isArray(ws && ws.items) ? ws.items : [];
+    const profile = (ws && (ws.user || ws.profile)) || ws || {};
+    state.cachedUser = profile;
 
-    const folders = foldersRes.folders || [];
-    const tags = tagsRes.tags || [];
-    const items = itemsRes.items || [];
     renderFoldersDropdown(folders);
     renderTagChips(tags);
     renderRecentItems(items);
 
-    await api.setWorkspaceCache({
+    const name = profile.display_name || profile.email || fallbackDisplay;
+    const quotaLeft =
+      ws && ws.ai_quota && typeof ws.ai_quota.remaining === "number" ? ` · AI เหลือ ${ws.ai_quota.remaining}` : "";
+    if (els.userLabel) {
+      els.userLabel.textContent = `👤 ${name}${quotaLeft}`;
+    }
+
+    void api.setWorkspaceCache({
       folders,
       tags,
       recentItems: items,
-      user: profileUser,
+      user: profile,
     });
   }
 
@@ -674,15 +797,13 @@
     state.previewUrl = "";
     state.domMeta = null;
     state.domMetaUrl = "";
-    els.platformBadge.textContent = "web";
-    els.contentTypeBadge.textContent = "link";
-    els.previewSourceBadge.textContent = "ยังไม่พรีวิว";
-    renderPreviewThumbnail("");
+    if (els.previewSourceBadge) els.previewSourceBadge.textContent = "";
+    renderPreviewThumbnail("", els.siteNameLabel ? els.siteNameLabel.textContent : "L");
   }
 
   async function fetchPreviewForUrl(targetUrl, forceRefresh = false) {
     if (!api.isSaveableHttpUrl(targetUrl)) return;
-    els.previewSourceBadge.textContent = "กำลังพรีวิว...";
+    if (els.previewSourceBadge) els.previewSourceBadge.textContent = "กำลังพรีวิว...";
     try {
       const preview = await api.apiRequest("/api/preview", {
         method: "POST",
@@ -691,16 +812,14 @@
       if (els.urlInput.value.trim() !== targetUrl) return;
       state.previewMeta = preview;
       state.previewUrl = targetUrl;
-      els.platformBadge.textContent = preview.platform || "web";
-      els.contentTypeBadge.textContent = preview.content_type || "link";
-      els.previewSourceBadge.textContent = preview.cached ? "จากแคช" : "ดึงสดสำเร็จ";
+      if (els.previewSourceBadge) {
+        els.previewSourceBadge.textContent = preview.cached ? "แคช" : "✓";
+      }
 
       if (preview.title && (!els.titleInput.value.trim() || forceRefresh)) {
         els.titleInput.value = preview.title;
       }
-      if (preview.site_name) {
-        els.siteNameLabel.textContent = preview.site_name;
-      }
+      els.siteNameLabel.textContent = formatDomainDisplay(targetUrl, preview.site_name || "");
 
       const mediaUrls = normalizeMediaUrlList(
         preview.media_items,
@@ -708,11 +827,11 @@
       );
       const thumb = preview.image_url || preview.thumbnail_url || mediaUrls[0] || "";
       if (thumb) {
-        renderPreviewThumbnail(thumb);
+        renderPreviewThumbnail(thumb, preview.site_name || targetUrl);
       }
     } catch (_err) {
-      if (els.urlInput.value.trim() === targetUrl) {
-        els.previewSourceBadge.textContent = "ใช้ข้อมูลแท็บ";
+      if (els.urlInput.value.trim() === targetUrl && els.previewSourceBadge) {
+        els.previewSourceBadge.textContent = "";
       }
     }
   }
@@ -733,17 +852,20 @@
     const saveable = api.isSaveableHttpUrl(rawUrl);
     els.blockedTabCard.classList.toggle("hidden", saveable);
     if (!saveable) {
-      els.platformBadge.textContent = "browser";
-      els.contentTypeBadge.textContent = "blocked";
-      els.previewSourceBadge.textContent = "ไม่รองรับแท็บนี้";
+      els.urlInput.value = "";
+      els.titleInput.value = "";
       els.siteNameLabel.textContent = tab.title || "แท็บระบบเบราว์เซอร์";
+      if (els.urlEditRow) els.urlEditRow.classList.remove("hidden");
+      renderPreviewThumbnail("", "L");
       return null;
     }
 
     state.activeTabId = tab.id || null;
     els.urlInput.value = rawUrl;
     els.titleInput.value = (tab.title || "").trim();
-    els.siteNameLabel.textContent = rawUrl;
+    const domain = formatDomainDisplay(rawUrl);
+    els.siteNameLabel.textContent = domain;
+    renderPreviewThumbnail(tab.favIconUrl || "", domain);
     return rawUrl;
   }
 
@@ -760,46 +882,66 @@
             els.titleInput.value = domMeta.title;
           }
           if (domMeta.site_name) {
-            els.siteNameLabel.textContent = domMeta.site_name;
+            els.siteNameLabel.textContent = formatDomainDisplay(rawUrl, domMeta.site_name);
           }
           if (domMeta.selected_text && !els.noteInput.value) {
             els.noteInput.value = domMeta.selected_text;
           }
           const domThumbs = normalizeMediaUrlList(domMeta.media_items);
           if (domThumbs[0]) {
-            renderPreviewThumbnail(domThumbs[0]);
+            renderPreviewThumbnail(domThumbs[0], els.siteNameLabel.textContent);
           }
         }
       } catch (_err) {
-        // Passive DOM assist best-effort only
+        // Best effort only
       }
     }
     await fetchPreviewForUrl(rawUrl, false);
   }
 
   async function populateActiveTab() {
+    if (!chrome.tabs || typeof chrome.tabs.query !== "function") return;
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const rawUrl = populateFromTabSync(tab);
     if (rawUrl) {
-      await enrichActiveTabAsync(tab, rawUrl);
+      void enrichActiveTabAsync(tab, rawUrl);
     }
   }
 
-  async function enterSaverView(preloadedSession = null, preloadedCache = null, preloadedTab = null) {
+  async function syncWorkspaceBackground(fallbackDisplay) {
+    try {
+      const ws = await api.fetchWorkspace({ limit: 50 });
+      applyWorkspaceSnapshot(ws, fallbackDisplay);
+    } catch (err) {
+      if (err && err.status === 401) {
+        await api.clearAuthSession();
+        enterAuthView();
+        showBanner("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่อีกครั้ง", "error");
+        return;
+      }
+      showBanner(`ซิงก์ข้อมูลพื้นหลังไม่สำเร็จ (${err.message}) — บันทึกลิงก์ได้ทันทีหรือเข้าคิวออฟไลน์`, "error");
+    }
+  }
+
+  function enterSaverView(preloadedSession = null, preloadedCache = null, preloadedTab = null) {
     els.authView.classList.add("hidden");
     els.saverView.classList.remove("hidden");
+    if (els.submenuAccountRow) els.submenuAccountRow.classList.remove("hidden");
     setSaverPaneMode("save");
     renderReminderPicker();
 
-    const session = preloadedSession || (await api.getSessionState());
-    const cache = preloadedCache || (await api.getWorkspaceCache());
+    const cache = preloadedCache || { folders: [], tags: [], recentItems: [], user: null };
+    const session = preloadedSession || { user: null };
     const cachedUser = cache.user || session.user;
+    state.cachedUser = cachedUser;
     const userDisplay = (cachedUser && (cachedUser.display_name || cachedUser.email)) || "บัญชี Sharely";
-    els.userLabel.textContent = `👤 ${userDisplay}`;
+    if (els.userLabel) {
+      els.userLabel.textContent = `👤 ${userDisplay}`;
+    }
 
-    if (cache.folders.length) renderFoldersDropdown(cache.folders);
-    if (cache.tags.length) renderTagChips(cache.tags);
-    if (cache.recentItems.length) renderRecentItems(cache.recentItems);
+    renderFoldersDropdown(cache.folders || []);
+    renderTagChips(cache.tags || []);
+    renderRecentItems(cache.recentItems || []);
 
     if (preloadedTab && preloadedTab.url) {
       const rawUrl = populateFromTabSync(preloadedTab);
@@ -811,38 +953,14 @@
     }
 
     void refreshOfflineQueueBanner();
-
-    try {
-      const [me] = await Promise.all([
-        api.apiRequest("/api/auth/me"),
-        loadUserWorkspace(),
-      ]);
-      const profile = (me && (me.user || me.profile)) || {};
-      const name = profile.display_name || profile.email || userDisplay;
-      const quotaLeft =
-        me && me.ai_quota && typeof me.ai_quota.remaining === "number" ? ` · AI เหลือ ${me.ai_quota.remaining}` : "";
-      els.userLabel.textContent = `👤 ${name}${quotaLeft}`;
-      void api.setWorkspaceCache({
-        folders: state.cachedFolders,
-        tags: state.cachedTags,
-        recentItems: state.allRecentItems,
-        user: profile,
-      });
-    } catch (err) {
-      if (err.status === 401) {
-        await api.clearAuthSession();
-        enterAuthView();
-        showBanner("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่อีกครั้ง", "error");
-        return;
-      }
-      showBanner(`ซิงก์ข้อมูลพื้นหลังไม่สำเร็จ (${err.message}) — บันทึกลิงก์ได้ทันทีหรือเข้าคิวออฟไลน์`, "error");
-    }
+    void syncWorkspaceBackground(userDisplay);
   }
 
   function enterAuthView() {
     els.saverView.classList.add("hidden");
     els.authView.classList.remove("hidden");
     els.savedResultCard.classList.add("hidden");
+    if (els.submenuAccountRow) els.submenuAccountRow.classList.add("hidden");
   }
 
   async function handleWebConnect() {
@@ -879,7 +997,7 @@
                     };
                   }
                 } catch (_err) {
-                  // Continue to legacy state fallback
+                  // Continue
                 }
               }
               const legacyRaw =
@@ -899,13 +1017,13 @@
             if (data.apiBaseUrl) {
               els.backendUrlInput.value = await api.setBackendUrl(data.apiBaseUrl);
             }
-            await api.loginWithAccessToken(data.accessToken, data.refreshToken || "");
-            await enterSaverView();
-            showBanner("เชื่อมต่อบัญชีจากหน้าเว็บ Sharely สำเร็จแล้ว!", "info");
+            const profile = await api.loginWithAccessToken(data.accessToken, data.refreshToken || "");
+            enterSaverView({ user: profile }, await api.getWorkspaceCache(), null);
+            showBanner("เชื่อมต่อบัญชีจากหน้าเว็บ Sharely สำเร็จแล้ว!", "success");
             return;
           }
         } catch (_err) {
-          // Try next matching tab
+          // Next tab
         }
       }
       showBanner("พบแท็บ Sharely แต่ยังไม่ได้เข้าสู่ระบบ — กรุณาล็อกอินในหน้าเว็บก่อน แล้วลองอีกครั้ง", "error");
@@ -938,7 +1056,7 @@
         body,
       });
       await api.saveAuthSession(authResp);
-      await enterSaverView();
+      enterSaverView({ user: authResp.user }, await api.getWorkspaceCache(), null);
     } catch (err) {
       showBanner(err.message || "ไม่สามารถเข้าสู่ระบบได้", "error");
     } finally {
@@ -965,7 +1083,7 @@
         body: { email: "may@example.com", password: "password123" },
       });
       await api.saveAuthSession(authResp);
-      await enterSaverView();
+      enterSaverView({ user: authResp.user }, await api.getWorkspaceCache(), null);
     } catch (err) {
       showBanner(
         `เข้าสู่ระบบบัญชีทดสอบไม่สำเร็จ (${err.message}) — ตรวจสอบว่า Backend รันอยู่ที่ ${els.backendUrlInput.value}`,
@@ -985,9 +1103,9 @@
     }
     els.tokenLoginBtn.disabled = true;
     try {
-      await api.loginWithAccessToken(rawToken);
+      const profile = await api.loginWithAccessToken(rawToken);
       els.tokenLoginInput.value = "";
-      await enterSaverView();
+      enterSaverView({ user: profile }, await api.getWorkspaceCache(), null);
     } catch (err) {
       showBanner(err.message || "Token ไม่ถูกต้อง", "error");
     } finally {
@@ -1006,13 +1124,17 @@
         method: "POST",
         body: { name, emoji },
       });
-      const opt = document.createElement("option");
-      opt.value = folder.id;
-      opt.textContent = `${folder.emoji || "📁"} ${folder.name}`;
-      els.folderSelect.appendChild(opt);
-      els.folderSelect.value = folder.id;
+      state.selectedFolderId = folder.id;
+      state.cachedFolders = [...state.cachedFolders, folder];
+      renderFoldersDropdown(state.cachedFolders);
       els.newFolderName.value = "";
       els.newFolderBox.classList.add("hidden");
+      void api.setWorkspaceCache({
+        folders: state.cachedFolders,
+        tags: state.cachedTags,
+        recentItems: state.allRecentItems,
+        user: state.cachedUser,
+      });
     } catch (err) {
       showBanner(`สร้างโฟลเดอร์ไม่สำเร็จ: ${err.message}`, "error");
     } finally {
@@ -1026,6 +1148,7 @@
 
     const url = els.urlInput.value.trim();
     if (!api.isSaveableHttpUrl(url)) {
+      if (els.urlEditRow) els.urlEditRow.classList.remove("hidden");
       showBanner("กรุณากรอก URL ที่ขึ้นต้นด้วย http:// หรือ https://", "error");
       return;
     }
@@ -1056,9 +1179,9 @@
         (activeDomMeta && activeDomMeta.description) ||
         undefined,
       note: els.noteInput.value.trim() || undefined,
-      folder_id: els.folderSelect.value || undefined,
+      folder_id: state.selectedFolderId || els.folderSelect.value || undefined,
       tags: tags.length ? tags : undefined,
-      status: els.statusSelect.value || "inbox",
+      status: (els.statusSelect && els.statusSelect.value) || "inbox",
       platform: (activePreviewMeta && activePreviewMeta.platform) || undefined,
       content_type: (activePreviewMeta && activePreviewMeta.content_type) || undefined,
       image_url: coverImage,
@@ -1078,11 +1201,28 @@
       state.lastSavedItemId = saved.id;
       els.aiResultBox.classList.add("hidden");
       els.aiResultBox.textContent = "";
-      els.savedMetaText.textContent = `ID: ${saved.id} · platform: ${saved.platform || "web"} · enrich: ${saved.enrich_status || "pending"}`;
+      els.savedTitleLabel.textContent = saved.deduplicated ? "✓ อัปเดตลิงก์เดิมในคลังแล้ว" : "✓ บันทึกลิงก์แล้ว";
+      els.savedMetaText.textContent = `${saved.platform || "web"} · ${formatDomainDisplay(saved.url || url)}`;
       els.savedResultCard.classList.remove("hidden");
       els.blockedTabCard.classList.add("hidden");
 
-      await refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
+      // Optimistically update in-memory & cached recent items without blocking on a repeat GET
+      const mergedRecent = [saved, ...state.allRecentItems.filter((item) => item && item.id !== saved.id)].slice(0, 50);
+      renderRecentItems(mergedRecent);
+      if (tags.length) {
+        for (const tagName of tags) {
+          if (!state.cachedTags.some((t) => String(t.name || "").toLowerCase() === tagName.toLowerCase())) {
+            state.cachedTags.unshift({ name: tagName });
+          }
+        }
+        renderTagChips(state.cachedTags);
+      }
+      void api.setWorkspaceCache({
+        folders: state.cachedFolders,
+        tags: state.cachedTags,
+        recentItems: mergedRecent,
+        user: state.cachedUser,
+      });
     } catch (err) {
       if (!err.status || err.status >= 500 || err.status === 429) {
         await api.enqueueOfflineSave(payload, err.message || "offline");
@@ -1093,7 +1233,7 @@
       }
     } finally {
       els.saveItemBtn.disabled = false;
-      els.saveItemBtn.textContent = "บันทึกลิงก์";
+      els.saveItemBtn.textContent = "บันทึก";
     }
   }
 
@@ -1126,8 +1266,10 @@
   function bindEvents() {
     els.openWebBtn.addEventListener("click", openSharelyWeb);
     els.openWebBlockedBtn.addEventListener("click", openSharelyWeb);
+
     els.toggleSettingsBtn.addEventListener("click", () => {
-      els.settingsPanel.classList.toggle("hidden");
+      const isHidden = els.settingsPanel.classList.toggle("hidden");
+      els.toggleSettingsBtn.setAttribute("aria-expanded", String(!isHidden));
     });
 
     els.saveSettingsBtn.addEventListener("click", async () => {
@@ -1171,9 +1313,10 @@
     els.demoLoginBtn.addEventListener("click", handleDemoLogin);
 
     els.tabSaveBtn.addEventListener("click", () => setSaverPaneMode("save"));
-    els.tabRecentBtn.addEventListener("click", async () => {
+    els.tabRecentBtn.addEventListener("click", () => {
       setSaverPaneMode("recent");
-      await refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
+      // Paint immediately from memory/cache, then refresh silently in background
+      void refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
     });
 
     els.flushQueueBtn.addEventListener("click", async () => {
@@ -1181,8 +1324,8 @@
       try {
         const res = await api.flushOfflineQueue();
         await refreshOfflineQueueBanner();
-        await refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
-        showBanner(`ซิงก์คิวออฟไลน์สำเร็จ ${res.flushed} รายการ (คงเหลือ ${res.remaining})`, "info");
+        void refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
+        showBanner(`ซิงก์คิวออฟไลน์สำเร็จ ${res.flushed} รายการ (คงเหลือ ${res.remaining})`, "success");
       } catch (err) {
         showBanner(`ซิงก์คิวไม่สำเร็จ: ${err.message}`, "error");
       } finally {
@@ -1195,31 +1338,39 @@
       els.recentSearchInput.addEventListener("input", () => {
         clearTimeout(searchTimer);
         searchTimer = setTimeout(() => {
-          refreshRecentList(els.recentSearchInput.value);
+          void refreshRecentList(els.recentSearchInput.value);
         }, 280);
       });
     }
     if (els.refreshRecentBtn) {
       els.refreshRecentBtn.addEventListener("click", () => {
-        refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
+        void refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
       });
     }
 
     els.logoutBtn.addEventListener("click", async () => {
+      els.settingsPanel.classList.add("hidden");
       try {
         await api.apiRequest("/api/auth/logout", { method: "POST" });
       } catch (_err) {
-        // Always clear local session even if backend logout fails
+        // Always clear local session
       }
       await api.clearAuthSession();
       enterAuthView();
     });
 
+    if (els.toggleUrlEditBtn && els.urlEditRow) {
+      els.toggleUrlEditBtn.addEventListener("click", () => {
+        const isHidden = els.urlEditRow.classList.toggle("hidden");
+        if (!isHidden) els.urlInput.focus();
+      });
+    }
+
     els.urlInput.addEventListener("input", () => {
       const nextUrl = els.urlInput.value.trim();
       if (api.isSaveableHttpUrl(nextUrl)) {
         els.blockedTabCard.classList.add("hidden");
-        els.siteNameLabel.textContent = nextUrl;
+        els.siteNameLabel.textContent = formatDomainDisplay(nextUrl);
       }
       if ((state.previewUrl && state.previewUrl !== nextUrl) || (state.domMetaUrl && state.domMetaUrl !== nextUrl)) {
         resetPreviewMetadata();
@@ -1227,7 +1378,7 @@
     });
 
     els.refreshPreviewBtn.addEventListener("click", () => {
-      fetchPreviewForUrl(els.urlInput.value.trim(), true);
+      void fetchPreviewForUrl(els.urlInput.value.trim(), true);
     });
 
     els.toggleNewFolderBtn.addEventListener("click", () => {
@@ -1238,7 +1389,32 @@
     });
 
     els.createFolderBtn.addEventListener("click", handleCreateFolder);
-    els.tagsInput.addEventListener("input", syncTagChipSelection);
+    els.newFolderName.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        void handleCreateFolder();
+      }
+    });
+
+    if (els.toggleTagInputBtn && els.quickTagRow) {
+      els.toggleTagInputBtn.addEventListener("click", () => {
+        const isHidden = els.quickTagRow.classList.toggle("hidden");
+        if (!isHidden && els.quickTagInput) {
+          els.quickTagInput.focus();
+        }
+      });
+    }
+    if (els.addQuickTagBtn) {
+      els.addQuickTagBtn.addEventListener("click", addQuickTagsFromInput);
+    }
+    if (els.quickTagInput) {
+      els.quickTagInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          addQuickTagsFromInput();
+        }
+      });
+    }
 
     if (els.reminderTriggerBtn) {
       els.reminderTriggerBtn.addEventListener("click", () => {
@@ -1247,6 +1423,12 @@
           state.reminder.viewYearMonth = getBangkokTodayIso().slice(0, 7);
         }
         renderReminderPicker();
+      });
+    }
+
+    if (els.clearReminderInlineBtn) {
+      els.clearReminderInlineBtn.addEventListener("click", () => {
+        applyReminderPreset("none");
       });
     }
 
@@ -1322,7 +1504,7 @@
 
     if (session.accessToken) {
       const tab = Array.isArray(activeTabs) ? activeTabs[0] : null;
-      await enterSaverView(session, cachedWorkspace, tab);
+      enterSaverView(session, cachedWorkspace, tab);
     } else {
       enterAuthView();
     }

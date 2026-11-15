@@ -34,8 +34,14 @@ import {
   renderCheckEmailScreen,
   renderInviteLandingScreen,
 } from "./screens/auth.js";
-import { renderHomeScreen } from "./screens/home.js";
-import { renderFoldersScreen, renderFolderDetailScreen, renderFolderSheets } from "./screens/folders.js";
+import { renderHomeScreen, renderHomeLinksSectionInner } from "./screens/home.js";
+import {
+  renderFoldersScreen,
+  renderFolderDetailScreen,
+  renderFolderSheets,
+  renderFoldersGridInner,
+  renderFolderDetailLinksInner,
+} from "./screens/folders.js";
 import { renderLinkDetailScreen, renderSavedPreviewScreen, renderSaveAndReminderSheets } from "./screens/links.js";
 import { renderAiScreen } from "./screens/ai.js";
 import {
@@ -45,7 +51,14 @@ import {
   renderHelpScreen,
   renderProfileSheets,
 } from "./screens/profile.js";
-import { renderWebView, renderExtensionPopup } from "./screens/webExtension.js";
+import {
+  renderWebView,
+  renderExtensionPopup,
+  renderPcHomeLinksSectionInner,
+  renderPcFoldersGridInner,
+  renderPcFolderDetailLinksInner,
+  renderPcFavoriteListInner,
+} from "./screens/webExtension.js";
 import { renderTestbedPanel } from "./screens/testbed.js";
 
 const appEl = document.getElementById("app");
@@ -414,13 +427,69 @@ async function copyText(text) {
 const _autoEnrichedItemIds = new Set();
 const scheduleSearchEmit = createFrameCoalescer(() => store.emit());
 
+function patchSearchResultsInPlace(scope, prevValue, nextValue) {
+  if (typeof document === "undefined" || !appEl) return false;
+  const hadQuery = Boolean(String(prevValue || "").trim());
+  const hasQuery = Boolean(String(nextValue || "").trim());
+  if (scope === "home") {
+    const pcHome = appEl.querySelector('[data-search-list-host="pc-home"]');
+    if (pcHome) {
+      pcHome.innerHTML = renderPcHomeLinksSectionInner(store.state);
+      return true;
+    }
+    const pcFav = appEl.querySelector('[data-search-list-host="pc-favorite"]');
+    if (pcFav) {
+      pcFav.innerHTML = renderPcFavoriteListInner(store.state);
+      const countEl = appEl.querySelector('[data-search-count="pc-favorite"]');
+      if (countEl) {
+        const grid = pcFav.firstElementChild;
+        countEl.textContent = String(grid?.classList?.contains("pc-link-grid") ? grid.children.length : 0);
+      }
+      return true;
+    }
+    const mobileHome = appEl.querySelector('[data-search-list-host="mobile-home"]');
+    if (mobileHome && hadQuery === hasQuery) {
+      mobileHome.innerHTML = renderHomeLinksSectionInner(store.state);
+      return true;
+    }
+    return false;
+  }
+  if (scope === "folders") {
+    const pcFolders = appEl.querySelector('[data-search-list-host="pc-folders"]');
+    if (pcFolders) {
+      pcFolders.innerHTML = renderPcFoldersGridInner(store.state);
+      return true;
+    }
+    const mobileFolders = appEl.querySelector('[data-search-list-host="mobile-folders"]');
+    if (mobileFolders) {
+      mobileFolders.innerHTML = renderFoldersGridInner(store.state);
+      return true;
+    }
+    return false;
+  }
+  if (scope === "folderDetail") {
+    const pcDetail = appEl.querySelector('[data-search-list-host="pc-folder-detail"]');
+    if (pcDetail) {
+      pcDetail.innerHTML = renderPcFolderDetailLinksInner(store.state);
+      return true;
+    }
+    const mobileDetail = appEl.querySelector('[data-search-list-host="mobile-folder-detail"]');
+    if (mobileDetail) {
+      mobileDetail.innerHTML = renderFolderDetailLinksInner(store.state);
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
 function maybeAutoEnrichItem(itemId) {
   if (!itemId || store.state.api.mode !== "live" || _autoEnrichedItemIds.has(itemId)) return;
   const item = getLinkById(itemId);
   if (!item) return;
   const desc = String(item.description || "").trim();
   const isYt = /youtube\.com|youtu\.be/i.test(String(item.url || "")) || String(item.platform || "").toLowerCase() === "youtube";
-  const needsEnrich = !item.coverUrl || !desc || (isYt && (desc.startsWith("By ") || !item.embed_url));
+  const needsEnrich = !item.coverUrl || !desc || (isYt && !item.embed_url);
   if (!needsEnrich) return;
   _autoEnrichedItemIds.add(itemId);
   apiClient.refreshItemPreview(itemId, { silent: true }).catch(() => {});
@@ -434,14 +503,17 @@ appEl.addEventListener("input", (e) => {
   const { ui, data, api } = store.state;
 
   if (el.dataset.searchInput === "home") {
+    const prev = ui.homeSearch;
     ui.homeSearch = el.value;
-    scheduleSearchEmit();
+    if (!patchSearchResultsInPlace("home", prev, el.value)) scheduleSearchEmit();
   } else if (el.dataset.searchInput === "folders") {
+    const prev = ui.folderSearch;
     ui.folderSearch = el.value;
-    scheduleSearchEmit();
+    if (!patchSearchResultsInPlace("folders", prev, el.value)) scheduleSearchEmit();
   } else if (el.dataset.searchInput === "folderDetail") {
+    const prev = ui.folderDetailSearch;
     ui.folderDetailSearch = el.value;
-    scheduleSearchEmit();
+    if (!patchSearchResultsInPlace("folderDetail", prev, el.value)) scheduleSearchEmit();
   } else if (el.dataset.bindDisplaynameSignup) {
     ui.authDisplayName = el.value;
     ui.authError = null;
@@ -2374,7 +2446,8 @@ if (bootParams.inviteToken) {
   store.state.ui.viewportMode = resolveDefaultViewportMode();
   store.state.ui.screen = "login";
 }
-store.subscribe(renderApp);
+const scheduleRenderApp = createFrameCoalescer(renderApp);
+store.subscribe(scheduleRenderApp);
 renderApp();
 
 let _lastHydratedUserId = "";
@@ -2423,8 +2496,8 @@ function hydrateOnceIfNeeded() {
     isAuthenticated: () =>
       store.state.api.mode === "live" &&
       Boolean(store.state.data.user?.isAuthenticated && store.state.api.bearerToken),
-    onSync: async () => {
-      await apiClient.hydrateWorkspace().catch(() => {});
+    onSync: async (_reason, syncMeta) => {
+      await apiClient.applyRealtimeDelta(syncMeta).catch(() => {});
       applyPendingDeepLinks();
     },
   });

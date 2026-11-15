@@ -22,7 +22,11 @@ import {
   summarizeLinkItem,
 } from "../../src/api";
 import { syncLocalRemindersWithOs } from "../../src/notifications";
-import type { MobileLinkItem, WorkflowStatus } from "../../src/storage";
+import {
+  getMemoryCachedWorkspace,
+  type MobileLinkItem,
+  type WorkflowStatus,
+} from "../../src/storage";
 
 const STATUS_ITEMS: Array<{ id: WorkflowStatus; label: string }> = [
   { id: "inbox", label: "กล่องรับ" },
@@ -34,11 +38,12 @@ const STATUS_ITEMS: Array<{ id: WorkflowStatus; label: string }> = [
 export default function ItemDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const [item, setItem] = useState<MobileLinkItem | null>(null);
-  const [note, setNote] = useState("");
-  const [tagsText, setTagsText] = useState("");
-  const [aiSummary, setAiSummary] = useState("");
-  const [loading, setLoading] = useState(true);
+  const cachedMatch = getMemoryCachedWorkspace()?.items.find((it) => it.id === id) || null;
+  const [item, setItem] = useState<MobileLinkItem | null>(cachedMatch);
+  const [note, setNote] = useState(cachedMatch?.note || cachedMatch?.user_note || "");
+  const [tagsText, setTagsText] = useState((cachedMatch?.tags || []).join(" "));
+  const [aiSummary, setAiSummary] = useState(cachedMatch?.ai_summary || "");
+  const [loading, setLoading] = useState(!cachedMatch);
   const [busy, setBusy] = useState("");
 
   const loadItem = useCallback(async () => {

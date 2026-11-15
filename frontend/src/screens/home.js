@@ -107,12 +107,8 @@ export function renderFigmaLinkItemCard(item) {
   return renderLinkCard(item, { variant: "figma-home" });
 }
 
-export function renderHomeScreen(state) {
-  if (state.ui.notificationScreenOpen) {
-    return renderNotificationsFullScreen(state);
-  }
-
-  const { folders, links, notifications } = state.data;
+export function renderHomeLinksSectionInner(state) {
+  const { links } = state.data;
   const {
     homeSearch,
     homeFilter,
@@ -130,6 +126,51 @@ export function renderHomeScreen(state) {
     !showAllHomeLinks && !homeSearch && homeFilter === "all" && !hasAdvancedFilter
       ? filteredLinks.slice(0, 2)
       : filteredLinks;
+
+  return `
+    <div class="figma-section-head">
+      <h2 class="figma-section-title">บันทึกล่าสุด</h2>
+      ${
+        filteredLinks.length > 2
+          ? `<button type="button" class="figma-section-action" data-action="toggle-home-all-links">${
+              showAllHomeLinks ? "ย่อรายการ" : "ดูทั้งหมด"
+            }</button>`
+          : `<span class="figma-section-hint">${filteredLinks.length} รายการ</span>`
+      }
+    </div>
+
+    ${
+      visibleLinks.length === 0
+        ? `
+      <div class="figma-empty-state">
+        <div class="figma-empty-icon">${icons.bookmarkSolid(22)}</div>
+        <h3>ยังไม่มีลิงก์ที่บันทึกไว้</h3>
+        <p>กดปุ่ม "+ เพิ่มลิงก์" ด้านบน หรือแชร์ลิงก์จากแอปอื่นมาที่ Sharely เพื่อเริ่มเก็บสิ่งน่าสนใจไว้ดูทีหลัง</p>
+        <button type="button" class="figma-primary-btn compact" data-open-save-sheet="1">
+          + เพิ่มลิงก์แรกของฉัน
+        </button>
+      </div>`
+        : `<div class="figma-link-list">
+            ${visibleLinks.map(renderFigmaLinkItemCard).join("")}
+          </div>`
+    }
+  `;
+}
+
+export function renderHomeScreen(state) {
+  if (state.ui.notificationScreenOpen) {
+    return renderNotificationsFullScreen(state);
+  }
+
+  const { folders, links, notifications } = state.data;
+  const {
+    homeSearch,
+    homeFilter,
+    homePlatformFilter = "all",
+    homeContentTypeFilter = "all",
+  } = state.ui;
+
+  const hasAdvancedFilter = homePlatformFilter !== "all" || homeContentTypeFilter !== "all";
   const unreadNotifications = notifications.filter((n) => n.unread).length;
   const resumeItem = links.find((l) => l.status !== "read") || links[0] || null;
   const resumeThumb = resumeItem ? resolveMediaThumbUrl(resumeItem) : "";
@@ -250,33 +291,8 @@ export function renderHomeScreen(state) {
           </div>
         </div>
 
-        <div class="figma-section-block">
-          <div class="figma-section-head">
-            <h2 class="figma-section-title">บันทึกล่าสุด</h2>
-            ${
-              filteredLinks.length > 2
-                ? `<button type="button" class="figma-section-action" data-action="toggle-home-all-links">${
-                    showAllHomeLinks ? "ย่อรายการ" : "ดูทั้งหมด"
-                  }</button>`
-                : `<span class="figma-section-hint">${filteredLinks.length} รายการ</span>`
-            }
-          </div>
-
-          ${
-            visibleLinks.length === 0
-              ? `
-            <div class="figma-empty-state">
-              <div class="figma-empty-icon">${icons.bookmarkSolid(22)}</div>
-              <h3>ยังไม่มีลิงก์ที่บันทึกไว้</h3>
-              <p>กดปุ่ม "+ เพิ่มลิงก์" ด้านบน หรือแชร์ลิงก์จากแอปอื่นมาที่ Sharely เพื่อเริ่มเก็บสิ่งน่าสนใจไว้ดูทีหลัง</p>
-              <button type="button" class="figma-primary-btn compact" data-open-save-sheet="1">
-                + เพิ่มลิงก์แรกของฉัน
-              </button>
-            </div>`
-              : `<div class="figma-link-list">
-                  ${visibleLinks.map(renderFigmaLinkItemCard).join("")}
-                </div>`
-          }
+        <div class="figma-section-block" data-search-list-host="mobile-home">
+          ${renderHomeLinksSectionInner(state)}
         </div>
       </div>
     </div>

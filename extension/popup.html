@@ -8,108 +8,115 @@
 </head>
 <body>
   <div class="app-shell">
-    <!-- Top Header (Figma 468:619) -->
+    <!-- Minimalist Top Header -->
     <header class="topbar">
       <div class="brand">
         <img src="icons/icon48.png" alt="Sharely" class="brand-logo" />
         <span class="brand-wordmark">Sharely</span>
-        <span id="healthBadge" class="status-pill status-checking">Checking...</span>
+        <span id="healthBadge" class="status-pill status-checking" title="สถานะการเชื่อมต่อ">Checking</span>
       </div>
       <div class="topbar-actions">
-        <button id="openWebBtn" type="button" class="icon-btn" title="เปิดเว็บคลัง Sharely">
-          ↗
+        <button id="openWebBtn" type="button" class="open-web-pill" title="เปิดเว็บคลัง Sharely">
+          <span>เปิดเว็บ</span>
+          <span aria-hidden="true">↗</span>
         </button>
-        <button id="toggleSettingsBtn" type="button" class="icon-btn" title="ตั้งค่า Backend URL">
-          ⚙
+        <button id="toggleSettingsBtn" type="button" class="icon-btn" title="บัญชีและตั้งค่า" aria-expanded="false">
+          ⋯
         </button>
       </div>
     </header>
 
-    <!-- Settings Panel -->
-    <section id="settingsPanel" class="card settings-card hidden">
-      <label for="backendUrlInput" class="field-label">Backend API URL</label>
-      <div class="inline-row" style="margin-bottom:6px;gap:6px;">
-        <button id="presetCloudBtn" type="button" class="btn btn-secondary btn-sm">☁️ Production Cloud</button>
-        <button id="presetLocalBtn" type="button" class="btn btn-secondary btn-sm">💻 Localhost</button>
+    <!-- Overflow Submenu: Account, Server URL presets & Logout -->
+    <section id="settingsPanel" class="submenu-card hidden" aria-label="ตั้งค่าและบัญชี">
+      <div id="submenuAccountRow" class="submenu-account hidden">
+        <div class="submenu-account-info">
+          <span id="userLabel" class="user-label">กำลังโหลดผู้ใช้...</span>
+        </div>
+        <button id="logoutBtn" type="button" class="submenu-logout-btn">ออกจากระบบ</button>
       </div>
-      <div class="inline-row">
-        <input
-          id="backendUrlInput"
-          type="url"
-          class="input"
-          placeholder="https://just-save-it-api.onrender.com"
-        />
-        <button id="saveSettingsBtn" type="button" class="btn btn-secondary btn-sm">บันทึก</button>
+
+      <div class="submenu-section">
+        <label for="backendUrlInput" class="field-label">Backend API URL</label>
+        <div class="preset-row">
+          <button id="presetCloudBtn" type="button" class="btn-chip">☁️ Production Cloud</button>
+          <button id="presetLocalBtn" type="button" class="btn-chip">💻 Localhost</button>
+        </div>
+        <div class="inline-row">
+          <input
+            id="backendUrlInput"
+            type="url"
+            class="input input-sm"
+            placeholder="https://just-save-it-api.onrender.com"
+          />
+          <button id="saveSettingsBtn" type="button" class="btn-chip btn-chip-dark">บันทึก</button>
+        </div>
       </div>
-      <p class="hint">ค่าเริ่มต้นชี้ที่ Render Production Cloud หรือสลับเป็น <code>http://127.0.0.1:8000</code></p>
     </section>
 
     <!-- Global Banner Feedback -->
     <div id="feedbackBanner" class="banner hidden" role="alert"></div>
 
-    <!-- Auth View (Figma 468:600 E10) -->
+    <!-- Auth View -->
     <main id="authView" class="view hidden">
-      <div class="card hero-card">
-        <div class="hero-icon-badge">
-          <img src="icons/icon48.png" alt="Sharely" class="hero-icon-img" />
+      <div class="figma-white-sheet auth-sheet">
+        <div class="hero-header">
+          <div class="hero-icon-badge">
+            <img src="icons/icon48.png" alt="Sharely" class="hero-icon-img" />
+          </div>
+          <div>
+            <p class="hero-title">เข้าสู่ระบบ Sharely</p>
+            <p class="hero-sub">บันทึกลิงก์จาก Chrome ลงคลังของคุณใน 1 คลิก</p>
+          </div>
         </div>
-        <p class="hero-title">เข้าสู่ระบบ Sharely</p>
-        <p class="hero-sub">เข้าสู่ระบบเพื่อบันทึกลิงก์จาก Chrome ลงในคลังของคุณได้ทันที</p>
-        <button id="webConnectBtn" type="button" class="btn btn-primary btn-full" style="margin-top:8px;">
+
+        <button id="webConnectBtn" type="button" class="figma-sheet-submit-btn">
           เชื่อมต่อจากหน้าเว็บ Sharely
         </button>
-      </div>
 
-      <div class="tab-group" role="tablist">
-        <button id="tabLoginBtn" type="button" class="tab-btn active">เข้าสู่ระบบ</button>
-        <button id="tabRegisterBtn" type="button" class="tab-btn">สมัครสมาชิก</button>
-      </div>
-
-      <form id="authForm" class="card stack-sm">
-        <div id="displayNameGroup" class="hidden">
-          <label for="displayNameInput" class="field-label">ชื่อที่แสดง</label>
-          <input id="displayNameInput" type="text" class="input" placeholder="เช่น เมย์" />
+        <div class="tab-group" role="tablist">
+          <button id="tabLoginBtn" type="button" class="tab-btn active">เข้าสู่ระบบ</button>
+          <button id="tabRegisterBtn" type="button" class="tab-btn">สมัครสมาชิก</button>
         </div>
 
-        <div>
-          <label for="emailInput" class="field-label">อีเมล</label>
-          <input id="emailInput" type="email" class="input" required placeholder="you@example.com" />
+        <form id="authForm" class="stack-sm">
+          <div id="displayNameGroup" class="hidden">
+            <label for="displayNameInput" class="field-label">ชื่อที่แสดง</label>
+            <input id="displayNameInput" type="text" class="figma-sheet-input" placeholder="เช่น เมย์" />
+          </div>
+
+          <div>
+            <label for="emailInput" class="field-label">อีเมล</label>
+            <input id="emailInput" type="email" class="figma-sheet-input" required placeholder="you@example.com" />
+          </div>
+
+          <div>
+            <label for="passwordInput" class="field-label">รหัสผ่าน</label>
+            <input id="passwordInput" type="password" class="figma-sheet-input" required minlength="8" placeholder="••••••••" />
+          </div>
+
+          <button id="authSubmitBtn" type="submit" class="btn-dark-pill">เข้าสู่ระบบ</button>
+        </form>
+
+        <div class="token-box">
+          <label for="tokenLoginInput" class="field-label">หรือวาง Web Access Token (Google OAuth)</label>
+          <div class="inline-row">
+            <input id="tokenLoginInput" type="password" class="input" placeholder="วาง Access Token จากหน้าโปรไฟล์เว็บ..." />
+            <button id="tokenLoginBtn" type="button" class="btn-chip btn-chip-dark">ใช้ Token</button>
+          </div>
         </div>
 
-        <div>
-          <label for="passwordInput" class="field-label">รหัสผ่าน</label>
-          <input id="passwordInput" type="password" class="input" required minlength="8" placeholder="••••••••" />
+        <div id="localDemoSection" class="hidden">
+          <button id="demoLoginBtn" type="button" class="figma-pill-choice demo-btn">
+            ใช้บัญชีทดสอบ May (Local Dev)
+          </button>
         </div>
-
-        <button id="authSubmitBtn" type="submit" class="btn btn-primary btn-full">เข้าสู่ระบบ</button>
-      </form>
-
-      <div class="card stack-sm">
-        <label for="tokenLoginInput" class="field-label">เข้าสู่ระบบด้วย Web Access Token (Google OAuth)</label>
-        <div class="inline-row">
-          <input id="tokenLoginInput" type="password" class="input" placeholder="วาง Access Token จากหน้าโปรไฟล์เว็บ..." />
-          <button id="tokenLoginBtn" type="button" class="btn btn-secondary btn-sm">ใช้ Token</button>
-        </div>
-        <p class="hint">เปิดเว็บ Sharely &rarr; โปรไฟล์ &rarr; บัญชีและความปลอดภัย &rarr; เชื่อมต่อ Extension</p>
-      </div>
-
-      <div id="localDemoSection" class="hidden">
-        <div class="divider"><span>หรือทดสอบทันที (Local Dev)</span></div>
-        <button id="demoLoginBtn" type="button" class="btn btn-secondary btn-full">
-          ใช้บัญชีทดสอบ May (may@example.com)
-        </button>
       </div>
     </main>
 
     <!-- Main Link Saver View -->
     <main id="saverView" class="view hidden">
-      <!-- User Strip & Mode Switch -->
-      <div class="user-strip">
-        <span id="userLabel" class="user-label">กำลังโหลดผู้ใช้...</span>
-        <button id="logoutBtn" type="button" class="link-btn">ออกจากระบบ</button>
-      </div>
-
-      <div class="tab-group" role="tablist">
+      <!-- Top Mode Tabs -->
+      <div class="tab-group mode-tabs" role="tablist">
         <button id="tabSaveBtn" type="button" class="tab-btn active">บันทึกแท็บนี้</button>
         <button id="tabRecentBtn" type="button" class="tab-btn">
           ล่าสุด &amp; ค้นหา (<span id="recentCount">0</span>)
@@ -119,97 +126,54 @@
       <!-- Offline Queue Bar -->
       <div id="offlineQueueBar" class="queue-bar hidden">
         <span>คิวออฟไลน์รอส่ง <strong id="offlineQueueCount">0</strong> รายการ</span>
-        <button id="flushQueueBtn" type="button" class="btn btn-secondary btn-sm">ซิงก์ตอนนี้</button>
+        <button id="flushQueueBtn" type="button" class="btn-chip">ซิงก์ตอนนี้</button>
       </div>
 
-      <!-- Save Tab Pane -->
-      <section id="savePane" class="stack-md">
-        <!-- Blocked Non-HTTP(S) Notice (Figma E9) -->
-        <section id="blockedTabCard" class="card blocked-card hidden">
+      <!-- Save Tab Pane: Figma ShareSheet 319:541 1:1 -->
+      <section id="savePane" class="stack-sm">
+        <section id="blockedTabCard" class="figma-white-sheet blocked-card hidden">
           <p class="hero-title">บันทึกหน้านี้ไม่ได้</p>
-          <p class="hero-sub">แท็บนี้ไม่ใช่หน้าเว็บ HTTP/HTTPS (เช่น chrome:// หรือแท็บว่าง) — เปิดหน้าเว็บที่มีลิงก์ หรือเปิดคลัง Sharely</p>
-          <button id="openWebBlockedBtn" type="button" class="btn btn-primary btn-full" style="margin-top:8px;">
+          <p class="hero-sub">แท็บนี้ไม่ใช่หน้าเว็บ HTTP/HTTPS (เช่น chrome://) — กด "แก้ไข URL" ด้านล่างหรือเปิดคลัง Sharely</p>
+          <button id="openWebBlockedBtn" type="button" class="figma-sheet-submit-btn">
             เปิดคลัง Sharely
           </button>
         </section>
 
-        <!-- Captured Tab Preview Card (Figma 468:629) -->
-        <section class="card preview-card">
-          <div class="preview-media-row">
-            <div id="previewThumbWrap" class="thumb-wrap">
-              <img id="previewImage" class="thumb-img hidden" alt="Preview thumbnail" />
-              <span id="previewPlaceholder" class="thumb-placeholder">🔗</span>
-            </div>
-            <div class="preview-meta">
-              <div class="meta-pills">
-                <span id="platformBadge" class="mini-pill">web</span>
-                <span id="contentTypeBadge" class="mini-pill mini-pill-soft">link</span>
-                <span id="previewSourceBadge" class="mini-pill mini-pill-mint">พร้อมบันทึก</span>
-              </div>
-              <p id="siteNameLabel" class="site-name">จับลิงก์จากแท็บปัจจุบัน</p>
-            </div>
-          </div>
+        <form id="saveForm" class="figma-white-sheet" data-node-id="319:541">
+          <div class="figma-sheet-handle" aria-hidden="true"></div>
 
-          <label for="urlInput" class="field-label">URL</label>
-          <div class="inline-row">
-            <input id="urlInput" type="url" class="input input-mono" placeholder="https://..." required />
-            <button id="refreshPreviewBtn" type="button" class="btn btn-secondary btn-sm" title="ดึงภาพปกและหัวข้อใหม่">
-              ↻
-            </button>
-          </div>
-
-          <label for="titleInput" class="field-label">หัวข้อ</label>
-          <input id="titleInput" type="text" class="input" placeholder="หัวข้อของหน้าเว็บ..." />
-        </section>
-
-        <!-- Organization & Save Form -->
-        <form id="saveForm" class="card stack-sm">
-          <div>
-            <div class="label-row">
-              <label for="folderSelect" class="field-label">โฟลเดอร์</label>
-              <button id="toggleNewFolderBtn" type="button" class="link-btn">+ สร้างโฟลเดอร์</button>
-            </div>
-            <select id="folderSelect" class="input">
-              <option value="">-- ยังไม่เลือกโฟลเดอร์ --</option>
-            </select>
-
-            <div id="newFolderBox" class="inline-folder-box hidden">
-              <input id="newFolderEmoji" type="text" class="input input-emoji" value="📁" maxlength="4" />
-              <input id="newFolderName" type="text" class="input" placeholder="ชื่อโฟลเดอร์ใหม่..." />
-              <button id="createFolderBtn" type="button" class="btn btn-secondary btn-sm">เพิ่ม</button>
-            </div>
-          </div>
-
-          <div>
-            <label for="tagsInput" class="field-label">แท็ก (คั่นด้วยจุลภาค ,)</label>
-            <input id="tagsInput" type="text" class="input" placeholder="เช่น คาเฟ่, ai, อารีย์" />
-            <div id="tagSuggestions" class="chip-wrap"></div>
-          </div>
-
-          <div>
-            <label for="noteInput" class="field-label">โน้ตสั้น / ไฮไลต์ที่เลือกไว้</label>
-            <textarea id="noteInput" rows="2" class="input textarea" placeholder="เพิ่มโน้ต (ไม่บังคับ)"></textarea>
-          </div>
-
-          <div class="grid-2">
-            <div>
-              <label for="statusSelect" class="field-label">สถานะ</label>
-              <select id="statusSelect" class="input">
-                <option value="inbox">กล่องเข้า (Inbox)</option>
-                <option value="todo">ต้องอ่าน (To-do)</option>
-                <option value="done">อ่านแล้ว (Done)</option>
-                <option value="archived">เก็บถาวร (Archived)</option>
-              </select>
-            </div>
-            <div>
-              <label class="field-label">ตั้งเตือนดูทีหลัง</label>
-              <button id="reminderTriggerBtn" type="button" class="input reminder-trigger-btn">
-                <span id="reminderSummaryLabel">⏰ ไม่ตั้งเตือน</span>
-                <span class="reminder-chevron">▾</span>
+          <!-- Header: Title + Reminder Clock -->
+          <div class="figma-ext-sheet-top">
+            <h3 class="figma-sheet-h3">บันทึกลิงก์</h3>
+            <div class="sheet-top-right">
+              <button
+                id="toggleUrlEditBtn"
+                type="button"
+                class="sheet-subtle-btn"
+                title="แก้ไข URL และสถานะ"
+              >แก้ไข URL</button>
+              <button
+                id="reminderTriggerBtn"
+                type="button"
+                class="figma-ext-reminder-icon"
+                title="ตั้งเตือนดูทีหลัง"
+                aria-label="ตั้งเตือนดูทีหลัง"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9"></circle>
+                  <polyline points="12 7 12 12 15.5 14"></polyline>
+                </svg>
               </button>
             </div>
           </div>
 
+          <!-- Active Reminder Pill Strip (visible only when scheduled) -->
+          <div id="reminderSummaryChip" class="reminder-active-strip hidden">
+            <span id="reminderSummaryLabel">⏰ ไม่ตั้งเตือน</span>
+            <button id="clearReminderInlineBtn" type="button" class="reminder-clear-x" aria-label="ล้างการตั้งเตือน">✕</button>
+          </div>
+
+          <!-- Reminder Popover (Thai calendar + presets + repeat N days) -->
           <div id="reminderPickerCard" class="reminder-picker-card hidden">
             <div class="reminder-preset-row">
               <button type="button" class="reminder-chip active" data-rem-preset="none">ไม่ตั้ง</button>
@@ -246,28 +210,105 @@
             </div>
           </div>
 
-          <button id="saveItemBtn" type="submit" class="btn btn-primary btn-full">
-            บันทึกลิงก์
-          </button>
-        </form>
-
-        <!-- Post-Save Quick Actions & AI Summary (Figma E6) -->
-        <section id="savedResultCard" class="card success-card hidden">
-          <div class="label-row">
-            <strong class="success-title">✓ บันทึกลิงก์แล้ว</strong>
-            <button id="aiSummarizeBtn" type="button" class="btn btn-lavender btn-sm">✨ สรุปด้วย AI</button>
+          <!-- Figma 319:541 Link Preview Card -->
+          <div class="figma-ext-link-preview">
+            <div id="previewThumbWrap" class="figma-ext-link-thumb">
+              <img id="previewImage" class="hidden" alt="Preview thumbnail" />
+              <span id="previewPlaceholder">L</span>
+            </div>
+            <div class="figma-ext-link-info">
+              <input
+                id="titleInput"
+                type="text"
+                class="figma-ext-title-input"
+                placeholder="ชื่อโพสต์หรือหัวข้อหน้าเว็บ..."
+              />
+              <div class="figma-ext-domain-row">
+                <span id="siteNameLabel" class="figma-ext-domain">กำลังดึงลิงก์...</span>
+                <span id="previewSourceBadge" class="preview-dot-label"></span>
+              </div>
+            </div>
           </div>
-          <p id="savedMetaText" class="hint"></p>
-          <div id="aiResultBox" class="ai-box hidden"></div>
-        </section>
+
+          <!-- Hidden-by-default URL & Status Drawer (expandable on demand) -->
+          <div id="urlEditRow" class="url-edit-drawer hidden">
+            <div class="inline-row">
+              <input id="urlInput" type="url" class="input input-mono" placeholder="https://..." required />
+              <button id="refreshPreviewBtn" type="button" class="btn-chip" title="ดึงภาพปกและหัวข้อใหม่">↻</button>
+            </div>
+            <div class="inline-row status-inline-row">
+              <label for="statusSelect" class="field-label" style="margin:0;">สถานะ</label>
+              <select id="statusSelect" class="input input-sm">
+                <option value="inbox">กล่องเข้า (Inbox)</option>
+                <option value="todo">ต้องอ่าน (To-do)</option>
+                <option value="done">อ่านแล้ว (Done)</option>
+                <option value="archived">เก็บถาวร (Archived)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Folders: Horizontal Pill Chips + "+ ใหม่" Inline -->
+          <div class="figma-sheet-field">
+            <span class="figma-sheet-label">โฟลเดอร์</span>
+            <div id="folderChipWrap" class="figma-chip-wrap">
+              <button type="button" class="figma-pill-choice selected" data-folder-choice="">ไม่ใส่โฟลเดอร์</button>
+              <button id="toggleNewFolderBtn" type="button" class="figma-pill-choice">+ ใหม่</button>
+            </div>
+            <select id="folderSelect" class="hidden" aria-hidden="true">
+              <option value="">-- ยังไม่เลือกโฟลเดอร์ --</option>
+            </select>
+            <div id="newFolderBox" class="inline-folder-box hidden">
+              <input id="newFolderEmoji" type="text" class="input input-emoji" value="📁" maxlength="4" />
+              <input id="newFolderName" type="text" class="input" placeholder="ชื่อโฟลเดอร์ใหม่..." />
+              <button id="createFolderBtn" type="button" class="btn-chip btn-chip-dark">เพิ่ม</button>
+            </div>
+          </div>
+
+          <!-- Tags: Horizontal Pill Chips + Quick Tag Adder -->
+          <div class="figma-sheet-field">
+            <div class="label-row">
+              <span class="figma-sheet-label">แท็ก</span>
+              <button id="toggleTagInputBtn" type="button" class="sheet-subtle-btn">+ เพิ่มแท็ก</button>
+            </div>
+            <div id="tagSuggestions" class="figma-chip-wrap"></div>
+            <div id="quickTagRow" class="inline-row hidden">
+              <input id="quickTagInput" type="text" class="input input-sm" placeholder="พิมพ์ชื่อแท็กแล้วกด Enter..." />
+              <button id="addQuickTagBtn" type="button" class="btn-chip btn-chip-dark">เพิ่ม</button>
+            </div>
+            <input id="tagsInput" type="hidden" value="" />
+          </div>
+
+          <!-- Single-line 48px Note Input -->
+          <input
+            id="noteInput"
+            type="text"
+            class="figma-sheet-input"
+            placeholder="เพิ่มโน้ต (ไม่บังคับ)"
+          />
+
+          <!-- Primary Cherry Pill Submit Button -->
+          <button id="saveItemBtn" type="submit" class="figma-sheet-submit-btn">
+            บันทึก
+          </button>
+
+          <!-- Instant Optimistic Save Confirmation + AI Summary CTA -->
+          <section id="savedResultCard" class="saved-inline-card hidden">
+            <div class="label-row">
+              <strong id="savedTitleLabel" class="success-title">✓ บันทึกลิงก์แล้ว</strong>
+              <button id="aiSummarizeBtn" type="button" class="btn-lavender-pill">✨ สรุปด้วย AI</button>
+            </div>
+            <p id="savedMetaText" class="hint"></p>
+            <div id="aiResultBox" class="ai-box hidden"></div>
+          </section>
+        </form>
       </section>
 
       <!-- Recent & Search Pane -->
       <section id="recentPane" class="stack-sm hidden">
-        <div class="card stack-sm">
+        <div class="figma-white-sheet recent-sheet">
           <div class="inline-row">
-            <input id="recentSearchInput" type="search" class="input" placeholder="ค้นหาลิงก์ที่บันทึกไว้..." />
-            <button id="refreshRecentBtn" type="button" class="btn btn-secondary btn-sm" title="รีเฟรชรายการ">↻</button>
+            <input id="recentSearchInput" type="search" class="figma-sheet-input search-input-compact" placeholder="ค้นหาลิงก์ที่บันทึกไว้..." />
+            <button id="refreshRecentBtn" type="button" class="btn-chip" title="รีเฟรชรายการ">↻</button>
           </div>
           <div id="recentList" class="recent-list"></div>
         </div>

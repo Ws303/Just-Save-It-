@@ -8,7 +8,8 @@ Provides:
 
 import logging
 import os
-from typing import Any, Optional
+import threading
+from typing import Any, Optional, Tuple
 
 try:
     from supabase import Client, ClientOptions, create_client
@@ -19,8 +20,11 @@ except ImportError:
 
 logger = logging.getLogger("just_save_it.database.supabase_client")
 
+_client_lock = threading.Lock()
 _anon_client_instance: Optional[Any] = None
+_anon_client_key: Optional[Tuple[str, str]] = None
 _service_client_instance: Optional[Any] = None
+_service_client_key: Optional[Tuple[str, str]] = None
 
 
 def get_supabase_url() -> str:
@@ -54,33 +58,43 @@ def is_supabase_configured() -> bool:
 
 
 def get_supabase_anon_client() -> Any:
-    """Obtain singleton client with public anon key."""
-    global _anon_client_instance
-    if _anon_client_instance is not None:
+    """Obtain singleton client with public anon key (pooled per URL/key pair)."""
+    global _anon_client_instance, _anon_client_key
+    url = get_supabase_url()
+    key = get_supabase_anon_key()
+    cache_key = (url, key)
+    if _anon_client_instance is not None and _anon_client_key == cache_key:
         return _anon_client_instance
 
     if create_client is None:
         raise RuntimeError("Supabase SDK is not installed. Run 'pip install supabase'.")
 
-    url = get_supabase_url()
-    key = get_supabase_anon_key()
-    _anon_client_instance = create_client(url, key)
-    return _anon_client_instance
+    with _client_lock:
+        if _anon_client_instance is not None and _anon_client_key == cache_key:
+            return _anon_client_instance
+        _anon_client_instance = create_client(url, key)
+        _anon_client_key = cache_key
+        return _anon_client_instance
 
 
 def get_supabase_service_client() -> Any:
-    """Obtain singleton client with elevated service role key."""
-    global _service_client_instance
-    if _service_client_instance is not None:
+    """Obtain singleton client with elevated service role key (pooled per URL/key pair)."""
+    global _service_client_instance, _service_client_key
+    url = get_supabase_url()
+    key = get_supabase_service_role_key()
+    cache_key = (url, key)
+    if _service_client_instance is not None and _service_client_key == cache_key:
         return _service_client_instance
 
     if create_client is None:
         raise RuntimeError("Supabase SDK is not installed. Run 'pip install supabase'.")
 
-    url = get_supabase_url()
-    key = get_supabase_service_role_key()
-    _service_client_instance = create_client(url, key)
-    return _service_client_instance
+    with _client_lock:
+        if _service_client_instance is not None and _service_client_key == cache_key:
+            return _service_client_instance
+        _service_client_instance = create_client(url, key)
+        _service_client_key = cache_key
+        return _service_client_instance
 
 
 def get_user_scoped_client(access_token: str) -> Any:

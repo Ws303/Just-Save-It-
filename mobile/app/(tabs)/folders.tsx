@@ -13,15 +13,22 @@ import {
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { createFolder, fetchWorkspace } from "../../src/api";
-import type { MobileFolderItem, MobileLinkItem } from "../../src/storage";
+import {
+  getMemoryCachedWorkspace,
+  loadCachedWorkspace,
+  loadSession,
+  type MobileFolderItem,
+  type MobileLinkItem,
+} from "../../src/storage";
 
 const ICON_CHOICES = ["📁", "☕", "🍜", "🎬", "✈️", "📚", "💡", "🛒"];
 
 export default function FoldersScreen() {
   const router = useRouter();
-  const [folders, setFolders] = useState<MobileFolderItem[]>([]);
-  const [items, setItems] = useState<MobileLinkItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const initialCache = getMemoryCachedWorkspace();
+  const [folders, setFolders] = useState<MobileFolderItem[]>(() => initialCache?.folders || []);
+  const [items, setItems] = useState<MobileLinkItem[]>(() => initialCache?.items || []);
+  const [loading, setLoading] = useState<boolean>(() => !(initialCache?.folders?.length || initialCache?.items?.length));
   const [refreshing, setRefreshing] = useState(false);
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -30,6 +37,18 @@ export default function FoldersScreen() {
   const [creating, setCreating] = useState(false);
 
   const loadData = useCallback(async () => {
+    const sess = await loadSession();
+    if (!sess?.access_token) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+    const cached = await loadCachedWorkspace();
+    if (cached.folders.length > 0 || cached.items.length > 0) {
+      setFolders((prev) => (prev.length ? prev : cached.folders));
+      setItems((prev) => (prev.length ? prev : cached.items));
+      setLoading(false);
+    }
     const ws = await fetchWorkspace();
     setFolders(ws.folders);
     setItems(ws.items);

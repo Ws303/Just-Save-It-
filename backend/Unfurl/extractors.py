@@ -474,7 +474,12 @@ def _detect_platform(hostname: str) -> str:
     return "web"
 
 
-async def _extract_youtube(canon_url: str, url_hash: str) -> UnfurlResult:
+async def _extract_youtube(
+    canon_url: str,
+    url_hash: str,
+    *,
+    fetch_full_description: bool = False,
+) -> UnfurlResult:
     encoded = urllib.parse.quote(canon_url, safe="")
     oembed = await _fetch_json_safely(f"https://www.youtube.com/oembed?url={encoded}&format=json")
     if not isinstance(oembed, dict):
@@ -502,11 +507,13 @@ async def _extract_youtube(canon_url: str, url_hash: str) -> UnfurlResult:
     if video_id:
         images.append(f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")
 
+    has_core_oembed = bool(title and images and embed_url)
     needs_html_meta = (
-        not title
-        or not images
-        or not description
-        or (author and description == f"By {author}")
+        not has_core_oembed
+        or (
+            fetch_full_description
+            and (not description or (author and description == f"By {author}"))
+        )
     )
     if needs_html_meta:
         try:
@@ -544,7 +551,12 @@ async def _extract_youtube(canon_url: str, url_hash: str) -> UnfurlResult:
     ).finalized()
 
 
-async def _extract_tiktok(canon_url: str, url_hash: str) -> UnfurlResult:
+async def _extract_tiktok(
+    canon_url: str,
+    url_hash: str,
+    *,
+    fetch_full_description: bool = False,
+) -> UnfurlResult:
     encoded = urllib.parse.quote(canon_url, safe="")
     oembed = await _fetch_json_safely(f"https://www.tiktok.com/oembed?url={encoded}")
     id_match = _TIKTOK_ID_RE.search(canon_url)
@@ -570,11 +582,13 @@ async def _extract_tiktok(canon_url: str, url_hash: str) -> UnfurlResult:
     if not embed_url and video_id:
         embed_url = validate_embed_url("tiktok", f"https://www.tiktok.com/embed/v2/{video_id}")
 
+    has_core_oembed = bool(title and images and embed_url)
     needs_html_meta = (
-        not title
-        or not images
-        or not description
-        or (author and description == f"@{author}")
+        not has_core_oembed
+        or (
+            fetch_full_description
+            and (not description or (author and description == f"@{author}"))
+        )
     )
     if needs_html_meta:
         try:
@@ -947,7 +961,11 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
     ).finalized()
 
 
-async def extract_unfurl_metadata(raw_url: str) -> UnfurlResult:
+async def extract_unfurl_metadata(
+    raw_url: str,
+    *,
+    fetch_full_description: bool = False,
+) -> UnfurlResult:
     """Extract zero-token rich preview metadata from a public URL across supported platforms."""
     canon_url = canonicalize_url(raw_url)
     await asyncio.to_thread(validate_safe_url, canon_url)
@@ -957,9 +975,17 @@ async def extract_unfurl_metadata(raw_url: str) -> UnfurlResult:
     platform = _detect_platform(hostname)
 
     if platform == "youtube":
-        return await _extract_youtube(canon_url, url_hash)
+        return await _extract_youtube(
+            canon_url,
+            url_hash,
+            fetch_full_description=fetch_full_description,
+        )
     if platform == "tiktok":
-        return await _extract_tiktok(canon_url, url_hash)
+        return await _extract_tiktok(
+            canon_url,
+            url_hash,
+            fetch_full_description=fetch_full_description,
+        )
     if platform == "vimeo":
         return await _extract_vimeo(canon_url, url_hash)
     if platform == "spotify":

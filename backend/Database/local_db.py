@@ -175,6 +175,7 @@ class LocalTableProxy:
         self._count_mode: Optional[str] = None
         self._payload: Any = None
         self._on_conflict: Optional[str] = None
+        self._ignore_duplicates: bool = False
         self._predicates: List[Callable[[Dict[str, Any]], bool]] = []
         self._orders: List[Tuple[str, bool]] = []
         self._limit: Optional[int] = None
@@ -201,10 +202,16 @@ class LocalTableProxy:
         self._payload = deepcopy(payload)
         return self
 
-    def upsert(self, payload: Any, on_conflict: Optional[str] = None) -> "LocalTableProxy":
+    def upsert(
+        self,
+        payload: Any,
+        on_conflict: Optional[str] = None,
+        ignore_duplicates: bool = False,
+    ) -> "LocalTableProxy":
         self._action = "upsert"
         self._payload = deepcopy(payload)
         self._on_conflict = on_conflict
+        self._ignore_duplicates = ignore_duplicates
         return self
 
     def update(self, updates: Dict[str, Any]) -> "LocalTableProxy":
@@ -331,9 +338,10 @@ class LocalTableProxy:
                         matched_row = existing
                         break
             if matched_row is not None:
-                matched_row.update(deepcopy(entry))
-                if self._table_name in {"profiles", "folders", "items", "reminders"} and "updated_at" not in entry:
-                    matched_row["updated_at"] = _utc_now_iso()
+                if not self._ignore_duplicates:
+                    matched_row.update(deepcopy(entry))
+                    if self._table_name in {"profiles", "folders", "items", "reminders"} and "updated_at" not in entry:
+                        matched_row["updated_at"] = _utc_now_iso()
                 affected.append(deepcopy(matched_row))
             else:
                 prepared = self._prepare_row_for_insert(entry)

@@ -10,6 +10,8 @@ Mitigates RISK-001:
 import asyncio
 import logging
 import os
+import threading
+import time
 from typing import Any, Dict, Optional, Set
 
 import jwt
@@ -64,18 +66,73 @@ def _get_jwk_client(supabase_url: str) -> PyJWKClient:
 
 
 _DELETED_USER_IDS: Set[str] = set()
+_LIVE_USER_TTL_SECONDS = float(os.getenv("LIVE_USER_CHECK_TTL_SECONDS", "45") or 45)
+_LIVE_USER_CACHE_MAX_ENTRIES = 4096
+_LIVE_USER_CACHE: Dict[str, float] = {}
+_live_user_lock = threading.Lock()
+
+
+def clear_live_user_cache(user_id: Optional[str] = None) -> None:
+    """Invalidate cached positive live-user checks (all users or a specific user)."""
+    with _live_user_lock:
+        if user_id is None:
+            _LIVE_USER_CACHE.clear()
+        else:
+            _LIVE_USER_CACHE.pop(str(user_id).strip(), None)
 
 
 def mark_user_deleted(user_id: str) -> None:
     """Record a deleted user ID in memory so remaining JWTs are rejected immediately."""
     clean_id = str(user_id or "").strip()
     if clean_id:
-        _DELETED_USER_IDS.add(clean_id)
+        with _live_user_lock:
+            _DELETED_USER_IDS.add(clean_id)
+            _LIVE_USER_CACHE.pop(clean_id, None)
 
 
 def is_user_deleted(user_id: str) -> bool:
     """Return True if the user ID has been revoked/deleted in this worker."""
     return str(user_id or "").strip() in _DELETED_USER_IDS
+
+
+def _cache_live_user_verified(sub: str) -> None:
+    if _LIVE_USER_TTL_SECONDS <= 0:
+        return
+    clean_id = str(sub or "").strip()
+    if not clean_id:
+        return
+    now = time.monotonic()
+    with _live_user_lock:
+        if clean_id in _DELETED_USER_IDS:
+            _LIVE_USER_CACHE.pop(clean_id, None)
+            return
+        if len(_LIVE_USER_CACHE) >= _LIVE_USER_CACHE_MAX_ENTRIES:
+            expired = [k for k, exp in _LIVE_USER_CACHE.items() if exp <= now]
+            for k in expired:
+                _LIVE_USER_CACHE.pop(k, None)
+            if len(_LIVE_USER_CACHE) >= _LIVE_USER_CACHE_MAX_ENTRIES:
+                _LIVE_USER_CACHE.clear()
+        _LIVE_USER_CACHE[clean_id] = now + _LIVE_USER_TTL_SECONDS
+
+
+def _is_cached_live_user(sub: str) -> bool:
+    if _LIVE_USER_TTL_SECONDS <= 0:
+        return False
+    clean_id = str(sub or "").strip()
+    if not clean_id:
+        return False
+    now = time.monotonic()
+    with _live_user_lock:
+        if clean_id in _DELETED_USER_IDS:
+            _LIVE_USER_CACHE.pop(clean_id, None)
+            return False
+        expires_at = _LIVE_USER_CACHE.get(clean_id)
+        if expires_at is None:
+            return False
+        if expires_at > now:
+            return True
+        _LIVE_USER_CACHE.pop(clean_id, None)
+        return False
 
 
 def _is_not_found_auth_error(exc: Exception) -> bool:
@@ -95,32 +152,39 @@ def _raise_deleted_user_error() -> None:
 
 
 def _verify_live_user_exists(sub: str) -> None:
-    """Cross-worker revocation check against live Supabase without stale positive caching."""
+    """Revocation check against live Supabase backed by a short-TTL cache and immediate fail-closed eviction."""
+    clean_sub = str(sub or "").strip()
+    if is_user_deleted(clean_sub):
+        _raise_deleted_user_error()
     if not is_supabase_configured():
+        return
+    if _is_cached_live_user(clean_sub):
         return
     try:
         db = get_supabase_client()
-        prof_res = db.table("profiles").select("id").eq("id", sub).limit(1).execute()
+        prof_res = db.table("profiles").select("id").eq("id", clean_sub).limit(1).execute()
         if getattr(prof_res, "data", None):
+            _cache_live_user_verified(clean_sub)
             return
         auth_admin = getattr(getattr(db, "auth", None), "admin", None)
         get_user_by_id = getattr(auth_admin, "get_user_by_id", None) if auth_admin is not None else None
         if callable(get_user_by_id):
             try:
-                user_resp = get_user_by_id(sub)
+                user_resp = get_user_by_id(clean_sub)
             except Exception as exc:
                 if _is_not_found_auth_error(exc):
-                    mark_user_deleted(sub)
+                    mark_user_deleted(clean_sub)
                     _raise_deleted_user_error()
                 raise
             if getattr(user_resp, "user", None) and getattr(user_resp.user, "id", None):
+                _cache_live_user_verified(clean_sub)
                 return
-            mark_user_deleted(sub)
+            mark_user_deleted(clean_sub)
             _raise_deleted_user_error()
     except HTTPException:
         raise
     except Exception as exc:
-        logger.debug("Non-fatal live user existence check skipped for %s: %s", sub, exc)
+        logger.debug("Non-fatal live user existence check skipped for %s: %s", clean_sub, exc)
 
 
 def _ensure_authenticated_claims(payload: Dict[str, Any]) -> Dict[str, Any]:

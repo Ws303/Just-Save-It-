@@ -313,6 +313,87 @@ function renderDesktopLinkDetail(state) {
   `;
 }
 
+export function renderPcHomeLinksSectionInner(state) {
+  const { links } = state.data;
+  const { ui } = state;
+  const visibleLinks = filterLinks(links, ui.homeSearch, ui.homeFilter, {
+    platform: ui.homePlatformFilter,
+    contentType: ui.homeContentTypeFilter,
+  });
+  return `
+    <div class="pc-section-head">
+      <h2>บันทึกล่าสุด</h2>
+      <span class="figma-section-hint">${visibleLinks.length} รายการ</span>
+    </div>
+    ${
+      visibleLinks.length === 0
+        ? `<div class="figma-empty-state">
+             <div class="figma-empty-icon">${icons.bookmarkSolid(22)}</div>
+             <p>ไม่พบลิงก์ที่ตรงกับเงื่อนไข</p>
+             <button type="button" class="figma-primary-btn compact" data-open-save-sheet="1">+ เพิ่มลิงก์</button>
+           </div>`
+        : `<div class="pc-link-list">
+             ${visibleLinks.map((item) => renderLinkCard(item, { variant: "pc-row" })).join("")}
+           </div>`
+    }
+  `;
+}
+
+export function renderPcFoldersGridInner(state) {
+  const { folders, links } = state.data;
+  const { ui } = state;
+  const q = (ui.folderSearch || "").trim().toLowerCase();
+  const visibleFolders = q ? folders.filter((f) => f.name.toLowerCase().includes(q)) : folders;
+  const activeFolder = getFolderById(ui.activeFolderId) || folders[0];
+  return visibleFolders.length === 0
+    ? `<div class="figma-empty-state" style="grid-column:1/-1;">
+         <div class="figma-empty-icon">${icons.folder(22)}</div>
+         <p>ไม่พบโฟลเดอร์</p>
+       </div>`
+    : visibleFolders.map((f) => renderDesktopFolderCard(f, links, activeFolder?.id)).join("");
+}
+
+export function renderPcFolderDetailLinksInner(state, folderOverride = null) {
+  const { links, folders } = state.data;
+  const { ui } = state;
+  const activeFolder = folderOverride || getFolderById(ui.activeFolderId) || folders[0];
+  if (!activeFolder) return "";
+  const folderLinks = links.filter((l) => l.folderId === activeFolder.id);
+  const filteredFolderLinks = filterLinks(folderLinks, ui.folderDetailSearch, ui.folderDetailFilter, {
+    platform: ui.folderPlatformFilter,
+    contentType: ui.folderContentTypeFilter,
+  });
+  return filteredFolderLinks.length === 0
+    ? `<div class="figma-empty-state">
+         <div class="figma-empty-icon">${icons.bookmarkSolid(22)}</div>
+         <p>ยังไม่มีลิงก์ที่ตรงกับตัวกรองในโฟลเดอร์นี้</p>
+         <button type="button" class="figma-primary-btn compact" data-open-save-sheet="${escHtml(activeFolder.id)}">+ เพิ่มลิงก์ในโฟลเดอร์</button>
+       </div>`
+    : `<div class="pc-link-list">
+         ${filteredFolderLinks
+           .map((item) => renderLinkCard(item, { folderContextId: activeFolder.id, variant: "pc-row", selected: ui.activeLinkId === item.id }))
+           .join("")}
+       </div>`;
+}
+
+export function renderPcFavoriteListInner(state) {
+  const { links } = state.data;
+  const { ui } = state;
+  const favLinks = filterLinks(
+    links.filter((l) => Boolean(l.favorite)),
+    ui.homeSearch,
+    "all"
+  );
+  return favLinks.length === 0
+    ? `<div class="figma-empty-state">
+         <div class="figma-empty-icon">${icons.cherry(22)}</div>
+         <p>ยังไม่มีลิงก์ที่ชื่นชอบ — กดไอคอนเชอร์รี่บนการ์ดเพื่อบันทึกไว้ที่นี่</p>
+       </div>`
+    : `<div class="pc-link-grid">
+         ${favLinks.map((item) => renderLinkCard(item, { variant: "pc-row", selected: ui.activeLinkId === item.id })).join("")}
+       </div>`;
+}
+
 export function renderWebView(state) {
   if (["login", "emailLogin", "checkEmail", "inviteLanding"].includes(state.ui.screen)) {
     return renderWebAuthView(state);
@@ -344,11 +425,6 @@ export function renderWebView(state) {
   const uncatFolder = folders.find((f) => f.name === "ยังไม่จัดหมวด") || null;
 
   if (section === "home") {
-    const visibleLinks = filterLinks(links, ui.homeSearch, ui.homeFilter, {
-      platform: ui.homePlatformFilter,
-      contentType: ui.homeContentTypeFilter,
-    });
-
     mainContent = `
       <header class="pc-main-header">
         <div class="pc-main-title-wrap">
@@ -418,28 +494,11 @@ export function renderWebView(state) {
         </div>
       </section>
 
-      <section class="pc-section">
-        <div class="pc-section-head">
-          <h2>บันทึกล่าสุด</h2>
-          <span class="figma-section-hint">${visibleLinks.length} รายการ</span>
-        </div>
-        ${
-          visibleLinks.length === 0
-            ? `<div class="figma-empty-state">
-                 <div class="figma-empty-icon">${icons.bookmarkSolid(22)}</div>
-                 <p>ไม่พบลิงก์ที่ตรงกับเงื่อนไข</p>
-                 <button type="button" class="figma-primary-btn compact" data-open-save-sheet="1">+ เพิ่มลิงก์</button>
-               </div>`
-            : `<div class="pc-link-list">
-                 ${visibleLinks.map((item) => renderLinkCard(item, { variant: "pc-row" })).join("")}
-               </div>`
-        }
+      <section class="pc-section" data-search-list-host="pc-home">
+        ${renderPcHomeLinksSectionInner(state)}
       </section>
     `;
   } else if (section === "folders") {
-    const q = (ui.folderSearch || "").trim().toLowerCase();
-    const visibleFolders = q ? folders.filter((f) => f.name.toLowerCase().includes(q)) : folders;
-
     mainContent = `
       <header class="pc-main-header">
         <div class="pc-main-title-wrap">
@@ -464,15 +523,8 @@ export function renderWebView(state) {
         />
       </div>
 
-      <div class="pc-folders-grid">
-        ${
-          visibleFolders.length === 0
-            ? `<div class="figma-empty-state" style="grid-column:1/-1;">
-                 <div class="figma-empty-icon">${icons.folder(22)}</div>
-                 <p>ไม่พบโฟลเดอร์</p>
-               </div>`
-            : visibleFolders.map((f) => renderDesktopFolderCard(f, links, activeFolder?.id)).join("")
-        }
+      <div class="pc-folders-grid" data-search-list-host="pc-folders">
+        ${renderPcFoldersGridInner(state)}
       </div>
     `;
   } else if (section === "folderDetail") {
@@ -482,11 +534,6 @@ export function renderWebView(state) {
         <div class="figma-empty-state"><p>ยังไม่มีโฟลเดอร์</p></div>
       `;
     } else {
-      const folderLinks = links.filter((l) => l.folderId === activeFolder.id);
-      const filteredFolderLinks = filterLinks(folderLinks, ui.folderDetailSearch, ui.folderDetailFilter, {
-        platform: ui.folderPlatformFilter,
-        contentType: ui.folderContentTypeFilter,
-      });
       const count = getFolderCount(activeFolder);
       const cachedMembers = state.ui.folderMembers?.[activeFolder.id]?.members || [];
       const shareCount = Math.max(activeFolder.sharedCount || 0, Math.max(0, cachedMembers.length - 1));
@@ -543,19 +590,9 @@ export function renderWebView(state) {
           </button>
         </div>
 
-        ${
-          filteredFolderLinks.length === 0
-            ? `<div class="figma-empty-state">
-                 <div class="figma-empty-icon">${icons.bookmarkSolid(22)}</div>
-                 <p>ยังไม่มีลิงก์ที่ตรงกับตัวกรองในโฟลเดอร์นี้</p>
-                 <button type="button" class="figma-primary-btn compact" data-open-save-sheet="${escHtml(activeFolder.id)}">+ เพิ่มลิงก์ในโฟลเดอร์</button>
-               </div>`
-            : `<div class="pc-link-list">
-                 ${filteredFolderLinks
-                   .map((item) => renderLinkCard(item, { folderContextId: activeFolder.id, variant: "pc-row", selected: ui.activeLinkId === item.id }))
-                   .join("")}
-               </div>`
-        }
+        <div data-search-list-host="pc-folder-detail">
+          ${renderPcFolderDetailLinksInner(state, activeFolder)}
+        </div>
       `;
     }
   } else if (section === "favorite") {
@@ -568,7 +605,7 @@ export function renderWebView(state) {
       <header class="pc-main-header">
         <div class="pc-main-title-wrap">
           <h1 class="pc-main-title">ชื่นชอบ</h1>
-          <span class="pc-main-sub">รายการลิงก์ที่คุณปักหมุดหัวใจไว้ (${favLinks.length})</span>
+          <span class="pc-main-sub">รายการลิงก์ที่คุณปักหมุดหัวใจไว้ (<span data-search-count="pc-favorite">${favLinks.length}</span>)</span>
         </div>
       </header>
 
@@ -582,16 +619,9 @@ export function renderWebView(state) {
         />
       </div>
 
-      ${
-        favLinks.length === 0
-          ? `<div class="figma-empty-state">
-               <div class="figma-empty-icon">${icons.cherry(22)}</div>
-               <p>ยังไม่มีลิงก์ที่ชื่นชอบ — กดไอคอนเชอร์รี่บนการ์ดเพื่อบันทึกไว้ที่นี่</p>
-             </div>`
-          : `<div class="pc-link-grid">
-               ${favLinks.map((item) => renderLinkCard(item, { variant: "pc-row", selected: ui.activeLinkId === item.id })).join("")}
-             </div>`
-      }
+      <div data-search-list-host="pc-favorite">
+        ${renderPcFavoriteListInner(state)}
+      </div>
     `;
   } else if (section === "linkDetail") {
     mainContent = renderDesktopLinkDetail(state);

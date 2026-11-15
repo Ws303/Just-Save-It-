@@ -160,12 +160,8 @@ async def logout_endpoint(
 
 # ==================== Profile, Quota & Token Endpoints ====================
 
-@router.get("/me")
-def get_me(
-    current_user: CurrentUser = Depends(get_current_user),
-    db: Any = Depends(get_db),
-) -> Dict[str, Any]:
-    """Return current user's profile and monthly built-in AI quota usage."""
+def build_user_me_payload(db: Any, current_user: CurrentUser) -> Dict[str, Any]:
+    """Assemble authenticated user profile and monthly built-in AI quota usage."""
     user_id = current_user.id
     prof_res = db.table("profiles").select("*").eq("id", user_id).execute()
     if (
@@ -250,6 +246,15 @@ def get_me(
             "remaining": max(0, limit - used),
         },
     }
+
+
+@router.get("/me")
+def get_me(
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Return current user's profile and monthly built-in AI quota usage."""
+    return build_user_me_payload(db, current_user)
 
 
 @router.patch("/profile")
