@@ -167,7 +167,183 @@ cd backend
 
 ---
 
-## 6. Browser Extension (`extension/`)
+## 6. โครงสร้างฐานข้อมูล (Database Schema, ER Diagram & RLS)
+
+อ้างอิงจาก [backend/Database/schema.sql](file:///Users/chanisaniyom/Desktop/Just-Save-It-/backend/Database/schema.sql) และ `supabase/migrations/0001..0006`
+
+### 6.1 ตารางสรุปภาพรวม (12 ตารางหลัก + 1 ตารางภายใน + Storage Bucket)
+
+| ลำดับ | ชื่อตาราง / Storage | หมวดหมู่ | หน้าที่หลัก |
+| :---: | :--- | :--- | :--- |
+| 1 | `public.profiles` | ผู้ใช้และสิทธิ์ | ข้อมูลโปรไฟล์, แพ็กเกจ (`free`/`pro`), ภาษา และเขตเวลา |
+| 2 | `public.devices` | ผู้ใช้และสิทธิ์ | ลงทะเบียนอุปกรณ์และ Push Token (FCM / Expo / Web Push) |
+| 3 | `public.api_tokens` | ผู้ใช้และสิทธิ์ | เก็บ Personal Access Token (SHA-256) สำหรับเชื่อมต่อ MCP |
+| 4 | `public.items` | เนื้อหาหลัก | ตารางหลักเก็บลิงก์, พรีวิว (Unfurl), รูป, AI Summary, สถานะ |
+| 5 | `public.tags` | เนื้อหาหลัก | แท็กที่ผู้ใช้สร้างเอง พร้อมสี |
+| 6 | `public.item_tags` | เนื้อหาหลัก | ตารางเชื่อมความสัมพันธ์ระหว่างลิงก์ (`items`) กับแท็ก (`tags`) |
+| 7 | `public.folders` | โฟลเดอร์และแชร์ | โฟลเดอร์/คอลเลกชันสำหรับจัดหมวดหมู่ลิงก์ |
+| 8 | `public.folder_members` | โฟลเดอร์และแชร์ | รายชื่อสมาชิกและสิทธิ์ (`owner`/`editor`/`viewer`) ในโฟลเดอร์ |
+| 9 | `public.folder_invites` | โฟลเดอร์และแชร์ | ลิงก์คำเชิญเข้าร่วมโฟลเดอร์, จำนวนครั้งที่ใช้ได้ และวันหมดอายุ |
+| 10 | `public.reminders` | แจ้งเตือน & AI | ตั้งเวลาแจ้งเตือน (`once` / `every_n_days`) และสถานะการส่ง |
+| 11 | `public.daily_ai_usage` | แจ้งเตือน & AI | นับจำนวนการใช้ AI สรุปเนื้อหารายเดือนของแต่ละผู้ใช้ |
+| 12 | `public.beta_feedback` | แจ้งเตือน & AI | ข้อเสนอแนะ, แจ้งบั๊ก และ Waitlist จากผู้ใช้ |
+| 13 | `private.app_config` | ระบบภายใน | เก็บ URL และ Secret สำหรับ Webhook/Cron (ผู้ใช้เข้าถึงไม่ได้) |
+| - | `thumbnails` (Storage Bucket) | ไฟล์รูปภาพ | เก็บรูปภาพปกของลิงก์ที่ย่อและแปลงเป็น `.webp` แล้ว |
+
+### 6.2 แผนผังความสัมพันธ์ (ER Diagram)
+
+```mermaid
+erDiagram
+    profiles ||--o{ folders : owns
+    profiles ||--o{ items : owns
+    profiles ||--o{ tags : owns
+    profiles ||--o{ devices : registers
+    profiles ||--o{ api_tokens : creates
+    profiles ||--o{ daily_ai_usage : tracks
+    profiles ||--o{ beta_feedback : submits
+
+    folders ||--o{ items : contains
+    folders ||--o{ folder_members : has
+    folders ||--o{ folder_invites : generates
+    profiles ||--o{ folder_members : joins
+
+    items ||--o{ item_tags : has
+    tags ||--o{ item_tags : tagged_in
+    items ||--o{ reminders : schedules
+```
+
+### 6.3 ชนิดข้อมูลพิเศษ (Enum Types ทั้ง 7 ตัว)
+
+| ชื่อ Enum | ค่าที่เป็นไปได้ | ความหมาย |
+| :--- | :--- | :--- |
+| `item_status` | `inbox`, `todo`, `done`, `archived` | สถานะการอ่าน/จัดการของลิงก์ |
+| `enrich_status` | `pending`, `unfurled`, `done`, `failed` | สถานะการดึงข้อมูลพรีวิวและ AI |
+| `folder_role` | `owner`, `editor`, `viewer` | ระดับสิทธิ์ในโฟลเดอร์ที่แชร์ |
+| `reminder_schedule_type` | `once`, `every_n_days` | รูปแบบการแจ้งเตือน (ครั้งเดียว / ทุกๆ N วัน) |
+| `reminder_status` | `pending`, `sent`, `cancelled` | สถานะของรายการแจ้งเตือน |
+| `device_platform` | `android`, `ios`, `web`, `extension` | แพลตฟอร์มของอุปกรณ์ที่ลงทะเบียน |
+| `device_delivery_mode` | `remote`, `local_sync` | โหมดส่งแจ้งเตือน (Remote Push / Local Sync บน iOS) |
+
+### 6.4 รายละเอียดคอลัมน์ทุกตาราง
+
+#### 1) `public.profiles` (โปรไฟล์ผู้ใช้)
+| คอลัมน์ | ชนิดข้อมูล | คำอธิบาย |
+| :--- | :--- | :--- |
+| `id` | `uuid` (PK) | รหัสผู้ใช้ (อ้างอิงจาก `auth.users`) |
+| `display_name` | `text` | ชื่อที่แสดงในแอป |
+| `avatar_url` | `text` | ลิงก์รูปโปรไฟล์ |
+| `tier` | `text` | แพ็กเกจ: `free` (ค่าเริ่มต้น) หรือ `pro` |
+| `locale` | `text` | ภาษาของแอป (ค่าเริ่มต้น `th`) |
+| `preferred_summary_language` | `text` | ภาษาที่ให้ AI สรุป (`th`, `en`, `auto`) |
+| `default_timezone` | `text` | เขตเวลา (ค่าเริ่มต้น `Asia/Bangkok`) |
+| `created_at`, `updated_at` | `timestamptz` | เวลาที่สร้างและอัปเดตล่าสุด |
+
+#### 2) `public.items` (ลิงก์และเนื้อหาที่บันทึก — ตารางหลัก)
+| คอลัมน์ | ชนิดข้อมูล | คำอธิบาย |
+| :--- | :--- | :--- |
+| `id` | `uuid` (PK) | รหัสไอเทม |
+| `owner_id` | `uuid` (FK) | รหัสเจ้าของ (อ้างอิง `profiles.id`) |
+| `folder_id` | `uuid` (FK) | รหัสโฟลเดอร์ที่จัดเก็บ (null ได้) |
+| `url` | `text` | ลิงก์ต้นฉบับที่ผู้ใช้บันทึก |
+| `canonical_url` | `text` | ลิงก์สะอาดที่ตัดพารามิเตอร์ติดตามออกแล้ว |
+| `url_hash` | `text` | แฮชของลิงก์ (กันลิงก์ซ้ำต่อ 1 ผู้ใช้) |
+| `title` | `text` | ชื่อหัวข้อจากเว็บต้นทาง |
+| `description` | `text` | คำบรรยายย่อจากเว็บต้นทาง |
+| `image_url` | `text` | ลิงก์รูปปก #1 (WebP ใน Storage) |
+| `media_items` | `jsonb` | อาร์เรย์รูปภาพเพิ่มเติม (จำกัดไม่เกิน 5 รูป) |
+| `embed_type` | `text` | ประเภทตัวเล่น (`none`, `youtube`, `tiktok`, `instagram`, `facebook`, `x`, `reddit`, `vimeo`, `spotify`) |
+| `embed_url` | `text` | ลิงก์สำหรับฝังตัวเล่น (`iframe` / `WebView`) |
+| `site_name`, `favicon_url` | `text` | ชื่อเว็บไซต์และไอคอนเว็บ |
+| `content_type` | `text` | ประเภทเนื้อหา (`video`, `article`, `post`, `product`, `link`, `other`) |
+| `platform` | `text` | ชื่อแพลตฟอร์มต้นทาง |
+| `note` | `text` | โน้ตส่วนตัวของผู้ใช้ |
+| `ai_summary` | `text` | บทสรุปเนื้อหาจาก AI |
+| `ai_summary_language` | `text` | ภาษาที่สรุป (`th`, `en`, `auto`) |
+| `ai_tags` | `text[]` | แท็กที่ AI แนะนำให้อัตโนมัติ |
+| `status` | `item_status` | สถานะการอ่าน (`inbox`, `todo`, `done`, `archived`) |
+| `enrich_status` | `enrich_status` | สถานะการดึงข้อมูลพรีวิว (`pending`, `unfurled`, `done`, `failed`) |
+| `enrich_attempts`, `enrich_error` | `int`, `text` | จำนวนครั้งที่ลองดึงข้อมูล และข้อความ Error |
+| `search_tsv` | `tsvector` | ดัชนีค้นหา Full-Text Search (สร้างอัตโนมัติ) |
+| `unfurled_at`, `saved_at`, `done_at`, `updated_at` | `timestamptz` | เวลาดึงพรีวิว, เวลาบันทึก, เวลาอ่านจบ, เวลาแก้ไขล่าสุด |
+
+#### 3) `public.folders` (โฟลเดอร์)
+| คอลัมน์ | ชนิดข้อมูล | คำอธิบาย |
+| :--- | :--- | :--- |
+| `id` | `uuid` (PK) | รหัสโฟลเดอร์ |
+| `owner_id` | `uuid` (FK) | รหัสเจ้าของโฟลเดอร์ |
+| `name` | `text` | ชื่อโฟลเดอร์ (1–80 ตัวอักษร) |
+| `emoji` | `text` | อีโมจิประจำโฟลเดอร์ |
+| `is_shared` | `boolean` | สถานะการเปิดแชร์ (`true`/`false`) |
+| `created_at`, `updated_at` | `timestamptz` | เวลาที่สร้างและอัปเดตล่าสุด |
+
+#### 4) `public.folder_members` (สมาชิกในโฟลเดอร์แชร์)
+| คอลัมน์ | ชนิดข้อมูล | คำอธิบาย |
+| :--- | :--- | :--- |
+| `folder_id` | `uuid` (PK, FK) | รหัสโฟลเดอร์ |
+| `user_id` | `uuid` (PK, FK) | รหัสสมาชิก |
+| `role` | `folder_role` | สิทธิ์: `owner`, `editor`, หรือ `viewer` |
+| `joined_at` | `timestamptz` | เวลาที่เข้าร่วมโฟลเดอร์ |
+
+#### 5) `public.folder_invites` (ลิงก์เชิญเข้าโฟลเดอร์)
+| คอลัมน์ | ชนิดข้อมูล | คำอธิบาย |
+| :--- | :--- | :--- |
+| `token` | `text` (PK) | รหัสสุ่มสำหรับลิงก์คำเชิญ |
+| `folder_id` | `uuid` (FK) | รหัสโฟลเดอร์ที่เชิญ |
+| `role` | `folder_role` | สิทธิ์ที่จะได้เมื่อรับคำเชิญ (`editor` หรือ `viewer`) |
+| `created_by` | `uuid` (FK) | ผู้สร้างลิงก์เชิญ |
+| `max_uses`, `use_count` | `int` | จำนวนครั้งสูงสุดที่ใช้ได้ และจำนวนครั้งที่ใช้ไปแล้ว |
+| `revoked_at`, `expires_at`, `created_at` | `timestamptz` | เวลายกเลิก, วันหมดอายุ (ค่าเริ่มต้น 7 วัน), เวลาที่สร้าง |
+
+#### 6) `public.tags` และ `public.item_tags` (แท็กและการเชื่อมแท็ก)
+| ตาราง | คอลัมน์ | ชนิดข้อมูล | คำอธิบาย |
+| :--- | :--- | :--- | :--- |
+| `tags` | `id`, `owner_id`, `name`, `color`, `created_at` | `uuid`, `text`, `timestamptz` | รหัสแท็ก, เจ้าของ, ชื่อแท็ก (ห้ามซ้ำต่อคน), สี, เวลาที่สร้าง |
+| `item_tags` | `item_id`, `tag_id`, `created_at` | `uuid` (PK, FK), `timestamptz` | จับคู่ลิงก์ 1 อันเข้ากับหลายแท็ก (Many-to-Many) |
+
+#### 7) `public.reminders` (การแจ้งเตือน)
+| คอลัมน์ | ชนิดข้อมูล | คำอธิบาย |
+| :--- | :--- | :--- |
+| `id` | `uuid` (PK) | รหัสแจ้งเตือน |
+| `item_id`, `user_id` | `uuid` (FK) | รหัสลิงก์ และรหัสผู้ใช้ (จำกัด 1 รายการต่อ 1 ลิงก์/คน) |
+| `schedule_type` | `reminder_schedule_type` | รูปแบบ: `once` (ครั้งเดียว) หรือ `every_n_days` (เตือนซ้ำ) |
+| `remind_at` | `timestamptz` | วันเวลาแจ้งเตือนรอบถัดไป (UTC) |
+| `repeat_every_days` | `int` | จำนวนวันเตือนซ้ำ (1–365 วัน) |
+| `remind_time` | `time` | เวลาที่ให้เตือน (สำหรับแบบเตือนซ้ำ) |
+| `timezone` | `text` | เขตเวลาที่ใช้คำนวณ (ค่าเริ่มต้น `Asia/Bangkok`) |
+| `status` | `reminder_status` | สถานะ: `pending`, `sent`, หรือ `cancelled` |
+| `title_snapshot` | `text` | ชื่อหัวข้อที่แคปไว้ตอนตั้งเตือน |
+| `last_triggered_at`, `sent_at`, `created_at`, `updated_at` | `timestamptz` | เวลายิงแจ้งเตือนล่าสุด, เวลาที่ส่ง, เวลาสร้าง/แก้ไข |
+
+#### 8) `public.devices` (อุปกรณ์สำหรับส่ง Push)
+| คอลัมน์ | ชนิดข้อมูล | คำอธิบาย |
+| :--- | :--- | :--- |
+| `id` | `uuid` (PK) | รหัสอุปกรณ์ |
+| `user_id` | `uuid` (FK) | รหัสผู้ใช้ |
+| `platform` | `device_platform` | ระบบ: `android`, `ios`, `web`, หรือ `extension` |
+| `delivery_mode` | `device_delivery_mode` | โหมดส่ง: `remote` หรือ `local_sync` |
+| `push_token` | `text` (Unique) | Token สำหรับยิง Push Notification |
+| `web_push_sub` | `jsonb` | ข้อมูล Subscription ของ Web Push |
+| `is_active` | `boolean` | สถานะยังใช้งานได้อยู่หรือไม่ |
+| `last_seen`, `created_at` | `timestamptz` | เวลาใช้งานล่าสุดและเวลาที่ลงทะเบียน |
+
+#### 9) `public.daily_ai_usage`, `public.api_tokens`, `public.beta_feedback` และ `private.app_config`
+| ตาราง | คอลัมน์หลัก | คำอธิบาย |
+| :--- | :--- | :--- |
+| `daily_ai_usage` | `id`, `user_id`, `usage_month`, `request_count`, `last_used_at` | นับจำนวนครั้งที่ใช้ AI ฟรีในแต่ละเดือนต่อ 1 ผู้ใช้ |
+| `api_tokens` | `id`, `user_id`, `token_hash`, `token_prefix`, `name`, `last_used_at`, `revoked_at`, `created_at` | เก็บ API Token (SHA-256) สำหรับเชื่อมต่อ MCP Server |
+| `beta_feedback` | `id`, `user_id`, `category`, `message`, `contact_email`, `allow_contact`, `created_at` | เก็บข้อความแจ้งบั๊ก/ข้อเสนอแนะ (`bug`/`feature`/`waitlist`/`general`) |
+| `private.app_config` | `key`, `value`, `updated_at` | เก็บ URL และ Secret ของระบบสำหรับ Trigger Webhook/Cron ภายใน |
+
+### 6.5 สรุปความปลอดภัย (Row-Level Security — RLS)
+
+* **เปิดใช้ RLS ครบทุกตารางใน `public`:** ใช้ `(select auth.uid())` เพื่อประสิทธิภาพการกรองระดับแถว
+* **ข้อมูลส่วนตัว (`profiles`, `tags`, `devices`, `reminders`, `daily_ai_usage`, `api_tokens`, `beta_feedback`):** เจ้าของเท่านั้นที่อ่าน/แก้ไข/ลบได้ (`user_id = auth.uid()` หรือ `owner_id = auth.uid()`)
+* **โฟลเดอร์ที่แชร์ (`folders`, `folder_members`, `items`):** ใช้ฟังก์ชัน `private.can_access_folder()` ตรวจสิทธิ์; สมาชิกที่ตอบรับคำเชิญ (`viewer`/`editor`) จะเห็นเฉพาะลิงก์ในโฟลเดอร์ที่แชร์ แต่จะ**ไม่เห็น `reminders` หรือ `note` ส่วนตัวของเจ้าของ** และเฉพาะ `owner`/`editor` เท่านั้นที่เพิ่ม/แก้ไขลิงก์ในโฟลเดอร์แชร์ได้
+* **ตารางภายใน (`private.app_config`):** ถูก `REVOKE ALL` จาก `PUBLIC`, `anon`, และ `authenticated` ไม่เปิดให้เข้าถึงผ่าน Data API ภายนอก
+
+---
+
+## 7. Browser Extension (`extension/`)
 
 ดูขั้นตอนติดตั้งสั้น ๆ ได้ใน [extension/README.md](file:///Users/chanisaniyom/Desktop/Just-Save-It-/extension/README.md)
 
@@ -181,7 +357,7 @@ cd backend
 
 ---
 
-## 7. สรุป API Endpoints ทั้งหมดที่มีอยู่แล้ว
+## 8. สรุป API Endpoints ทั้งหมดที่มีอยู่แล้ว
 
 | หมวด | Method & Path | หน้าที่ |
 | --- | --- | --- |
@@ -197,7 +373,7 @@ cd backend
 
 ---
 
-## 8. การรันเทสต์ & Checklist สิ่งที่ควรทำต่อ
+## 9. การรันเทสต์ & Checklist สิ่งที่ควรทำต่อ
 
 ### คำสั่งตรวจคุณภาพโค้ดก่อน Commit / Merge
 
