@@ -181,6 +181,7 @@ async function quickSaveUrl({ url, tabId = null, fallbackTitle = "", selectionTe
     return;
   }
 
+  const startGen = typeof JustSaveItApi.getSessionGeneration === "function" ? JustSaveItApi.getSessionGeneration() : 0;
   const session = await JustSaveItApi.getSessionState();
   if (!session.accessToken) {
     setActionBadge("AUTH", "#ba0e1a");
@@ -191,6 +192,7 @@ async function quickSaveUrl({ url, tabId = null, fallbackTitle = "", selectionTe
     }
     return;
   }
+  const startUid = String((session.user && session.user.id) || "").trim();
 
   let domMeta = null;
   if (tabId) {
@@ -199,6 +201,16 @@ async function quickSaveUrl({ url, tabId = null, fallbackTitle = "", selectionTe
     } catch (_err) {
       domMeta = null;
     }
+  }
+
+  const sessionBeforeSave = await JustSaveItApi.getSessionState();
+  const uidBeforeSave = String((sessionBeforeSave.user && sessionBeforeSave.user.id) || "").trim();
+  if (
+    (typeof JustSaveItApi.getSessionGeneration === "function" && JustSaveItApi.getSessionGeneration() !== startGen) ||
+    !sessionBeforeSave.accessToken ||
+    (startUid && uidBeforeSave !== startUid)
+  ) {
+    return;
   }
 
   const payload = {
@@ -221,6 +233,21 @@ async function quickSaveUrl({ url, tabId = null, fallbackTitle = "", selectionTe
     });
     setActionBadge("OK", "#16756a");
   } catch (err) {
+    if (
+      (err && err.aborted) ||
+      (typeof JustSaveItApi.getSessionGeneration === "function" && JustSaveItApi.getSessionGeneration() !== startGen)
+    ) {
+      return;
+    }
+    const latestAfterErr = await JustSaveItApi.getSessionState();
+    const latestUidAfterErr = String((latestAfterErr.user && latestAfterErr.user.id) || "").trim();
+    if (
+      !latestAfterErr.accessToken ||
+      (startUid && latestUidAfterErr !== startUid) ||
+      (typeof JustSaveItApi.getSessionGeneration === "function" && JustSaveItApi.getSessionGeneration() !== startGen)
+    ) {
+      return;
+    }
     if (!err.status || err.status >= 500 || err.status === 429) {
       await JustSaveItApi.enqueueOfflineSave(payload, err.message || "network");
       setActionBadge("QUE", "#6f42c1");

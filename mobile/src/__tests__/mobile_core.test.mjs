@@ -889,3 +889,93 @@ test("Cycle 5 [M-3, L-1]: deleteLinkItem/removeCachedLinkItem guards account swi
     await clearSession();
   }
 });
+
+test("Cycle 7 [H-2, M-4]: apiFetch network-drop & saveLinkItem abort across switch without queue poisoning, clearSession double-bump, and index.tsx guard", async () => {
+  const makeFakeJwtC7 = (sub) => {
+    const body = btoa(JSON.stringify({ sub })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return `eyJhbGciOiJIUzI1NiJ9.${body}.sig`;
+  };
+  const apiMod = await import("../api.ts");
+  const storageMod = await import("../storage.ts");
+  const { saveLinkItem } = apiMod;
+  const origFetch = globalThis.fetch;
+
+  try {
+    // 1. clearSession bumps _authGeneration by >= 2 and blocks racing saveCachedWorkspace
+    await saveSession({
+      access_token: makeFakeJwtC7("mob-c7-race"),
+      refresh_token: "r-c7",
+      user: { id: "mob-c7-race", email: "race@mob.test" },
+    });
+    const genBeforeClear = getAuthGeneration();
+    const pSaveRace = saveCachedWorkspace({
+      user_id: "mob-c7-race",
+      items: [{ id: "race-item", url: "https://race.test", title: "Race" }],
+      folders: [],
+      reminders: [],
+    });
+    await clearSession();
+    const genAfterClear = getAuthGeneration();
+    await pSaveRace;
+    assert.ok(genAfterClear >= genBeforeClear + 2, `Expected double gen bump (>= +2), got +${genAfterClear - genBeforeClear}`);
+    assert.equal(getMemoryCachedWorkspace(), null);
+    assert.equal((await loadCachedWorkspace()).items.length, 0);
+
+    // 2. apiFetch network error during account switch converts to status 401 (not status 0)
+    await saveSession({
+      access_token: makeFakeJwtC7("mob-c7-a"),
+      refresh_token: "r-a",
+      user: { id: "mob-c7-a", email: "a@mob.test" },
+    });
+    let rejectSlowNet = null;
+    globalThis.fetch = () => new Promise((_res, rej) => { rejectSlowNet = rej; });
+
+    const pendingApi = apiFetch("/api/items", { method: "POST", body: { url: "https://a.mob/1" } });
+    await new Promise((r) => setTimeout(r, 10));
+    await saveSession({
+      access_token: makeFakeJwtC7("mob-c7-b"),
+      refresh_token: "r-b",
+      user: { id: "mob-c7-b", email: "b@mob.test" },
+    });
+    rejectSlowNet(new TypeError("Network request failed"));
+    const apiRes = await pendingApi;
+    assert.equal(apiRes.ok, false);
+    assert.equal(apiRes.status, 401, "apiFetch network error after session switch must map to status 401 instead of status 0");
+
+    // 3. saveLinkItem while User A is signed in -> network drops after switch to User C -> User C queue stays empty
+    await saveSession({
+      access_token: makeFakeJwtC7("mob-c7-c0"),
+      refresh_token: "r-c0",
+      user: { id: "mob-c7-c0", email: "c0@mob.test" },
+    });
+    let rejectSaveNet = null;
+    globalThis.fetch = () => new Promise((_res, rej) => { rejectSaveNet = rej; });
+    const pendingSave = saveLinkItem({ url: "https://a.mob/poison", title: "Should Not Poison" });
+    await new Promise((r) => setTimeout(r, 10));
+    await saveSession({
+      access_token: makeFakeJwtC7("mob-c7-c1"),
+      refresh_token: "r-c1",
+      user: { id: "mob-c7-c1", email: "c1@mob.test" },
+    });
+    rejectSaveNet(new TypeError("Socket hangup"));
+    const saveRes = await pendingSave;
+    assert.equal(saveRes.ok, false);
+    assert.equal(saveRes.status, 401);
+    assert.equal(saveRes.queued, undefined);
+    assert.equal((await loadOfflineQueue()).length, 0, "Stale saveLinkItem must not enqueue User A link into User C offline queue");
+
+    // Verify storage identity still points cleanly to active user via exported getActiveUserScope or queue isolation
+    assert.equal((await storageMod.loadOfflineQueue("mob-c7-c0")).length, 0);
+
+    // 4. Verify (tabs)/index.tsx loadAll guards stale auth generation before mutating UI state
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const indexTsx = fs.readFileSync(path.resolve(here, "../../app/(tabs)/index.tsx"), "utf8");
+    assert.match(indexTsx, /const loadAll = useCallback[\s\S]{0,1200}getAuthGeneration\(\) !== startGen/);
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+  }
+});

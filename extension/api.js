@@ -307,9 +307,36 @@
     }
   }
 
+  function createStaleSessionError() {
+    const staleErr = new Error("สลับบัญชีหรือออกจากระบบระหว่างดำเนินการ");
+    staleErr.aborted = true;
+    staleErr.status = 0;
+    return staleErr;
+  }
+
+  function getSessionIdentity(sessionState) {
+    const s = sessionState || {};
+    const uid = String((s.user && s.user.id) || parseJwtSub(s.accessToken) || "").trim();
+    const hasAuth = Boolean(uid || s.accessToken || s.refreshToken);
+    return { uid, hasAuth };
+  }
+
+  function hasCrossContextSessionChange(startGen, startUid, startHadAuth, latestState) {
+    if (_sessionGeneration !== startGen) return true;
+    const latest = getSessionIdentity(latestState);
+    if (startUid && latest.uid !== startUid) return true;
+    if (!startUid && latest.uid) return true;
+    if (startHadAuth !== latest.hasAuth) return true;
+    return false;
+  }
+
   async function apiRequest(path, options = {}) {
     const startGen = _sessionGeneration;
     const session = await getSessionState();
+    if (options.auth !== false && _sessionGeneration !== startGen) {
+      throw createStaleSessionError();
+    }
+    const { uid: startUid, hasAuth: startHadAuth } = getSessionIdentity(session);
     let attemptedToken = session.accessToken;
     const backendUrl = normalizeBackendUrl(options.backendUrl || session.backendUrl);
     const headers = {
@@ -328,34 +355,66 @@
       body: options.body ? JSON.stringify(options.body) : undefined,
     };
 
-    let response = await fetch(`${backendUrl}${path}`, fetchOpts);
+    let response;
+    try {
+      response = await fetch(`${backendUrl}${path}`, fetchOpts);
+    } catch (networkErr) {
+      if (requireAuth) {
+        const latestOnNetErr = await getSessionState().catch(() => null);
+        if (!latestOnNetErr || hasCrossContextSessionChange(startGen, startUid, startHadAuth, latestOnNetErr)) {
+          throw createStaleSessionError();
+        }
+      }
+      throw networkErr;
+    }
 
     if (response.status === 401 && requireAuth && session.refreshToken && _sessionGeneration === startGen) {
       const currentBeforeRefresh = await getSessionState();
-      if (_sessionGeneration === startGen && currentBeforeRefresh.refreshToken === session.refreshToken) {
+      if (
+        !hasCrossContextSessionChange(startGen, startUid, startHadAuth, currentBeforeRefresh) &&
+        currentBeforeRefresh.refreshToken === session.refreshToken
+      ) {
         const nextToken = await tryRefreshAccessToken(backendUrl, session.refreshToken);
         if (nextToken && _sessionGeneration === startGen) {
           const currentAfterRefresh = await getSessionState();
-          if (currentAfterRefresh.accessToken === nextToken) {
+          if (
+            !hasCrossContextSessionChange(startGen, startUid, startHadAuth, currentAfterRefresh) &&
+            currentAfterRefresh.accessToken === nextToken
+          ) {
             attemptedToken = nextToken;
             fetchOpts.headers = { ...headers, Authorization: `Bearer ${nextToken}` };
-            response = await fetch(`${backendUrl}${path}`, fetchOpts);
+            try {
+              response = await fetch(`${backendUrl}${path}`, fetchOpts);
+            } catch (retryNetErr) {
+              const latestOnRetryErr = await getSessionState().catch(() => null);
+              if (
+                !latestOnRetryErr ||
+                hasCrossContextSessionChange(startGen, startUid, startHadAuth, latestOnRetryErr)
+              ) {
+                throw createStaleSessionError();
+              }
+              throw retryNetErr;
+            }
           }
         }
       }
     }
 
     const payload = await parseJsonSafe(response);
-    if (requireAuth && _sessionGeneration !== startGen) {
-      const staleErr = new Error("สลับบัญชีหรือออกจากระบบระหว่างดำเนินการ");
-      staleErr.aborted = true;
-      staleErr.status = 0;
-      throw staleErr;
+    if (requireAuth) {
+      const latestOnResp = await getSessionState();
+      if (hasCrossContextSessionChange(startGen, startUid, startHadAuth, latestOnResp)) {
+        throw createStaleSessionError();
+      }
     }
     if (!response.ok) {
       if (response.status === 401 && requireAuth && _sessionGeneration === startGen) {
         const latestSession = await getSessionState();
-        if (attemptedToken && latestSession.accessToken === attemptedToken && _sessionGeneration === startGen) {
+        if (
+          attemptedToken &&
+          latestSession.accessToken === attemptedToken &&
+          !hasCrossContextSessionChange(startGen, startUid, startHadAuth, latestSession)
+        ) {
           await clearAuthSession();
         }
       }
@@ -398,13 +457,16 @@
     return null;
   }
 
-  async function loginWithAccessToken(rawToken, refreshToken = "") {
+  async function loginWithAccessToken(rawToken, refreshToken = "", overrideBackendUrl = "") {
     const token = String(rawToken || "").trim().replace(/^Bearer\s+/i, "");
     if (!token) {
       throw new Error("กรุณาวาง Access Token ก่อนเข้าสู่ระบบ");
     }
     const session = await getSessionState();
-    const response = await fetch(`${session.backendUrl}/api/auth/me`, {
+    const targetBackendUrl = overrideBackendUrl
+      ? normalizeBackendUrl(overrideBackendUrl)
+      : session.backendUrl;
+    const response = await fetch(`${targetBackendUrl}/api/auth/me`, {
       method: "GET",
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -412,6 +474,9 @@
     if (!response.ok || !payload || !payload.id) {
       const msg = (payload && (payload.detail || payload.message)) || `HTTP ${response.status}`;
       throw new Error(`Token ไม่ถูกต้องหรือหมดอายุ (${msg})`);
+    }
+    if (overrideBackendUrl) {
+      await setBackendUrl(targetBackendUrl);
     }
     await saveAuthSession({
       access_token: token,

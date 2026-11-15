@@ -1237,6 +1237,401 @@ test("Cycle 6 [H-1, L-3]: extension setWorkspaceCache rejects signed-out writes,
   // 4. extension/popup.js async fetchers guard against session generation change & aborted flag
   const popupCode = fs.readFileSync(path.join(repoRoot, "extension", "popup.js"), "utf8");
   assert.match(popupCode, /async function refreshRecentList[\s\S]{0,450}getSessionGeneration\(\) !== startGen/);
-  assert.match(popupCode, /async function syncWorkspaceBackground[\s\S]{0,450}getSessionGeneration\(\) !== startGen/);
-  assert.match(popupCode, /async function syncWorkspaceBackground[\s\S]{0,450}err\.aborted/);
+  assert.match(popupCode, /async function syncWorkspaceBackground[\s\S]{0,550}isSessionStale\(startGen\)/);
+  assert.match(popupCode, /isSessionStale[\s\S]{0,120}err\.aborted/);
+});
+
+test("Cycle 7 [C-1, H-1, M-1, M-2, M-3, L-2]: real VM runtime tests for extension cross-context abort, background & popup anti-poisoning, 401 handling, and web-connect rollback safety", async () => {
+  const storeMap = new Map();
+  const sharedChromeStorage = {
+    local: {
+      get(keys, cb) {
+        const out = {};
+        const keyList = Array.isArray(keys) ? keys : typeof keys === "string" ? [keys] : Object.keys(keys || {});
+        for (const k of keyList) if (storeMap.has(k)) out[k] = structuredClone(storeMap.get(k));
+        cb(out);
+      },
+      set(values, cb) {
+        for (const [k, v] of Object.entries(values || {})) storeMap.set(k, structuredClone(v));
+        if (cb) cb();
+      },
+      remove(keys, cb) {
+        const keyList = Array.isArray(keys) ? keys : [keys];
+        for (const k of keyList) storeMap.delete(k);
+        if (cb) cb();
+      },
+    },
+  };
+
+  const apiCode = fs.readFileSync(path.join(repoRoot, "extension", "api.js"), "utf8");
+  const bgCode = fs.readFileSync(path.join(repoRoot, "extension", "background.js"), "utf8");
+  const popupCode = fs.readFileSync(path.join(repoRoot, "extension", "popup.js"), "utf8");
+
+  const mkResp = (status, body) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 401 ? "Unauthorized" : "OK",
+    headers: { get: () => "application/json" },
+    text: async () => (body == null ? "" : JSON.stringify(body)),
+  });
+
+  // --- 1) Two separate JS contexts sharing chrome.storage.local (popup vs background) + loginWithAccessToken rollback ---
+  let nextSlowAction = null;
+  const makeApiSandbox = (fetchFn) => {
+    const sb = {
+      globalThis: null,
+      chrome: { runtime: { lastError: null }, storage: sharedChromeStorage },
+      URL,
+      Date,
+      Math,
+      console,
+      setTimeout,
+      clearTimeout,
+      btoa,
+      atob,
+      fetch: fetchFn,
+    };
+    sb.globalThis = sb;
+    sb.self = sb;
+    vm.runInNewContext(apiCode, sb, { filename: "extension/api.js" });
+    return sb;
+  };
+
+  const popupApiSb = makeApiSandbox(async () => new Promise((resolve, reject) => { nextSlowAction = { resolve, reject }; }));
+  const bgApiSb = makeApiSandbox(async (url) => {
+    if (String(url).endsWith("/api/auth/me")) {
+      if (storeMap.get("test_token_ok") === true) {
+        return mkResp(200, { id: "user-valid-7", email: "valid@test.com" });
+      }
+      return mkResp(401, { detail: "bad token" });
+    }
+    return mkResp(200, {});
+  });
+
+  await bgApiSb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-a7",
+    refresh_token: "",
+    user: { id: "user-a7", email: "a7@test.com" },
+  });
+
+  // Network drop in popup context after background context swaps to User B -> MUST abort with err.aborted = true
+  const slowNetDrop = popupApiSb.JustSaveItApi.apiRequest("/api/items", {
+    method: "POST",
+    body: { url: "https://a7.test/1" },
+  }).catch((e) => e);
+  await new Promise((r) => setTimeout(r, 15));
+  await bgApiSb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-b7",
+    refresh_token: "",
+    user: { id: "user-b7", email: "b7@test.com" },
+  });
+  nextSlowAction.reject(new TypeError("Failed to fetch"));
+  const droppedRes = await slowNetDrop;
+  assert.equal(droppedRes?.aborted, true, "Cross-context network failure must convert to aborted stale error");
+  assert.equal((await bgApiSb.JustSaveItApi.getSessionState()).user.id, "user-b7");
+
+  // loginWithAccessToken with failed /api/auth/me must NOT overwrite backendUrl
+  await bgApiSb.JustSaveItApi.setBackendUrl("https://just-save-it-api.onrender.com");
+  storeMap.set("test_token_ok", false);
+  await assert.rejects(() => bgApiSb.JustSaveItApi.loginWithAccessToken("bad-tok", "", "http://127.0.0.1:8000"));
+  assert.equal(
+    (await bgApiSb.JustSaveItApi.getSessionState()).backendUrl,
+    "https://just-save-it-api.onrender.com",
+    "Failed loginWithAccessToken must not mutate stored backendUrl",
+  );
+  storeMap.set("test_token_ok", true);
+  await bgApiSb.JustSaveItApi.loginWithAccessToken("good-tok", "ref-ok", "http://127.0.0.1:8000");
+  assert.equal((await bgApiSb.JustSaveItApi.getSessionState()).backendUrl, "http://127.0.0.1:8000");
+
+  // --- 2) Real background.js quickSaveUrl runtime test (aborted/switched save must not enqueue offline) ---
+  storeMap.clear();
+  const badges = [];
+  let onCommandHandler = null;
+  let resolveBgFetch = null;
+  let rejectBgFetch = null;
+  const bgRuntimeSb = {
+    globalThis: null,
+    chrome: {
+      runtime: { lastError: null, onInstalled: { addListener() {} }, onStartup: { addListener() {} }, onMessage: { addListener() {} } },
+      storage: sharedChromeStorage,
+      action: {
+        setBadgeBackgroundColor() {},
+        setBadgeText({ text }) { badges.push(text); },
+        async openPopup() {},
+      },
+      alarms: { create() {}, get(_n, cb) { cb(null); }, onAlarm: { addListener() {} } },
+      contextMenus: { removeAll(cb) { if (cb) cb(); }, create() {}, onClicked: { addListener() {} } },
+      commands: { onCommand: { addListener(fn) { onCommandHandler = fn; } } },
+      notifications: { onClicked: { addListener() {} }, clear() {} },
+      tabs: { async query() { return [{ id: 11, url: "https://bg-a.example/item", title: "A Item" }]; } },
+    },
+    importScripts: () => {},
+    URL,
+    Date,
+    Math,
+    console,
+    setTimeout,
+    clearTimeout,
+    btoa,
+    atob,
+    fetch: async () => new Promise((resolve, reject) => { resolveBgFetch = resolve; rejectBgFetch = reject; }),
+  };
+  bgRuntimeSb.globalThis = bgRuntimeSb;
+  bgRuntimeSb.self = bgRuntimeSb;
+  vm.runInNewContext(apiCode, bgRuntimeSb, { filename: "extension/api.js" });
+  vm.runInNewContext(bgCode, bgRuntimeSb, { filename: "extension/background.js" });
+
+  await bgRuntimeSb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-bg-a",
+    refresh_token: "",
+    user: { id: "user-bg-a", email: "bga@test.com" },
+  });
+  const bgSavePromise = onCommandHandler("quick-save-tab");
+  await new Promise((r) => setTimeout(r, 15));
+  await bgRuntimeSb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-bg-b",
+    refresh_token: "",
+    user: { id: "user-bg-b", email: "bgb@test.com" },
+  });
+  rejectBgFetch(new TypeError("Connection reset"));
+  await bgSavePromise;
+  assert.equal((await bgRuntimeSb.JustSaveItApi.getOfflineQueue()).length, 0, "Aborted background save must not enqueue under User B");
+  assert.equal(badges.includes("QUE"), false, "Aborted background save must not flash QUE badge");
+
+  // --- 3) Real popup.js DOM runtime tests (handleSaveItem, syncWorkspaceBackground 401, handleCreateFolder, flushQueueBtn) ---
+  const createPopupHost = (fetchHandler) => {
+    const elMap = new Map();
+    const docListeners = new Map();
+    const makeEl = (id = "") => {
+      const classes = new Set();
+      const listeners = new Map();
+      const attrs = new Map();
+      const el = {
+        id,
+        value: "",
+        textContent: "",
+        innerHTML: "",
+        className: "",
+        disabled: false,
+        checked: false,
+        src: "",
+        title: "",
+        dataset: {},
+        style: {},
+        children: [],
+        classList: {
+          add: (...cs) => cs.forEach((c) => classes.add(c)),
+          remove: (...cs) => cs.forEach((c) => classes.delete(c)),
+          toggle: (c, force) => {
+            if (force === true) { classes.add(c); return true; }
+            if (force === false) { classes.delete(c); return false; }
+            if (classes.has(c)) { classes.delete(c); return false; }
+            classes.add(c); return true;
+          },
+          contains: (c) => classes.has(c),
+        },
+        addEventListener: (evt, fn) => {
+          if (!listeners.has(evt)) listeners.set(evt, []);
+          listeners.get(evt).push(fn);
+        },
+        dispatch: async (type) => {
+          const ev = { type, key: "Enter", preventDefault() {} };
+          for (const fn of listeners.get(type) || []) await fn(ev);
+        },
+        appendChild: (c) => { el.children.push(c); return c; },
+        replaceChildren: (...nodes) => { el.children = nodes; },
+        focus() {},
+        setAttribute: (k, v) => attrs.set(k, String(v)),
+        getAttribute: (k) => attrs.get(k) ?? null,
+        removeAttribute: (k) => attrs.delete(k),
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        closest: () => null,
+      };
+      return el;
+    };
+    const getEl = (id) => {
+      if (!elMap.has(id)) elMap.set(id, makeEl(id));
+      return elMap.get(id);
+    };
+    const sb = {
+      globalThis: null,
+      window: null,
+      chrome: {
+        runtime: { lastError: null },
+        storage: sharedChromeStorage,
+        tabs: { async query() { return [{ id: 1, url: "https://popup-tab.test/article", title: "Popup Article" }]; }, async create() {} },
+      },
+      document: {
+        getElementById: getEl,
+        createElement: (tag) => makeEl(tag),
+        createDocumentFragment: () => makeEl("#frag"),
+        querySelectorAll: () => [],
+        querySelector: () => null,
+        addEventListener: (evt, fn) => {
+          if (!docListeners.has(evt)) docListeners.set(evt, []);
+          docListeners.get(evt).push(fn);
+        },
+      },
+      Intl,
+      URL,
+      Date,
+      Math,
+      console,
+      setTimeout,
+      clearTimeout,
+      btoa,
+      atob,
+      navigator: {},
+      fetch: fetchHandler,
+    };
+    sb.globalThis = sb;
+    sb.self = sb;
+    sb.window = sb;
+    vm.runInNewContext(apiCode, sb, { filename: "extension/api.js" });
+    vm.runInNewContext(popupCode, sb, { filename: "extension/popup.js" });
+    return {
+      sb,
+      getEl,
+      async init() {
+        for (const fn of docListeners.get("DOMContentLoaded") || []) await fn();
+      },
+    };
+  };
+
+  // Case 3a: handleSaveItem slow POST fails after account switch -> zero offline queue pollution & no savedResultCard
+  storeMap.clear();
+  let popupSaveReject = null;
+  const hostA = createPopupHost(async (url, init) => {
+    const u = String(url);
+    if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+    if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "pop-a", email: "pa@t.com" } });
+    if (u.endsWith("/api/preview")) return mkResp(200, { title: "Preview A", platform: "web" });
+    if (u.endsWith("/api/items") && init?.method === "POST") {
+      return new Promise((_res, rej) => { popupSaveReject = rej; });
+    }
+    return mkResp(200, {});
+  });
+  await hostA.sb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-pop-a",
+    refresh_token: "",
+    user: { id: "pop-a", email: "pa@t.com" },
+  });
+  await hostA.init();
+  hostA.getEl("savedResultCard").classList.add("hidden");
+  hostA.getEl("urlInput").value = "https://a.example/save-race";
+  const saveTask = hostA.getEl("saveForm").dispatch("submit");
+  await new Promise((r) => setTimeout(r, 15));
+  await hostA.sb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-pop-b",
+    refresh_token: "",
+    user: { id: "pop-b", email: "pb@t.com" },
+  });
+  popupSaveReject(new TypeError("Offline during switch"));
+  await saveTask;
+  assert.equal((await hostA.sb.JustSaveItApi.getOfflineQueue()).length, 0, "handleSaveItem race must never queue into User B");
+  assert.equal(hostA.getEl("savedResultCard").classList.contains("hidden"), true);
+
+  // Case 3b: Genuine HTTP 401 on syncWorkspaceBackground -> shows authView + expired banner cleanly
+  storeMap.clear();
+  const host401 = createPopupHost(async (url) => {
+    const u = String(url);
+    if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+    if (u.includes("/api/workspace")) return mkResp(401, { detail: "expired" });
+    return mkResp(200, {});
+  });
+  await host401.sb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-exp",
+    refresh_token: "",
+    user: { id: "pop-exp", email: "exp@t.com" },
+  });
+  await host401.init();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(host401.getEl("authView").classList.contains("hidden"), false, "Genuine 401 must transition to authView even after apiRequest clears session");
+  assert.match(host401.getEl("feedbackBanner").textContent, /หมดอายุ/);
+
+  // Case 3c: Cross-context User B login before A's /api/workspace 401 resolves -> must NOT wipe User B or show authView
+  storeMap.clear();
+  let resolveSlowWs = null;
+  const hostCross401 = createPopupHost(async (url) => {
+    const u = String(url);
+    if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+    if (u.includes("/api/workspace")) return new Promise((r) => { resolveSlowWs = r; });
+    return mkResp(200, {});
+  });
+  await hostCross401.sb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-x-a",
+    refresh_token: "",
+    user: { id: "pop-x-a", email: "xa@t.com" },
+  });
+  await hostCross401.init();
+  await new Promise((r) => setTimeout(r, 15));
+  // External context replaces session in shared storeMap without touching hostCross401's local _sessionGeneration
+  storeMap.set("jsi_access_token", "tok-x-b");
+  storeMap.set("jsi_user", { id: "pop-x-b", email: "xb@t.com" });
+  resolveSlowWs(mkResp(401, { detail: "old A expired" }));
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(storeMap.get("jsi_access_token"), "tok-x-b", "Cross-context User B token must stay intact after User A 401");
+  assert.equal(hostCross401.getEl("authView").classList.contains("hidden"), true, "Popup must not boot User B out on User A stale 401");
+
+  // Case 3d: handleCreateFolder + flushQueueBtn abort cleanly when session switches mid-flight
+  storeMap.clear();
+  let resolveFolderPost = null;
+  const hostFld = createPopupHost(async (url, init) => {
+    const u = String(url);
+    if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+    if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "fld-a", email: "fa@t.com" } });
+    if (u.endsWith("/api/folders") && init?.method === "POST") return new Promise((r) => { resolveFolderPost = r; });
+    return mkResp(200, {});
+  });
+  await hostFld.sb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-fa",
+    refresh_token: "",
+    user: { id: "fld-a", email: "fa@t.com" },
+  });
+  await hostFld.init();
+  await new Promise((r) => setTimeout(r, 20));
+  hostFld.getEl("newFolderName").value = "Stale Folder A";
+  const createTask = hostFld.getEl("createFolderBtn").dispatch("click");
+  await new Promise((r) => setTimeout(r, 15));
+  await hostFld.sb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-fb",
+    refresh_token: "",
+    user: { id: "fld-b", email: "fb@t.com" },
+  });
+  resolveFolderPost(mkResp(201, { id: "fld-stale-a", name: "Stale Folder A", emoji: "📁" }));
+  await createTask;
+  const cacheAfterSwitch = await hostFld.sb.JustSaveItApi.getWorkspaceCache();
+  assert.equal(cacheAfterSwitch.folders.length, 0, "Stale handleCreateFolder settling after switch must not write User A folder to cache");
+  assert.equal(storeMap.has("jsi_workspace_cache"), false);
+
+  // Case 3e: flushQueueBtn aborts cleanly when switched to User B mid-flush
+  storeMap.clear();
+  let resolveFlushPost = null;
+  const hostFlush = createPopupHost(async (url, init) => {
+    const u = String(url);
+    if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+    if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "fl-a", email: "fla@t.com" } });
+    if (u.endsWith("/api/items") && init?.method === "POST") return new Promise((r) => { resolveFlushPost = r; });
+    return mkResp(200, {});
+  });
+  await hostFlush.sb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-fl-a",
+    refresh_token: "",
+    user: { id: "fl-a", email: "fla@t.com" },
+  });
+  await hostFlush.sb.JustSaveItApi.enqueueOfflineSave({ url: "https://queued-a.test/1" }, "offline");
+  await hostFlush.init();
+  await new Promise((r) => setTimeout(r, 20));
+  hostFlush.getEl("feedbackBanner").textContent = "";
+  const flushTask = hostFlush.getEl("flushQueueBtn").dispatch("click");
+  await new Promise((r) => setTimeout(r, 15));
+  await hostFlush.sb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-fl-b",
+    refresh_token: "",
+    user: { id: "fl-b", email: "flb@t.com" },
+  });
+  resolveFlushPost(mkResp(201, { id: "fl-stale-item", url: "https://queued-a.test/1" }));
+  await flushTask;
+  assert.equal(hostFlush.getEl("feedbackBanner").textContent, "", "Stale flushQueueBtn completion after switch must not show User A flush banner");
 });

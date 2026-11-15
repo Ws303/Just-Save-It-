@@ -22,6 +22,7 @@ import {
   saveLinkItem,
 } from "../../src/api";
 import {
+  getAuthGeneration,
   getMemoryCachedWorkspace,
   loadCachedWorkspace,
   loadSession,
@@ -83,14 +84,20 @@ export default function HomeFeedScreen() {
   const [saving, setSaving] = useState(false);
 
   const loadAll = useCallback(async () => {
+    const startGen = getAuthGeneration();
     const sess = await loadSession();
-    if (!sess?.access_token) {
+    if (getAuthGeneration() !== startGen || !sess?.access_token) {
       setLoading(false);
       setRefreshing(false);
       return;
     }
 
     const cached = await loadCachedWorkspace();
+    if (getAuthGeneration() !== startGen) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     if (cached.items.length > 0 || cached.folders.length > 0) {
       setItems((prev) => (prev.length ? prev : cached.items));
       setFolders((prev) => (prev.length ? prev : cached.folders));
@@ -98,10 +105,25 @@ export default function HomeFeedScreen() {
     }
 
     const flushed = await flushOfflineQueue();
+    if (getAuthGeneration() !== startGen) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     const pendingCount = flushed.remaining || (await getOfflineQueueCount());
+    if (getAuthGeneration() !== startGen) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     setQueueCount(pendingCount);
 
     const ws = await fetchWorkspace();
+    if (getAuthGeneration() !== startGen) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     setOffline(ws.offline);
     setItems(ws.items);
     setFolders(ws.folders);

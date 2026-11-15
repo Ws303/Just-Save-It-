@@ -39,6 +39,31 @@
     archived: "เก็บถาวร",
   };
 
+  function getSessionGen() {
+    return typeof api.getSessionGeneration === "function" ? api.getSessionGeneration() : 0;
+  }
+
+  function isSessionStale(startGen, err = null) {
+    return Boolean((err && err.aborted) || getSessionGen() !== startGen);
+  }
+
+  async function handleExpiredSessionAfter401(startAccessToken) {
+    const latestSess = await api.getSessionState();
+    if (latestSess.accessToken && latestSess.accessToken !== startAccessToken) {
+      return false;
+    }
+    if (latestSess.accessToken) {
+      await api.clearAuthSession();
+    }
+    const postClear = await api.getSessionState();
+    if (postClear.accessToken) {
+      return false;
+    }
+    enterAuthView();
+    showBanner("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่อีกครั้ง", "error");
+    return true;
+  }
+
   function getBangkokTodayIso(now = new Date()) {
     try {
       const parts = new Intl.DateTimeFormat("en-CA", {
@@ -281,7 +306,9 @@
   }
 
   async function refreshOfflineQueueBanner() {
+    const startGen = getSessionGen();
     const queue = await api.getOfflineQueue();
+    if (isSessionStale(startGen)) return;
     renderOfflineQueueCount(queue);
   }
 
@@ -540,13 +567,16 @@
       const curStatus = item.status || "inbox";
       statusBtn.textContent = STATUS_LABEL[curStatus] || curStatus;
       statusBtn.addEventListener("click", async () => {
+        const startGen = getSessionGen();
         const next = nextWorkflowStatus(item.status || "inbox");
         statusBtn.disabled = true;
         try {
           await api.updateItemStatus(item.id, next);
+          if (isSessionStale(startGen)) return;
           item.status = next;
           statusBtn.textContent = STATUS_LABEL[next] || next;
         } catch (err) {
+          if (isSessionStale(startGen, err)) return;
           showBanner(`เปลี่ยนสถานะไม่สำเร็จ: ${err.message}`, "error");
         } finally {
           statusBtn.disabled = false;
@@ -825,12 +855,14 @@
 
   async function fetchPreviewForUrl(targetUrl, forceRefresh = false) {
     if (!api.isSaveableHttpUrl(targetUrl)) return;
+    const startGen = getSessionGen();
     if (els.previewSourceBadge) els.previewSourceBadge.textContent = "กำลังพรีวิว...";
     try {
       const preview = await api.apiRequest("/api/preview", {
         method: "POST",
         body: { url: targetUrl, force_refresh: forceRefresh },
       });
+      if (isSessionStale(startGen)) return;
       if (els.urlInput.value.trim() !== targetUrl) return;
       state.previewMeta = preview;
       state.previewUrl = targetUrl;
@@ -851,7 +883,8 @@
       if (thumb) {
         renderPreviewThumbnail(thumb, preview.site_name || targetUrl);
       }
-    } catch (_err) {
+    } catch (err) {
+      if (isSessionStale(startGen, err)) return;
       if (els.urlInput.value.trim() === targetUrl && els.previewSourceBadge) {
         els.previewSourceBadge.textContent = "";
       }
@@ -931,24 +964,26 @@
   }
 
   async function syncWorkspaceBackground(fallbackDisplay) {
-    const startGen = typeof api.getSessionGeneration === "function" ? api.getSessionGeneration() : 0;
+    const startGen = getSessionGen();
+    const startSess = await api.getSessionState();
+    if (isSessionStale(startGen) || !startSess.accessToken) {
+      return;
+    }
     try {
       const ws = await api.fetchWorkspace({ limit: 50 });
-      if (typeof api.getSessionGeneration === "function" && api.getSessionGeneration() !== startGen) {
+      if (isSessionStale(startGen)) {
         return;
       }
       applyWorkspaceSnapshot(ws, fallbackDisplay);
     } catch (err) {
-      if (
-        (err && err.aborted) ||
-        (typeof api.getSessionGeneration === "function" && api.getSessionGeneration() !== startGen)
-      ) {
+      if (err && err.aborted) {
         return;
       }
       if (err && err.status === 401) {
-        await api.clearAuthSession();
-        enterAuthView();
-        showBanner("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่อีกครั้ง", "error");
+        await handleExpiredSessionAfter401(startSess.accessToken);
+        return;
+      }
+      if (isSessionStale(startGen, err)) {
         return;
       }
       showBanner(`ซิงก์ข้อมูลพื้นหลังไม่สำเร็จ (${err.message}) — บันทึกลิงก์ได้ทันทีหรือเข้าคิวออฟไลน์`, "error");
@@ -1091,10 +1126,13 @@
           });
           const data = res && res[0] && res[0].result;
           if (data && data.accessToken) {
-            if (data.apiBaseUrl) {
-              els.backendUrlInput.value = await api.setBackendUrl(data.apiBaseUrl);
-            }
-            const profile = await api.loginWithAccessToken(data.accessToken, data.refreshToken || "");
+            const profile = await api.loginWithAccessToken(
+              data.accessToken,
+              data.refreshToken || "",
+              data.apiBaseUrl || ""
+            );
+            const nextSession = await api.getSessionState();
+            els.backendUrlInput.value = nextSession.backendUrl;
             enterSaverView({ user: profile }, await api.getWorkspaceCache(), null);
             showBanner("เชื่อมต่อบัญชีจากหน้าเว็บ Sharely สำเร็จแล้ว!", "success");
             return;
@@ -1191,6 +1229,7 @@
   }
 
   async function handleCreateFolder() {
+    const startGen = getSessionGen();
     const name = els.newFolderName.value.trim();
     const emoji = els.newFolderEmoji.value.trim() || "📁";
     if (!name) return;
@@ -1201,6 +1240,7 @@
         method: "POST",
         body: { name, emoji },
       });
+      if (isSessionStale(startGen)) return;
       state.selectedFolderId = folder.id;
       state.cachedFolders = [...state.cachedFolders, folder];
       renderFoldersDropdown(state.cachedFolders);
@@ -1213,6 +1253,7 @@
         user: state.cachedUser,
       });
     } catch (err) {
+      if (isSessionStale(startGen, err)) return;
       showBanner(`สร้างโฟลเดอร์ไม่สำเร็จ: ${err.message}`, "error");
     } finally {
       els.createFolderBtn.disabled = false;
@@ -1222,6 +1263,7 @@
   async function handleSaveItem(event) {
     event.preventDefault();
     clearBanner();
+    const startGen = getSessionGen();
 
     const url = els.urlInput.value.trim();
     if (!api.isSaveableHttpUrl(url)) {
@@ -1268,6 +1310,9 @@
       reminder,
     };
 
+    const startSess = await api.getSessionState();
+    if (isSessionStale(startGen) || !startSess.accessToken) return;
+
     els.saveItemBtn.disabled = true;
     els.saveItemBtn.textContent = "กำลังบันทึก...";
     try {
@@ -1275,6 +1320,7 @@
         method: "POST",
         body: payload,
       });
+      if (isSessionStale(startGen)) return;
       state.lastSavedItemId = saved.id;
       els.aiResultBox.classList.add("hidden");
       els.aiResultBox.textContent = "";
@@ -1301,8 +1347,26 @@
         user: state.cachedUser,
       });
     } catch (err) {
+      if (err && err.aborted) {
+        return;
+      }
+      if (err && err.status === 401) {
+        await handleExpiredSessionAfter401(startSess.accessToken);
+        return;
+      }
+      const latestBeforeQueue = await api.getSessionState();
+      const startUid = String((startSess.user && startSess.user.id) || "").trim();
+      const latestUid = String((latestBeforeQueue.user && latestBeforeQueue.user.id) || "").trim();
+      if (
+        isSessionStale(startGen, err) ||
+        !latestBeforeQueue.accessToken ||
+        (startUid && latestUid !== startUid)
+      ) {
+        return;
+      }
       if (!err.status || err.status >= 500 || err.status === 429) {
         await api.enqueueOfflineSave(payload, err.message || "offline");
+        if (isSessionStale(startGen)) return;
         await refreshOfflineQueueBanner();
         showBanner("ออฟไลน์ชั่วคราว — เก็บลิงก์เข้าคิวซิงก์อัตโนมัติเรียบร้อย", "info");
       } else {
@@ -1316,6 +1380,7 @@
 
   async function handleAiSummarize() {
     if (!state.lastSavedItemId) return;
+    const startGen = getSessionGen();
     els.aiSummarizeBtn.disabled = true;
     els.aiSummarizeBtn.textContent = "กำลังสรุป...";
     try {
@@ -1327,11 +1392,13 @@
           save_to_note: false,
         },
       });
+      if (isSessionStale(startGen)) return;
       const { summary, tags } = api.formatAiSummaryResponse(resp);
       const tagsText = tags.length ? `\n\nแท็กแนะนำ: ${tags.join(", ")}` : "";
       els.aiResultBox.textContent = `${summary}${tagsText}`.trim();
       els.aiResultBox.classList.remove("hidden");
     } catch (err) {
+      if (isSessionStale(startGen, err)) return;
       els.aiResultBox.textContent = `ไม่สามารถสรุป AI ได้ในตอนนี้: ${err.message}`;
       els.aiResultBox.classList.remove("hidden");
     } finally {
@@ -1397,13 +1464,17 @@
     });
 
     els.flushQueueBtn.addEventListener("click", async () => {
+      const startGen = getSessionGen();
       els.flushQueueBtn.disabled = true;
       try {
         const res = await api.flushOfflineQueue();
+        if (isSessionStale(startGen)) return;
         await refreshOfflineQueueBanner();
+        if (isSessionStale(startGen)) return;
         void refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
         showBanner(`ซิงก์คิวออฟไลน์สำเร็จ ${res.flushed} รายการ (คงเหลือ ${res.remaining})`, "success");
       } catch (err) {
+        if (isSessionStale(startGen, err)) return;
         showBanner(`ซิงก์คิวไม่สำเร็จ: ${err.message}`, "error");
       } finally {
         els.flushQueueBtn.disabled = false;

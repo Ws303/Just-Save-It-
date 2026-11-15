@@ -585,6 +585,9 @@ export async function apiFetch<T = JsonRecord>(
     }
     return { ok: true, status: resp.status, data: (data as T) ?? null };
   } catch (err: unknown) {
+    if (getAuthGeneration() !== startGen) {
+      return { ok: false, status: 401, data: null, error: "Session changed" };
+    }
     return { ok: false, status: 0, data: null, error: getErrorMessage(err, "Network error") };
   }
 }
@@ -773,7 +776,11 @@ export async function saveLinkItem(payload: {
   folder_id?: string | null;
   status?: WorkflowStatus;
 }): Promise<ApiResult<JsonRecord> & { queued?: boolean }> {
+  const startGen = getAuthGeneration();
   const res = await apiFetch<JsonRecord>("/api/items", { method: "POST", body: payload });
+  if (getAuthGeneration() !== startGen) {
+    return { ok: false, status: 401, data: null, error: "Session changed" };
+  }
   if (!res.ok && res.status === 0) {
     await enqueueOfflineItem(payload);
     return {
