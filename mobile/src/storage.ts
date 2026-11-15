@@ -302,6 +302,7 @@ export async function clearSession(): Promise<void> {
   await fallbackBackend.removeItem(KEYS.cache);
   await fallbackBackend.removeItem(KEYS.offlineQueue);
   await fallbackBackend.removeItem(KEYS.pkceVerifier);
+  _authGeneration += 1;
 }
 
 export async function savePkceVerifier(verifier: string): Promise<void> {
@@ -527,7 +528,7 @@ export async function saveCachedWorkspace(data: Omit<CachedWorkspace, "updated_a
   }
   const liveUid = String(resolveSessionUserId(session) || _activeUserId).trim();
   const requestedUid = String(data.user_id ?? "").trim();
-  if (liveUid && requestedUid && requestedUid !== liveUid) {
+  if (requestedUid && requestedUid !== liveUid) {
     return;
   }
   const currentUid = requestedUid || liveUid;
@@ -536,8 +537,12 @@ export async function saveCachedWorkspace(data: Omit<CachedWorkspace, "updated_a
     user_id: currentUid || undefined,
     updated_at: new Date().toISOString(),
   };
+  const backend = await getStorageBackend();
+  if (_authGeneration !== startGen) {
+    return;
+  }
   _memWorkspaceCache = stamped;
-  await writeJson(KEYS.cache, stamped);
+  await backend.setItem(KEYS.cache, JSON.stringify(stamped));
 }
 
 export async function removeCachedLinkItem(itemId: string): Promise<void> {

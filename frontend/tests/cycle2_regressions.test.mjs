@@ -1132,3 +1132,111 @@ test("Cycle 5 [H-1, M-1, M-2]: post-refresh 401 clears extension session, store 
   assert.match(mainCode, /d\.saveReminder[\s\S]{0,500}if \(!res \|\| res\.aborted\) return;/);
   assert.match(mainCode, /const joined = await apiClient\.acceptInvite\(tokenOrFolder\);[\s\S]{0,200}startAuthGen/);
 });
+
+test("Cycle 6 [H-1, L-3]: extension setWorkspaceCache rejects signed-out writes, apiRequest aborts 200 across switch, clearAuthSession post-bumps gen, popup guards bg sync", async () => {
+  const storeMap = new Map();
+  let pauseNextGet = false;
+  let resumePausedGet = null;
+  let notifyPausedGet = null;
+  const pausedGetPromise = new Promise((r) => {
+    notifyPausedGet = r;
+  });
+
+  const chromeMock = {
+    runtime: { lastError: null },
+    storage: {
+      local: {
+        get(keys, cb) {
+          const out = {};
+          const keyList = Array.isArray(keys) ? keys : typeof keys === "string" ? [keys] : Object.keys(keys || {});
+          for (const k of keyList) if (storeMap.has(k)) out[k] = structuredClone(storeMap.get(k));
+          if (pauseNextGet && keyList.includes("jsi_access_token") && keyList.includes("jsi_refresh_token")) {
+            pauseNextGet = false;
+            resumePausedGet = () => cb(out);
+            notifyPausedGet();
+            return;
+          }
+          cb(out);
+        },
+        set(values, cb) {
+          for (const [k, v] of Object.entries(values || {})) storeMap.set(k, structuredClone(v));
+          if (cb) cb();
+        },
+        remove(keys, cb) {
+          const keyList = Array.isArray(keys) ? keys : [keys];
+          for (const k of keyList) storeMap.delete(k);
+          if (cb) cb();
+        },
+      },
+    },
+  };
+
+  let resolveSlowFetch;
+  const apiCode = fs.readFileSync(path.join(repoRoot, "extension", "api.js"), "utf8");
+  const sandbox = {
+    globalThis: {},
+    chrome: chromeMock,
+    URL,
+    Date,
+    Math,
+    console,
+    setTimeout,
+    clearTimeout,
+    fetch: async () =>
+      new Promise((r) => {
+        resolveSlowFetch = r;
+      }),
+  };
+  sandbox.globalThis = sandbox;
+  sandbox.self = sandbox;
+  vm.runInNewContext(apiCode, sandbox, { filename: "extension/api.js" });
+
+  // 1. Signed-out setWorkspaceCache with explicit user.id must be rejected
+  await sandbox.JustSaveItApi.clearAuthSession();
+  await sandbox.JustSaveItApi.setWorkspaceCache({
+    user: { id: "user-leaked" },
+    folders: [],
+    tags: [],
+    recentItems: [{ id: "bad", url: "https://bad.test" }],
+  });
+  assert.equal(storeMap.has(sandbox.JustSaveItApi.STORAGE_KEYS.WORKSPACE_CACHE), false);
+
+  // 2. apiRequest resolves HTTP 200 after logout/account switch -> aborts instead of returning stale User A payload
+  await sandbox.JustSaveItApi.saveAuthSession({
+    access_token: "tok-a-200",
+    refresh_token: "ref-a-200",
+    user: { id: "user-a-200", email: "a@example.com" },
+  });
+  const pending200 = sandbox.JustSaveItApi.apiRequest("/api/workspace").catch((e) => e);
+  await new Promise((r) => setTimeout(r, 15));
+  await sandbox.JustSaveItApi.saveAuthSession({
+    access_token: "tok-b-200",
+    refresh_token: "ref-b-200",
+    user: { id: "user-b-200", email: "b@example.com" },
+  });
+  resolveSlowFetch(mockResp(200, { items: [{ id: "stale-a" }] }));
+  const staleRes = await pending200;
+  assert.equal(staleRes?.aborted, true, "Stale 200 payload across account switch must abort");
+
+  // 3. Concurrent setWorkspaceCache pausing during clearAuthSession cannot resurrect cleared cache
+  const genBeforeClear = sandbox.JustSaveItApi.getSessionGeneration();
+  pauseNextGet = true;
+  const pendingCacheWrite = sandbox.JustSaveItApi.setWorkspaceCache({
+    user: { id: "user-b-200" },
+    folders: [],
+    tags: [],
+    recentItems: [{ id: "resurrected", url: "https://res.test" }],
+  });
+  await pausedGetPromise;
+  await sandbox.JustSaveItApi.clearAuthSession();
+  assert.ok(sandbox.JustSaveItApi.getSessionGeneration() >= genBeforeClear + 2, "clearAuthSession must bump gen before and after removal");
+  resumePausedGet();
+  await pendingCacheWrite;
+  assert.equal(storeMap.has(sandbox.JustSaveItApi.STORAGE_KEYS.WORKSPACE_CACHE), false);
+
+  // 4. extension/popup.js async fetchers guard against session generation change & aborted flag
+  const popupCode = fs.readFileSync(path.join(repoRoot, "extension", "popup.js"), "utf8");
+  assert.match(popupCode, /async function refreshRecentList[\s\S]{0,450}getSessionGeneration\(\) !== startGen/);
+  assert.match(popupCode, /async function syncWorkspaceBackground[\s\S]{0,450}getSessionGeneration\(\) !== startGen/);
+  assert.match(popupCode, /async function syncWorkspaceBackground[\s\S]{0,450}err\.aborted/);
+});

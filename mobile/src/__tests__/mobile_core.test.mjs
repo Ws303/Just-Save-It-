@@ -861,6 +861,29 @@ test("Cycle 5 [M-3, L-1]: deleteLinkItem/removeCachedLinkItem guards account swi
     await clearSession();
     await removeCachedLinkItem("m-b-keep");
     assert.equal((await loadCachedWorkspace()).items.length, 0);
+
+    // Cycle 6 [M-2, L-3]: saveCachedWorkspace rejects explicit user_id when signed out or mismatched
+    await saveCachedWorkspace({
+      user_id: "mob-explicit-leaked",
+      items: [{ id: "bad-1", url: "https://bad.test/1", title: "Should Not Persist" }],
+      folders: [],
+      reminders: [],
+    });
+    assert.equal(getMemoryCachedWorkspace(), null, "Signed-out saveCachedWorkspace with explicit user_id must be ignored");
+
+    await saveSession({
+      access_token: makeFakeJwt("mob-owner-a"),
+      refresh_token: "ref-oa",
+      user: { id: "mob-owner-a", email: "oa@mob.test" },
+    });
+    await saveCachedWorkspace({
+      user_id: "mob-owner-b",
+      items: [{ id: "bad-2", url: "https://bad.test/2", title: "Cross-Account Cache" }],
+      folders: [],
+      reminders: [],
+    });
+    assert.equal(getMemoryCachedWorkspace(), null, "Cross-account saveCachedWorkspace must be rejected");
+    assert.equal((await loadCachedWorkspace()).items.length, 0);
   } finally {
     globalThis.fetch = origFetch;
     await clearSession();

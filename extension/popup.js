@@ -761,8 +761,12 @@
   }
 
   async function refreshRecentList(search = "") {
+    const startGen = typeof api.getSessionGeneration === "function" ? api.getSessionGeneration() : 0;
     try {
       const itemsRes = await api.fetchRecentItems({ search, limit: 30 });
+      if (typeof api.getSessionGeneration === "function" && api.getSessionGeneration() !== startGen) {
+        return;
+      }
       const items = itemsRes.items || [];
       renderRecentItems(items);
       if (!search) {
@@ -774,6 +778,12 @@
         }).catch(() => {});
       }
     } catch (err) {
+      if (
+        (err && err.aborted) ||
+        (typeof api.getSessionGeneration === "function" && api.getSessionGeneration() !== startGen)
+      ) {
+        return;
+      }
       showBanner(`โหลดรายการล่าสุดไม่สำเร็จ: ${err.message}`, "error");
     }
   }
@@ -921,10 +931,20 @@
   }
 
   async function syncWorkspaceBackground(fallbackDisplay) {
+    const startGen = typeof api.getSessionGeneration === "function" ? api.getSessionGeneration() : 0;
     try {
       const ws = await api.fetchWorkspace({ limit: 50 });
+      if (typeof api.getSessionGeneration === "function" && api.getSessionGeneration() !== startGen) {
+        return;
+      }
       applyWorkspaceSnapshot(ws, fallbackDisplay);
     } catch (err) {
+      if (
+        (err && err.aborted) ||
+        (typeof api.getSessionGeneration === "function" && api.getSessionGeneration() !== startGen)
+      ) {
+        return;
+      }
       if (err && err.status === 401) {
         await api.clearAuthSession();
         enterAuthView();

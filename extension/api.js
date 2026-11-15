@@ -183,6 +183,7 @@
       STORAGE_KEYS.OFFLINE_QUEUE,
       STORAGE_KEYS.NOTIFIED_REMINDERS,
     ]);
+    _sessionGeneration += 1;
   }
 
   async function getWorkspaceCache(expectedUserId = "") {
@@ -211,16 +212,23 @@
 
   async function setWorkspaceCache(cache) {
     const startGen = _sessionGeneration;
-    const res = await getStorage([STORAGE_KEYS.USER, STORAGE_KEYS.ACCESS_TOKEN]);
+    const res = await getStorage([
+      STORAGE_KEYS.USER,
+      STORAGE_KEYS.ACCESS_TOKEN,
+      STORAGE_KEYS.REFRESH_TOKEN,
+    ]);
     if (_sessionGeneration !== startGen) return;
     const currentUser = res[STORAGE_KEYS.USER];
     const liveUid = String(
       (currentUser && currentUser.id) || parseJwtSub(res[STORAGE_KEYS.ACCESS_TOKEN]) || ""
     ).trim();
+    const hasLiveSession = Boolean(
+      liveUid || res[STORAGE_KEYS.ACCESS_TOKEN] || res[STORAGE_KEYS.REFRESH_TOKEN]
+    );
     const resolvedUser = (cache && cache.user) || currentUser || null;
     const cacheUid = String((resolvedUser && resolvedUser.id) || "").trim();
     const uid = cacheUid || liveUid;
-    if (!uid || (liveUid && cacheUid && cacheUid !== liveUid)) return;
+    if (!hasLiveSession || !uid || (liveUid && cacheUid && cacheUid !== liveUid)) return;
     await setStorage({
       [STORAGE_KEYS.WORKSPACE_CACHE]: {
         userId: uid,
@@ -338,6 +346,12 @@
     }
 
     const payload = await parseJsonSafe(response);
+    if (requireAuth && _sessionGeneration !== startGen) {
+      const staleErr = new Error("สลับบัญชีหรือออกจากระบบระหว่างดำเนินการ");
+      staleErr.aborted = true;
+      staleErr.status = 0;
+      throw staleErr;
+    }
     if (!response.ok) {
       if (response.status === 401 && requireAuth && _sessionGeneration === startGen) {
         const latestSession = await getSessionState();
@@ -622,6 +636,7 @@
     getSessionState,
     saveAuthSession,
     clearAuthSession,
+    getSessionGeneration: () => _sessionGeneration,
     getWorkspaceCache,
     setWorkspaceCache,
     setBackendUrl,
