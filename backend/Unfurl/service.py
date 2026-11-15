@@ -198,6 +198,21 @@ def _should_replace_title(item: Dict[str, Any], force_refresh: bool) -> bool:
     )
 
 
+def _should_replace_description(
+    old_desc: str,
+    candidate_desc: Optional[str],
+    platform: str,
+    *,
+    force_refresh: bool = False,
+) -> bool:
+    candidate = str(candidate_desc or "").strip()
+    if not candidate:
+        return False
+    if force_refresh or not old_desc:
+        return True
+    return platform == "youtube" and old_desc.startswith("By ") and not candidate.startswith("By ")
+
+
 async def enrich_item(
     db: Any,
     item_id: str,
@@ -218,6 +233,10 @@ async def enrich_item(
     url_hash = compute_url_hash(canon_url)
     now_iso = _now_utc().isoformat()
     next_enrich_status = "done" if item.get("ai_summary") else "unfurled"
+
+    old_desc = str(item.get("description") or "").strip()
+    old_plat = str(item.get("platform") or "").lower()
+    needs_yt_full_desc = old_plat == "youtube" and old_desc.startswith("By ")
 
     # 1. Cross-user 7-day cache check
     if not force_refresh:
@@ -242,7 +261,8 @@ async def enrich_item(
             }
             if _should_replace_title(item, force_refresh=False) and cached_data["title"]:
                 updates["title"] = cached_data["title"]
-            if not item.get("description") and cached_data["description"]:
+            cached_plat = str(old_plat or cached_data.get("platform") or "").lower()
+            if _should_replace_description(old_desc, cached_data["description"], cached_plat):
                 updates["description"] = cached_data["description"]
 
             upd_res = db.table("items").update(updates).eq("id", item_id).execute()
@@ -255,9 +275,6 @@ async def enrich_item(
             }
 
     # 2. Live 0-token extraction + Cover #1 WebP upload
-    old_desc = str(item.get("description") or "").strip()
-    old_plat = str(item.get("platform") or "").lower()
-    needs_yt_full_desc = old_plat == "youtube" and old_desc.startswith("By ")
     try:
         result = await extract_unfurl_metadata(
             canon_url, fetch_full_description=bool(force_refresh or needs_yt_full_desc)
@@ -297,10 +314,9 @@ async def enrich_item(
         }
         if _should_replace_title(item, force_refresh=force_refresh) and result.title:
             updates["title"] = result.title
-        if result.description and (
-            force_refresh
-            or not old_desc
-            or (needs_yt_full_desc and not result.description.startswith("By "))
+        effective_plat = str(old_plat or result.platform or "").lower()
+        if _should_replace_description(
+            old_desc, result.description, effective_plat, force_refresh=force_refresh
         ):
             updates["description"] = result.description
 

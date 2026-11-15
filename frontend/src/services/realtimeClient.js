@@ -63,6 +63,9 @@ export function extractRealtimeDelta(msg) {
 
 function scheduleSync(reason = "realtime", delta = null) {
   if (!running || !currentOptions?.onSync) return;
+  if (typeof currentOptions.isAuthenticated === "function" && !currentOptions.isAuthenticated()) {
+    return;
+  }
   if (reason === "realtime" && Date.now() - lastLocalMutationAt < LOCAL_ECHO_SUPPRESS_MS) {
     return;
   }
@@ -78,7 +81,8 @@ function scheduleSync(reason = "realtime", delta = null) {
     const forceFullSync = pendingForceFullSync || deltas.length === 0;
     pendingDeltas = [];
     pendingForceFullSync = false;
-    if (running && currentOptions?.onSync) {
+    const isAuth = typeof currentOptions?.isAuthenticated !== "function" || currentOptions.isAuthenticated();
+    if (running && isAuth && currentOptions?.onSync) {
       Promise.resolve(currentOptions.onSync(reason, { deltas, forceFullSync })).catch(() => {});
     }
   }, 600);

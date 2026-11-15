@@ -9,7 +9,7 @@ import { store, generateUuid, inferPlatform, getFolderById, getLinkById, filterL
 import { getAuthMode } from "./routeGuard.js";
 import { buildAuthRedirectUrl, extractClaimsSummary, supabaseAuth } from "./supabaseAuth.js";
 import { disableWebPush } from "./pushClient.js";
-import { broadcastLocalChange, noteLocalMutation } from "./realtimeClient.js";
+import { broadcastLocalChange, noteLocalMutation, stopRealtimeSync } from "./realtimeClient.js";
 
 const WORKSPACE_CACHE_PREFIX = "sharely_workspace_cache_v1:";
 const WORKSPACE_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
@@ -26,6 +26,10 @@ function getAuthContextKey() {
 
 function isAuthContextCurrent(expectedKey) {
   return getAuthContextKey() === expectedKey;
+}
+
+function staleAuthResult(status = 409) {
+  return { ok: false, status, data: null, error: "Auth context changed", stale: true };
 }
 
 function mergeUniqueRowsById(targetRows, seenIds, batch) {
@@ -415,13 +419,20 @@ async function dispatchRequest({
   const { mode, baseUrl, latencyMs } = store.state.api;
   const started = performance.now();
   const base = baseUrl.replace(/\/+$/, "");
+  const startKey = getAuthContextKey();
 
   const headers = buildAuthHeaders(customHeaders);
 
   if (mode === "mock") {
     await sleep(Math.max(40, Number(latencyMs) || 120));
+    if (!isAuthContextCurrent(startKey)) {
+      return staleAuthResult();
+    }
     try {
       const mockRes = await mockHandler();
+      if (!isAuthContextCurrent(startKey)) {
+        return staleAuthResult();
+      }
       const durationMs = performance.now() - started;
       recordLog({
         method,
@@ -471,6 +482,9 @@ async function dispatchRequest({
 
   try {
     let { resp, parsed } = await performLiveFetch(headers);
+    if (!isAuthContextCurrent(startKey)) {
+      return staleAuthResult();
+    }
 
     if (
       resp.status === 401 &&
@@ -481,9 +495,15 @@ async function dispatchRequest({
       !path.startsWith("/api/auth/refresh")
     ) {
       const refreshed = await apiClient.refreshSession();
+      if (!isAuthContextCurrent(startKey)) {
+        return staleAuthResult();
+      }
       if (refreshed.ok) {
         const retryHeaders = buildAuthHeaders(customHeaders);
         ({ resp, parsed } = await performLiveFetch(retryHeaders));
+        if (!isAuthContextCurrent(startKey)) {
+          return staleAuthResult();
+        }
       }
     }
 
@@ -500,7 +520,7 @@ async function dispatchRequest({
       error: resp.ok ? null : parsed?.detail || `HTTP ${resp.status}`,
     });
 
-    if (resp.status === 401 && !skipUnauthRedirect && !path.startsWith("/api/auth/login") && !path.startsWith("/api/auth/register")) {
+    if (isAuthContextCurrent(startKey) && resp.status === 401 && !skipUnauthRedirect && !path.startsWith("/api/auth/login") && !path.startsWith("/api/auth/register")) {
       store.clearSession({
         redirectToLogin: store.state.ui.authGuardEnabled !== false,
         authError: parsed?.detail || "เซสชันหมดอายุหรือยังไม่ได้ยืนยันตัวตน (HTTP 401)",
@@ -509,6 +529,9 @@ async function dispatchRequest({
 
     return { ok: resp.ok, status: resp.status, data: parsed, error: resp.ok ? null : parsed?.detail || `HTTP ${resp.status}`, isMock: false };
   } catch (err) {
+    if (!isAuthContextCurrent(startKey)) {
+      return staleAuthResult();
+    }
     const durationMs = performance.now() - started;
     const msg = `${err.message} (ตรวจสอบว่าเซิร์ฟเวอร์ FastAPI กำลังรันอยู่ที่ ${base})`;
     recordLog({
@@ -708,6 +731,7 @@ export const apiClient = {
   },
 
   async createLink(payload) {
+    const startKey = getAuthContextKey();
     const cleanUrl = (payload.url || "").trim();
     if (cleanUrl && safeHrefUrl(cleanUrl) === "#") {
       store.showToast("URL ไม่ถูกต้อง (รองรับเฉพาะ http:// และ https://)");
@@ -723,6 +747,7 @@ export const apiClient = {
     if (cleanUrl && store.state.api.mode === "live" && payload.waitForPreview === true && !payload.skipPreview) {
       try {
         const pv = await this.previewUrl(cleanUrl);
+        if (!isAuthContextCurrent(startKey)) return null;
         if (pv.ok && pv.data) previewData = pv.data;
       } catch {}
     }
@@ -835,6 +860,9 @@ export const apiClient = {
       skipUnauthRedirect: true,
       mockHandler: () => ({ status: 201, data: localFallback }),
     });
+    if (!isAuthContextCurrent(startKey)) {
+      return null;
+    }
 
     if (isLiveMode && !res.ok) {
       if (optimisticItem) {
@@ -917,13 +945,14 @@ export const apiClient = {
         String(newItem.title || "").startsWith("โพสต์ใหม่จาก "));
     if (needsBackgroundEnrich) {
       Promise.resolve()
-        .then(() => this.refreshItemPreview(newItem.id, { silent: true }))
+        .then(() => (isAuthContextCurrent(startKey) ? this.refreshItemPreview(newItem.id, { silent: true }) : null))
         .catch(() => {});
     }
     return newItem;
   },
 
   async patchLink(itemId, updates) {
+    const startKey = getAuthContextKey();
     const item = getLinkById(itemId);
     if (!item) return null;
     const prevSnapshot = { ...item, tags: Array.isArray(item.tags) ? [...item.tags] : [] };
@@ -967,6 +996,9 @@ export const apiClient = {
       skipUnauthRedirect: true,
       mockHandler: () => ({ status: 200, data: item }),
     });
+    if (!isAuthContextCurrent(startKey)) {
+      return null;
+    }
     if (store.state.api.mode === "live" && !res.ok) {
       Object.assign(item, prevSnapshot);
       store.showToast(res.error || "อัปเดตรายการไม่สำเร็จ");
@@ -981,6 +1013,7 @@ export const apiClient = {
   },
 
   async refreshItemPreview(itemId, { silent = false } = {}) {
+    const startKey = getAuthContextKey();
     const item = getLinkById(itemId);
     if (!item) return { ok: false, status: 404, error: "ไม่พบรายการ" };
     const res = await dispatchRequest({
@@ -1006,6 +1039,9 @@ export const apiClient = {
         },
       }),
     });
+    if (!isAuthContextCurrent(startKey)) {
+      return staleAuthResult();
+    }
     if (!res.ok) {
       if (!silent) store.showToast(res.error || "รีเฟรชพรีวิวลิงก์ไม่สำเร็จ");
       return res;
@@ -1031,6 +1067,7 @@ export const apiClient = {
   },
 
   async deleteLink(itemId) {
+    const startKey = getAuthContextKey();
     const idx = store.state.data.links.findIndex((l) => l.id === itemId);
     if (idx === -1) return false;
     const [removed] = store.state.data.links.splice(idx, 1);
@@ -1045,6 +1082,9 @@ export const apiClient = {
       skipUnauthRedirect: true,
       mockHandler: () => ({ status: 200, data: { deleted: true, id: itemId } }),
     });
+    if (!isAuthContextCurrent(startKey)) {
+      return false;
+    }
     if (store.state.api.mode === "live" && !res.ok) {
       store.state.data.links.splice(idx, 0, removed);
       if (folder) folder.baseExternalCount = (folder.baseExternalCount || 0) + 1;
@@ -1060,6 +1100,7 @@ export const apiClient = {
   },
 
   async saveFolder({ folderId = null, name, emoji = "📁", cover }) {
+    const startKey = getAuthContextKey();
     const cleanName = String(name || "").trim() || "โฟลเดอร์ใหม่";
     const cleanEmoji = emoji || "📁";
     if (folderId) {
@@ -1078,6 +1119,9 @@ export const apiClient = {
         skipUnauthRedirect: true,
         mockHandler: () => ({ status: 200, data: folder }),
       });
+      if (!isAuthContextCurrent(startKey)) {
+        return null;
+      }
       if (store.state.api.mode === "live" && !res.ok) {
         Object.assign(folder, prev);
         store.showToast(res.error || "แก้ไขโฟลเดอร์ไม่สำเร็จ");
@@ -1115,6 +1159,9 @@ export const apiClient = {
       skipUnauthRedirect: true,
       mockHandler: () => ({ status: 201, data: fallbackFolder }),
     });
+    if (!isAuthContextCurrent(startKey)) {
+      return null;
+    }
     if (store.state.api.mode === "live" && !res.ok) {
       store.showToast(res.error || "สร้างโฟลเดอร์ไม่สำเร็จ");
       return null;
@@ -1129,6 +1176,7 @@ export const apiClient = {
   },
 
   async deleteFolder(folderId) {
+    const startKey = getAuthContextKey();
     const idx = store.state.data.folders.findIndex((f) => f.id === folderId);
     if (idx === -1) return { ok: false, error: "ไม่พบโฟลเดอร์ที่ต้องการลบ" };
     const [removed] = store.state.data.folders.splice(idx, 1);
@@ -1151,6 +1199,9 @@ export const apiClient = {
       skipUnauthRedirect: true,
       mockHandler: () => ({ status: 200, data: { deleted: true, id: folderId } }),
     });
+    if (!isAuthContextCurrent(startKey)) {
+      return staleAuthResult();
+    }
     if (store.state.api.mode === "live" && !res.ok) {
       store.state.data.folders.splice(idx, 0, removed);
       store.state.data.links.forEach((l) => {
@@ -1560,6 +1611,10 @@ export const apiClient = {
   },
 
   async applyRealtimeDelta(syncMeta = {}) {
+    if (!store.state.data.user?.isAuthenticated) {
+      return staleAuthResult();
+    }
+    const startKey = getAuthContextKey();
     const deltas = Array.isArray(syncMeta?.deltas) ? syncMeta.deltas : [];
     const forceFullSync = Boolean(syncMeta?.forceFullSync) || deltas.length === 0;
     if (!forceFullSync) {
@@ -1605,6 +1660,9 @@ export const apiClient = {
         }
         return { ok: true, mode: "delta" };
       }
+    }
+    if (!store.state.data.user?.isAuthenticated || !isAuthContextCurrent(startKey)) {
+      return staleAuthResult();
     }
     return this.hydrateWorkspace();
   },
@@ -2110,6 +2168,7 @@ export const apiClient = {
   },
 
   async deleteAccount() {
+    const startKey = getAuthContextKey();
     const res = await dispatchRequest({
       method: "DELETE",
       path: "/api/auth/me",
@@ -2117,7 +2176,8 @@ export const apiClient = {
       skipUnauthRedirect: true,
       mockHandler: () => ({ status: 200, data: { deleted: true } }),
     });
-    if (res.ok) {
+    if (res.ok && isAuthContextCurrent(startKey)) {
+      stopRealtimeSync();
       if (typeof store.clearSession === "function") {
         store.clearSession({ clearWorkspace: true });
       }
@@ -2233,7 +2293,8 @@ export const apiClient = {
     const capturedToken = store.state.api.bearerToken?.trim() || "";
     const authOverride = capturedToken ? { Authorization: `Bearer ${capturedToken}` } : {};
 
-    // Clear UI session immediately so slow cloud cold-starts never freeze the logout modal
+    // Clear UI session and stop realtime socket/channel immediately so logout never leaks stale syncs
+    stopRealtimeSync();
     store.clearSession({ redirectToLogin: true });
 
     const remoteTasks = [];

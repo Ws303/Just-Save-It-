@@ -219,23 +219,59 @@ export async function loadSession(): Promise<StoredSession | null> {
   return null;
 }
 
+const B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function decodeBase64Pure(b64: string): string {
+  let out = "";
+  const clean = String(b64 || "").replace(/=+$/, "");
+  for (let i = 0; i < clean.length; i += 4) {
+    const c1 = B64_CHARS.indexOf(clean[i]);
+    const c2 = B64_CHARS.indexOf(clean[i + 1]);
+    if (c1 < 0 || c2 < 0) break;
+    const c3 = i + 2 < clean.length ? B64_CHARS.indexOf(clean[i + 2]) : -1;
+    const c4 = i + 3 < clean.length ? B64_CHARS.indexOf(clean[i + 3]) : -1;
+    const n = (c1 << 18) | (c2 << 12) | ((c3 >= 0 ? c3 : 0) << 6) | (c4 >= 0 ? c4 : 0);
+    out += String.fromCharCode((n >> 16) & 255);
+    if (c3 >= 0) out += String.fromCharCode((n >> 8) & 255);
+    if (c4 >= 0) out += String.fromCharCode(n & 255);
+  }
+  return out;
+}
+
+export function resolveSessionUserId(session: StoredSession | null | undefined): string {
+  const direct = String(session?.user?.id || "").trim();
+  if (direct) return direct;
+  const token = String(session?.access_token || "").trim();
+  const parts = token.split(".");
+  if (parts.length !== 3 || !parts[1]) return "";
+  try {
+    let b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    const raw = typeof globalThis.atob === "function" ? globalThis.atob(b64) : decodeBase64Pure(b64);
+    const parsed = JSON.parse(raw) as { sub?: unknown };
+    return String(parsed?.sub || "").trim();
+  } catch {
+    return "";
+  }
+}
+
 export async function saveSession(session: StoredSession): Promise<void> {
   const prev = await loadSession().catch(() => null);
-  const prevUid = String(prev?.user?.id || _activeUserId || "").trim();
-  const nextUid = String(session.user?.id || "").trim();
+  const prevUid = resolveSessionUserId(prev) || _activeUserId;
+  const prevHadSession = Boolean(prev?.access_token || prev?.refresh_token || prevUid);
+  const nextUid = resolveSessionUserId(session);
   const fallbackBackend = await getStorageBackend();
 
-  if (prevUid && nextUid && prevUid !== nextUid) {
+  if (
+    (prevHadSession && (!nextUid || nextUid !== prevUid)) ||
+    (!prevUid && nextUid && _activeUserId !== nextUid)
+  ) {
     _authGeneration += 1;
     _memWorkspaceCache = null;
     await fallbackBackend.removeItem(KEYS.cache);
     await fallbackBackend.removeItem(KEYS.offlineQueue);
-  } else if (!prevUid && nextUid && _activeUserId !== nextUid) {
-    _authGeneration += 1;
   }
-  if (nextUid) {
-    _activeUserId = nextUid;
-  }
+  _activeUserId = nextUid;
 
   const secureBackend = await getSecureSessionBackend();
   await secureBackend.setItem(KEYS.session, JSON.stringify(session));
@@ -299,7 +335,7 @@ export async function loadOfflineQueue(expectedUserId?: string): Promise<QueuedL
   let uid = String(expectedUserId ?? "").trim();
   if (expectedUserId === undefined) {
     const session = await loadSession().catch(() => null);
-    uid = String(session?.user?.id || _activeUserId || "").trim();
+    uid = resolveSessionUserId(session) || _activeUserId;
   }
   if (!uid) {
     return rows.filter((item) => !item?.user_id);
@@ -314,9 +350,16 @@ export async function setOfflineQueue(queue: QueuedLinkPayload[]): Promise<void>
 export async function enqueueOfflineItem(
   payload: Omit<QueuedLinkPayload, "client_id" | "queued_at"> & { client_id?: string; queued_at?: string },
 ): Promise<QueuedLinkPayload[]> {
+  const startGen = _authGeneration;
   const session = await loadSession().catch(() => null);
-  const uid = String(payload.user_id ?? session?.user?.id ?? _activeUserId ?? "").trim();
+  if (_authGeneration !== startGen) {
+    return [];
+  }
+  const uid = String(payload.user_id ?? (resolveSessionUserId(session) || _activeUserId)).trim();
   const allRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
+  if (_authGeneration !== startGen) {
+    return [];
+  }
   const safeAll = Array.isArray(allRows) ? allRows : [];
   const foreignRows = uid ? safeAll.filter((item) => Boolean(item?.user_id) && String(item.user_id).trim() !== uid) : [];
   const ownCurrent = await loadOfflineQueue(uid);
@@ -342,23 +385,30 @@ export function classifyQueueFlushStatus(httpStatus: number): "ok" | "retry" | "
   return "retry";
 }
 
+function getQueueEntryKey(entry: Partial<QueuedLinkPayload>): string {
+  return String(entry?.client_id || `${entry?.user_id || ""}::${entry?.url || ""}::${entry?.queued_at || ""}`);
+}
+
 export async function flushOfflineQueueWithSender(
   sender: (item: QueuedLinkPayload) => Promise<OfflineFlushOutcome>,
 ): Promise<{ flushed: number; remaining: number; dropped: number; failed: QueuedLinkPayload[] }> {
+  const startGen = _authGeneration;
   const session = await loadSession().catch(() => null);
-  const currentUid = String(session?.user?.id || "").trim();
+  const currentUid = resolveSessionUserId(session) || _activeUserId;
   const allRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
   const safeAll = Array.isArray(allRows) ? allRows : [];
   if (!safeAll.length) return { flushed: 0, remaining: 0, dropped: 0, failed: [] };
 
   const foreignRemaining: QueuedLinkPayload[] = [];
   const queue: QueuedLinkPayload[] = [];
+  const removedKeys = new Set<string>();
   for (const entry of safeAll) {
     const entryUid = String(entry?.user_id || "").trim();
     if (!currentUid) {
       if (!entryUid) queue.push(entry);
       else foreignRemaining.push(entry);
     } else if (!entryUid) {
+      removedKeys.add(getQueueEntryKey(entry));
       continue; // Drop legacy unstamped entries when authenticated
     } else if (entryUid !== currentUid) {
       foreignRemaining.push(entry);
@@ -368,8 +418,10 @@ export async function flushOfflineQueueWithSender(
   }
 
   if (!queue.length) {
-    if (foreignRemaining.length !== safeAll.length) {
-      await setOfflineQueue(foreignRemaining);
+    if (foreignRemaining.length !== safeAll.length && _authGeneration === startGen) {
+      const latestRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
+      const safeLatest = Array.isArray(latestRows) ? latestRows : [];
+      await setOfflineQueue(safeLatest.filter((item) => !removedKeys.has(getQueueEntryKey(item))));
     }
     return { flushed: 0, remaining: 0, dropped: 0, failed: [] };
   }
@@ -377,13 +429,20 @@ export async function flushOfflineQueueWithSender(
   const remaining: QueuedLinkPayload[] = [];
   let flushed = 0;
   let dropped = 0;
-  for (const entry of queue) {
+  for (let i = 0; i < queue.length; i += 1) {
+    const entry = queue[i];
+    if (_authGeneration !== startGen) {
+      remaining.push(...queue.slice(i));
+      break;
+    }
     try {
       const outcome = await sender(entry);
       if (outcome === true || outcome === "ok") {
         flushed += 1;
+        removedKeys.add(getQueueEntryKey(entry));
       } else if (outcome === "drop") {
         dropped += 1;
+        removedKeys.add(getQueueEntryKey(entry));
       } else {
         remaining.push(entry);
       }
@@ -391,7 +450,17 @@ export async function flushOfflineQueueWithSender(
       remaining.push(entry);
     }
   }
-  await setOfflineQueue([...remaining, ...foreignRemaining]);
+  if (_authGeneration !== startGen) {
+    return { flushed, remaining: remaining.length, dropped, failed: remaining };
+  }
+  const latestRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
+  const safeLatest = Array.isArray(latestRows) ? latestRows : [];
+  const nextQueue = safeLatest.filter((item) => {
+    const itemUid = String(item?.user_id || "").trim();
+    if (currentUid && !itemUid) return false;
+    return !removedKeys.has(getQueueEntryKey(item));
+  });
+  await setOfflineQueue(nextQueue);
   return { flushed, remaining: remaining.length, dropped, failed: remaining };
 }
 
@@ -401,7 +470,7 @@ export function getMemoryCachedWorkspace(): CachedWorkspace | null {
 
 export async function loadCachedWorkspace(): Promise<CachedWorkspace> {
   const session = await loadSession().catch(() => null);
-  const currentUid = String(session?.user?.id || "").trim();
+  const currentUid = resolveSessionUserId(session) || _activeUserId;
   const empty: CachedWorkspace = {
     user_id: currentUid || undefined,
     items: [],
@@ -409,9 +478,13 @@ export async function loadCachedWorkspace(): Promise<CachedWorkspace> {
     reminders: [],
     updated_at: "",
   };
+  if (!currentUid) {
+    _memWorkspaceCache = null;
+    return empty;
+  }
   if (_memWorkspaceCache) {
     const cacheUid = String(_memWorkspaceCache.user_id || "").trim();
-    if (currentUid && (!cacheUid || cacheUid !== currentUid)) {
+    if (!cacheUid || cacheUid !== currentUid) {
       _memWorkspaceCache = null;
     } else {
       return _memWorkspaceCache;
@@ -419,7 +492,7 @@ export async function loadCachedWorkspace(): Promise<CachedWorkspace> {
   }
   const data = await readJson<CachedWorkspace>(KEYS.cache, empty);
   const dataUid = String(data.user_id || "").trim();
-  if (currentUid && (!dataUid || dataUid !== currentUid)) {
+  if (!dataUid || dataUid !== currentUid) {
     return empty;
   }
   if (data.updated_at || data.items.length > 0 || data.folders.length > 0) {
@@ -429,8 +502,12 @@ export async function loadCachedWorkspace(): Promise<CachedWorkspace> {
 }
 
 export async function saveCachedWorkspace(data: Omit<CachedWorkspace, "updated_at">): Promise<void> {
+  const startGen = _authGeneration;
   const session = await loadSession().catch(() => null);
-  const currentUid = String(data.user_id ?? session?.user?.id ?? _activeUserId ?? "").trim();
+  if (_authGeneration !== startGen) {
+    return;
+  }
+  const currentUid = String(data.user_id ?? (resolveSessionUserId(session) || _activeUserId)).trim();
   const stamped: CachedWorkspace = {
     ...data,
     user_id: currentUid || undefined,

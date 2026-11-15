@@ -11,6 +11,7 @@ import {
   peekPkceVerifier,
   recordAuthDebugEvent,
   removeCachedLinkItem,
+  resolveSessionUserId,
   saveCachedWorkspace,
   savePkceVerifier,
   saveSession,
@@ -536,7 +537,11 @@ export async function apiFetch<T = JsonRecord>(
   options: { method?: string; body?: unknown; headers?: Record<string, string>; skipRetry?: boolean } = {},
 ): Promise<ApiResult<T>> {
   const method = options.method || "GET";
+  const startGen = getAuthGeneration();
   const session = await loadSession();
+  if (getAuthGeneration() !== startGen) {
+    return { ok: false, status: 401, data: null, error: "Session changed" };
+  }
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers || {}),
@@ -551,9 +556,15 @@ export async function apiFetch<T = JsonRecord>(
       headers,
       body: options.body !== undefined && method !== "GET" ? JSON.stringify(options.body) : undefined,
     });
+    if (getAuthGeneration() !== startGen) {
+      return { ok: false, status: 401, data: null, error: "Session changed" };
+    }
 
     if (resp.status === 401 && !options.skipRetry && session?.refresh_token) {
       const okRefresh = await refreshSession();
+      if (getAuthGeneration() !== startGen) {
+        return { ok: false, status: 401, data: null, error: "Session changed" };
+      }
       if (okRefresh) {
         return apiFetch<T>(path, { ...options, skipRetry: true });
       }
@@ -643,14 +654,7 @@ export async function fetchWorkspace(): Promise<WorkspacePayload> {
       return emptyPayload;
     }
     if (!session?.access_token) {
-      const cached = await loadCachedWorkspace();
-      return {
-        me: null,
-        items: cached.items,
-        folders: cached.folders,
-        reminders: cached.reminders,
-        offline: false,
-      };
+      return emptyPayload;
     }
 
     const wsRes = await apiFetch<{
@@ -672,7 +676,10 @@ export async function fetchWorkspace(): Promise<WorkspacePayload> {
       const folders = Array.isArray(wsRes.data.folders) ? wsRes.data.folders : [];
       const reminders = Array.isArray(wsRes.data.reminders) ? wsRes.data.reminders : [];
       await saveCachedWorkspace({
-        user_id: session.user?.id || undefined,
+        user_id:
+          resolveSessionUserId(session) ||
+          (typeof wsRes.data.id === "string" ? wsRes.data.id.trim() : "") ||
+          undefined,
         items: paginated.items,
         folders,
         reminders,
@@ -729,7 +736,10 @@ export async function fetchWorkspace(): Promise<WorkspacePayload> {
     const reminders = Array.isArray(remRes.data?.reminders) ? remRes.data.reminders : [];
 
     await saveCachedWorkspace({
-      user_id: session.user?.id || undefined,
+      user_id:
+        resolveSessionUserId(session) ||
+        (meRes.ok && typeof meRes.data?.id === "string" ? meRes.data.id.trim() : "") ||
+        undefined,
       items: paginated.items,
       folders,
       reminders,

@@ -23,6 +23,40 @@
   };
   const memoryStorage = {};
   let _refreshInFlightPromise = null;
+  let _refreshInFlightToken = "";
+  let _sessionGeneration = 0;
+
+  const B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  function decodeBase64Pure(b64) {
+    let out = "";
+    const clean = String(b64 || "").replace(/=+$/, "");
+    for (let i = 0; i < clean.length; i += 4) {
+      const c1 = B64_CHARS.indexOf(clean[i]);
+      const c2 = B64_CHARS.indexOf(clean[i + 1]);
+      if (c1 < 0 || c2 < 0) break;
+      const c3 = i + 2 < clean.length ? B64_CHARS.indexOf(clean[i + 2]) : -1;
+      const c4 = i + 3 < clean.length ? B64_CHARS.indexOf(clean[i + 3]) : -1;
+      const n = (c1 << 18) | (c2 << 12) | ((c3 >= 0 ? c3 : 0) << 6) | (c4 >= 0 ? c4 : 0);
+      out += String.fromCharCode((n >> 16) & 255);
+      if (c3 >= 0) out += String.fromCharCode((n >> 8) & 255);
+      if (c4 >= 0) out += String.fromCharCode(n & 255);
+    }
+    return out;
+  }
+
+  function parseJwtSub(token) {
+    try {
+      const parts = String(token || "").split(".");
+      if (parts.length !== 3 || !parts[1]) return "";
+      let b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      while (b64.length % 4) b64 += "=";
+      const raw = typeof atob === "function" ? atob(b64) : decodeBase64Pure(b64);
+      const parsed = JSON.parse(raw);
+      return String((parsed && parsed.sub) || "").trim();
+    } catch (_err) {
+      return "";
+    }
+  }
 
   function isLocalBackendUrl(rawUrl) {
     try {
@@ -106,10 +140,16 @@
   }
 
   async function saveAuthSession(authPayload) {
-    const prev = await getStorage([STORAGE_KEYS.USER]);
-    const prevUid = String((prev[STORAGE_KEYS.USER] && prev[STORAGE_KEYS.USER].id) || "").trim();
-    const nextUid = String((authPayload && authPayload.user && authPayload.user.id) || "").trim();
-    if (prevUid && nextUid && prevUid !== nextUid) {
+    const prev = await getStorage([STORAGE_KEYS.USER, STORAGE_KEYS.ACCESS_TOKEN, STORAGE_KEYS.REFRESH_TOKEN]);
+    const prevUid = String(
+      (prev[STORAGE_KEYS.USER] && prev[STORAGE_KEYS.USER].id) || parseJwtSub(prev[STORAGE_KEYS.ACCESS_TOKEN]) || ""
+    ).trim();
+    const prevHadSession = Boolean(prevUid || prev[STORAGE_KEYS.ACCESS_TOKEN] || prev[STORAGE_KEYS.REFRESH_TOKEN]);
+    const nextUid = String(
+      (authPayload && authPayload.user && authPayload.user.id) || parseJwtSub(authPayload && authPayload.access_token) || ""
+    ).trim();
+    if (prevHadSession && (!nextUid || !prevUid || prevUid !== nextUid)) {
+      _sessionGeneration += 1;
       await removeStorage([
         STORAGE_KEYS.WORKSPACE_CACHE,
         STORAGE_KEYS.OFFLINE_QUEUE,
@@ -117,13 +157,16 @@
       ]);
     }
     await setStorage({
-      [STORAGE_KEYS.ACCESS_TOKEN]: authPayload.access_token || "",
-      [STORAGE_KEYS.REFRESH_TOKEN]: authPayload.refresh_token || "",
-      [STORAGE_KEYS.USER]: authPayload.user || null,
+      [STORAGE_KEYS.ACCESS_TOKEN]: (authPayload && authPayload.access_token) || "",
+      [STORAGE_KEYS.REFRESH_TOKEN]: (authPayload && authPayload.refresh_token) || "",
+      [STORAGE_KEYS.USER]: (authPayload && authPayload.user) || null,
     });
   }
 
   async function clearAuthSession() {
+    _sessionGeneration += 1;
+    _refreshInFlightPromise = null;
+    _refreshInFlightToken = "";
     await removeStorage([
       STORAGE_KEYS.ACCESS_TOKEN,
       STORAGE_KEYS.REFRESH_TOKEN,
@@ -135,16 +178,19 @@
   }
 
   async function getWorkspaceCache(expectedUserId = "") {
-    const res = await getStorage([STORAGE_KEYS.WORKSPACE_CACHE, STORAGE_KEYS.USER]);
+    const empty = { userId: "", folders: [], tags: [], recentItems: [], user: null };
+    const res = await getStorage([STORAGE_KEYS.WORKSPACE_CACHE, STORAGE_KEYS.USER, STORAGE_KEYS.ACCESS_TOKEN]);
     const cache = res[STORAGE_KEYS.WORKSPACE_CACHE];
     const currentUser = res[STORAGE_KEYS.USER];
-    const uid = String(expectedUserId || (currentUser && currentUser.id) || "").trim();
-    if (!cache || typeof cache !== "object") {
-      return { userId: "", folders: [], tags: [], recentItems: [], user: null };
+    const uid = String(
+      expectedUserId || (currentUser && currentUser.id) || parseJwtSub(res[STORAGE_KEYS.ACCESS_TOKEN]) || ""
+    ).trim();
+    if (!uid || !cache || typeof cache !== "object") {
+      return empty;
     }
     const cacheUid = String(cache.userId || (cache.user && cache.user.id) || "").trim();
-    if (uid && (!cacheUid || cacheUid !== uid)) {
-      return { userId: "", folders: [], tags: [], recentItems: [], user: null };
+    if (!cacheUid || cacheUid !== uid) {
+      return empty;
     }
     return {
       userId: cacheUid,
@@ -156,10 +202,18 @@
   }
 
   async function setWorkspaceCache(cache) {
-    const res = await getStorage([STORAGE_KEYS.USER]);
+    const startGen = _sessionGeneration;
+    const res = await getStorage([STORAGE_KEYS.USER, STORAGE_KEYS.ACCESS_TOKEN]);
+    if (_sessionGeneration !== startGen) return;
     const currentUser = res[STORAGE_KEYS.USER];
     const resolvedUser = (cache && cache.user) || currentUser || null;
-    const uid = String((resolvedUser && resolvedUser.id) || (currentUser && currentUser.id) || "").trim();
+    const uid = String(
+      (resolvedUser && resolvedUser.id) ||
+        (currentUser && currentUser.id) ||
+        parseJwtSub(res[STORAGE_KEYS.ACCESS_TOKEN]) ||
+        ""
+    ).trim();
+    if (!uid) return;
     await setStorage({
       [STORAGE_KEYS.WORKSPACE_CACHE]: {
         userId: uid,
@@ -190,10 +244,11 @@
 
   async function tryRefreshAccessToken(backendUrl, refreshToken) {
     if (!refreshToken) return null;
-    if (_refreshInFlightPromise) {
+    if (_refreshInFlightPromise && _refreshInFlightToken === refreshToken) {
       return _refreshInFlightPromise;
     }
-    _refreshInFlightPromise = (async () => {
+    const startGen = _sessionGeneration;
+    const pending = (async () => {
       try {
         const resp = await fetch(`${backendUrl}/api/auth/refresh`, {
           method: "POST",
@@ -202,23 +257,43 @@
         });
         if (!resp.ok) return null;
         const data = await parseJsonSafe(resp);
-        if (data && data.access_token) {
-          await saveAuthSession(data);
-          return data.access_token;
+        if (!data || !data.access_token) return null;
+        const current = await getSessionState();
+        if (_sessionGeneration !== startGen || current.refreshToken !== refreshToken) {
+          return null;
         }
+        const curUid = String(
+          (current.user && current.user.id) || parseJwtSub(current.accessToken) || ""
+        ).trim();
+        const nextUid = String(
+          (data.user && data.user.id) || parseJwtSub(data.access_token) || ""
+        ).trim();
+        if (curUid && nextUid && curUid !== nextUid) {
+          return null;
+        }
+        await saveAuthSession({
+          ...data,
+          user: data.user !== undefined ? data.user : current.user,
+        });
+        return data.access_token;
       } catch (_err) {
         return null;
       }
-      return null;
     })();
+    _refreshInFlightPromise = pending;
+    _refreshInFlightToken = refreshToken;
     try {
-      return await _refreshInFlightPromise;
+      return await pending;
     } finally {
-      _refreshInFlightPromise = null;
+      if (_refreshInFlightPromise === pending) {
+        _refreshInFlightPromise = null;
+        _refreshInFlightToken = "";
+      }
     }
   }
 
   async function apiRequest(path, options = {}) {
+    const startGen = _sessionGeneration;
     const session = await getSessionState();
     const backendUrl = normalizeBackendUrl(options.backendUrl || session.backendUrl);
     const headers = {
@@ -239,18 +314,27 @@
 
     let response = await fetch(`${backendUrl}${path}`, fetchOpts);
 
-    if (response.status === 401 && requireAuth && session.refreshToken) {
-      const nextToken = await tryRefreshAccessToken(backendUrl, session.refreshToken);
-      if (nextToken) {
-        fetchOpts.headers = { ...headers, Authorization: `Bearer ${nextToken}` };
-        response = await fetch(`${backendUrl}${path}`, fetchOpts);
+    if (response.status === 401 && requireAuth && session.refreshToken && _sessionGeneration === startGen) {
+      const currentBeforeRefresh = await getSessionState();
+      if (_sessionGeneration === startGen && currentBeforeRefresh.refreshToken === session.refreshToken) {
+        const nextToken = await tryRefreshAccessToken(backendUrl, session.refreshToken);
+        if (nextToken && _sessionGeneration === startGen) {
+          const currentAfterRefresh = await getSessionState();
+          if (currentAfterRefresh.accessToken === nextToken) {
+            fetchOpts.headers = { ...headers, Authorization: `Bearer ${nextToken}` };
+            response = await fetch(`${backendUrl}${path}`, fetchOpts);
+          }
+        }
       }
     }
 
     const payload = await parseJsonSafe(response);
     if (!response.ok) {
-      if (response.status === 401 && requireAuth) {
-        await clearAuthSession();
+      if (response.status === 401 && requireAuth && _sessionGeneration === startGen) {
+        const latestSession = await getSessionState();
+        if (!session.accessToken || latestSession.accessToken === session.accessToken) {
+          await clearAuthSession();
+        }
       }
       const message =
         (payload && (payload.detail || payload.message)) ||
@@ -329,9 +413,14 @@
   }
 
   async function getOfflineQueue(expectedUserId = "") {
-    const res = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE, STORAGE_KEYS.USER]);
+    const res = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE, STORAGE_KEYS.USER, STORAGE_KEYS.ACCESS_TOKEN]);
     const raw = Array.isArray(res[STORAGE_KEYS.OFFLINE_QUEUE]) ? res[STORAGE_KEYS.OFFLINE_QUEUE] : [];
-    const uid = String(expectedUserId || (res[STORAGE_KEYS.USER] && res[STORAGE_KEYS.USER].id) || "").trim();
+    const uid = String(
+      expectedUserId ||
+        (res[STORAGE_KEYS.USER] && res[STORAGE_KEYS.USER].id) ||
+        parseJwtSub(res[STORAGE_KEYS.ACCESS_TOKEN]) ||
+        ""
+    ).trim();
     if (!uid) {
       return raw.filter((entry) => !entry?.user_id);
     }
@@ -340,11 +429,21 @@
 
   async function enqueueOfflineSave(payload, reason = "offline") {
     if (!payload || !isSaveableHttpUrl(payload.url)) return await getOfflineQueue();
-    const res = await getStorage([STORAGE_KEYS.USER]);
-    const uid = String((res[STORAGE_KEYS.USER] && res[STORAGE_KEYS.USER].id) || "").trim();
-    const current = await getOfflineQueue(uid);
-    const deduped = current.filter((entry) => entry?.payload?.url !== payload.url);
-    const next = [
+    const startGen = _sessionGeneration;
+    const res = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE, STORAGE_KEYS.USER, STORAGE_KEYS.ACCESS_TOKEN]);
+    if (_sessionGeneration !== startGen) return [];
+    const uid = String(
+      (res[STORAGE_KEYS.USER] && res[STORAGE_KEYS.USER].id) || parseJwtSub(res[STORAGE_KEYS.ACCESS_TOKEN]) || ""
+    ).trim();
+    const allRaw = Array.isArray(res[STORAGE_KEYS.OFFLINE_QUEUE]) ? res[STORAGE_KEYS.OFFLINE_QUEUE] : [];
+    const ownCurrent = allRaw.filter((entry) =>
+      uid ? Boolean(entry?.user_id) && String(entry.user_id).trim() === uid : !entry?.user_id
+    );
+    const foreignEntries = allRaw.filter((entry) =>
+      uid ? Boolean(entry?.user_id) && String(entry.user_id).trim() !== uid : Boolean(entry?.user_id)
+    );
+    const deduped = ownCurrent.filter((entry) => entry?.payload?.url !== payload.url);
+    const nextOwn = [
       {
         id: `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         user_id: uid,
@@ -354,13 +453,16 @@
       },
       ...deduped,
     ].slice(0, 50);
-    await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: next });
-    return next;
+    await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: [...nextOwn, ...foreignEntries] });
+    return nextOwn;
   }
 
   async function flushOfflineQueue(saveFn) {
+    const startGen = _sessionGeneration;
     const session = await getSessionState();
-    const currentUid = String((session && session.user && session.user.id) || "").trim();
+    const currentUid = String(
+      (session && session.user && session.user.id) || parseJwtSub(session && session.accessToken) || ""
+    ).trim();
     const res = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE]);
     const allQueue = Array.isArray(res[STORAGE_KEYS.OFFLINE_QUEUE]) ? res[STORAGE_KEYS.OFFLINE_QUEUE] : [];
     if (!currentUid && typeof saveFn !== "function") {
@@ -368,12 +470,14 @@
     }
     const foreignRemaining = [];
     const queue = [];
+    const removedIds = new Set();
     for (const entry of allQueue) {
       const entryUid = String(entry?.user_id || "").trim();
       if (!currentUid) {
         if (!entryUid) queue.push(entry);
         else foreignRemaining.push(entry);
       } else if (!entryUid) {
+        if (entry && entry.id) removedIds.add(String(entry.id));
         continue; // Drop legacy unstamped entries when authenticated to prevent cross-account attribution
       } else if (entryUid !== currentUid) {
         foreignRemaining.push(entry);
@@ -382,8 +486,17 @@
       }
     }
     if (!queue.length) {
-      if (foreignRemaining.length !== allQueue.length) {
-        await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: foreignRemaining });
+      if (foreignRemaining.length !== allQueue.length && _sessionGeneration === startGen) {
+        const latestRes = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE]);
+        const latestAll = Array.isArray(latestRes[STORAGE_KEYS.OFFLINE_QUEUE])
+          ? latestRes[STORAGE_KEYS.OFFLINE_QUEUE]
+          : [];
+        const pruned = latestAll.filter((entry) => {
+          const entryUid = String(entry?.user_id || "").trim();
+          if (currentUid && !entryUid) return false;
+          return !entry?.id || !removedIds.has(String(entry.id));
+        });
+        await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: pruned });
       }
       return { flushed: 0, remaining: 0, failed: 0 };
     }
@@ -397,19 +510,46 @@
     const remaining = [];
     for (let i = 0; i < queue.length; i += 1) {
       const entry = queue[i];
+      if (_sessionGeneration !== startGen) {
+        remaining.push(...queue.slice(i));
+        break;
+      }
       try {
         await sender(entry.payload);
         flushed += 1;
+        if (entry && entry.id) removedIds.add(String(entry.id));
       } catch (err) {
         if (err && typeof err.status === "number" && err.status >= 400 && err.status < 500 && err.status !== 401 && err.status !== 429) {
           failed += 1; // Permanent client validation error: drop instead of infinite retry
+          if (entry && entry.id) removedIds.add(String(entry.id));
         } else {
           remaining.push(...queue.slice(i));
           break;
         }
       }
     }
-    const nextQueue = [...foreignRemaining, ...remaining];
+    const latestSession = await getSessionState();
+    const latestUid = String(
+      (latestSession && latestSession.user && latestSession.user.id) ||
+        parseJwtSub(latestSession && latestSession.accessToken) ||
+        ""
+    ).trim();
+    const authLostOrChanged =
+      _sessionGeneration !== startGen ||
+      latestUid !== currentUid ||
+      (typeof saveFn !== "function" && currentUid && !latestSession.accessToken);
+    if (authLostOrChanged) {
+      return { flushed, remaining: remaining.length, failed };
+    }
+    const latestStorage = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE]);
+    const latestQueue = Array.isArray(latestStorage[STORAGE_KEYS.OFFLINE_QUEUE])
+      ? latestStorage[STORAGE_KEYS.OFFLINE_QUEUE]
+      : [];
+    const nextQueue = latestQueue.filter((entry) => {
+      const entryUid = String(entry?.user_id || "").trim();
+      if (currentUid && !entryUid) return false;
+      return !entry?.id || !removedIds.has(String(entry.id));
+    });
     await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: nextQueue });
     return { flushed, remaining: remaining.length, failed };
   }

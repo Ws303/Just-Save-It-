@@ -1,6 +1,7 @@
 """FastAPI router for user authentication profile, AI quota status, and MCP API tokens."""
 
 from datetime import datetime, timezone
+import asyncio
 import hashlib
 import logging
 import os
@@ -14,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from Database.client import get_db
 from Database.supabase_client import is_supabase_configured
 from Database.text_hygiene import clean_text_field
-from .auth_dep import get_current_user_id, mark_user_deleted
+from .auth_dep import _is_not_found_auth_error, get_current_user_id, mark_user_deleted
 from .dependencies import CurrentUser, get_current_user
 from .schemas import (
     AuthTokenResponse,
@@ -124,7 +125,7 @@ async def get_oauth_url_endpoint(
     redirect_to: str = Query(default="http://localhost:5173", description="Post-login redirect URL"),
 ):
     """Retrieve the OAuth redirect URL for Web/Extension authentication."""
-    return auth_service.get_oauth_url(provider=provider, redirect_to=redirect_to)
+    return await asyncio.to_thread(auth_service.get_oauth_url, provider=provider, redirect_to=redirect_to)
 
 
 @router.post(
@@ -184,11 +185,17 @@ def build_user_me_payload(db: Any, current_user: CurrentUser) -> Dict[str, Any]:
             except HTTPException:
                 raise
             except Exception as exc:
-                logger.warning("Deleted/missing user check failed via Supabase get_user: %s", exc)
-                mark_user_deleted(user_id)
+                if _is_not_found_auth_error(exc):
+                    logger.warning("Deleted/missing user confirmed via Supabase get_user: %s", exc)
+                    mark_user_deleted(user_id)
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="User account no longer exists.",
+                    ) from exc
+                logger.warning("Live user check failed transiently via Supabase get_user for %s: %s", user_id, exc)
                 raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="User account no longer exists.",
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Authentication verification temporarily unavailable.",
                 ) from exc
     profile = dict(prof_res.data[0]) if prof_res.data else _default_profile(user_id)
     profile.setdefault("preferred_summary_language", "th")

@@ -439,3 +439,309 @@ test("Frontend H2, M3 & M4: deduplicated createLink + activeLinkId reconciliatio
     saveWorkspaceCache("user-h2");
   }
 });
+
+test("Extension H-1: getWorkspaceCache fails closed when signed out, refresh aborts on account switch, and flush does not resurrect after 401/clobber concurrent enqueues", async () => {
+  const { extApi, storeMap } = loadExtensionApiWithMockChrome();
+
+  // 1) Signed-out getWorkspaceCache fails closed even if foreign cache exists
+  storeMap.set(extApi.STORAGE_KEYS.WORKSPACE_CACHE, {
+    userId: "user-secret",
+    folders: [{ id: "fs", name: "Private Folder" }],
+    recentItems: [{ id: "is", title: "Private Secret" }],
+  });
+  const guestCache = await extApi.getWorkspaceCache();
+  assert.equal(guestCache.recentItems.length, 0);
+  assert.equal(guestCache.folders.length, 0);
+
+  // 2) Concurrent enqueueOfflineSave during slow flush is preserved, and 401 + clearAuthSession does not resurrect queue
+  await extApi.saveAuthSession({
+    access_token: "tok-a",
+    refresh_token: "ref-a",
+    user: { id: "user-a", email: "a@example.com" },
+  });
+  await extApi.enqueueOfflineSave({ url: "https://a.example.com/item-1", title: "Item 1" });
+
+  let resolveFlushSend;
+  const firstFlushPromise = extApi.flushOfflineQueue(async () => {
+    await new Promise((r) => {
+      resolveFlushSend = r;
+    });
+    return { id: "ok-1" };
+  });
+  // Wait microtasks so sender() is suspended
+  await new Promise((r) => setTimeout(r, 15));
+  await extApi.enqueueOfflineSave({ url: "https://a.example.com/item-2", title: "Concurrent Item 2" });
+  resolveFlushSend();
+  const res1 = await firstFlushPromise;
+  assert.equal(res1.flushed, 1);
+  const queueAfterConcurrent = await extApi.getOfflineQueue("user-a");
+  assert.equal(queueAfterConcurrent.length, 1);
+  assert.equal(queueAfterConcurrent[0].payload.url, "https://a.example.com/item-2");
+
+  // 3) Default apiRequest hitting 401 wipes session & queue via clearAuthSession -> flushOfflineQueue must NOT resurrect item-2
+  const origSandboxRes = await (async () => {
+    const storeMap2 = new Map();
+    const chromeMock = {
+      runtime: { lastError: null },
+      storage: {
+        local: {
+          get(keys, cb) {
+            const out = {};
+            const keyList = Array.isArray(keys) ? keys : typeof keys === "string" ? [keys] : Object.keys(keys || {});
+            for (const k of keyList) if (storeMap2.has(k)) out[k] = storeMap2.get(k);
+            cb(out);
+          },
+          set(values, cb) {
+            for (const [k, v] of Object.entries(values || {})) storeMap2.set(k, structuredClone(v));
+            if (cb) cb();
+          },
+          remove(keys, cb) {
+            const keyList = Array.isArray(keys) ? keys : [keys];
+            for (const k of keyList) storeMap2.delete(k);
+            if (cb) cb();
+          },
+        },
+      },
+    };
+    const apiCode = fs.readFileSync(path.join(repoRoot, "extension", "api.js"), "utf8");
+    const sandbox = {
+      globalThis: {},
+      chrome: chromeMock,
+      URL,
+      Date,
+      Math,
+      console,
+      setTimeout,
+      clearTimeout,
+      fetch: async () => mockResp(401, { detail: "expired" }),
+    };
+    sandbox.globalThis = sandbox;
+    sandbox.self = sandbox;
+    vm.runInNewContext(apiCode, sandbox, { filename: "extension/api.js" });
+    return { api: sandbox.JustSaveItApi, map: storeMap2 };
+  })();
+  await origSandboxRes.api.saveAuthSession({
+    access_token: "tok-401",
+    refresh_token: "ref-401",
+    user: { id: "user-401", email: "401@example.com" },
+  });
+  await origSandboxRes.api.enqueueOfflineSave({ url: "https://a.example.com/401-item", title: "Should Stay Purged" });
+  const flush401 = await origSandboxRes.api.flushOfflineQueue();
+  assert.equal(flush401.flushed, 0);
+  assert.equal(origSandboxRes.map.has(origSandboxRes.api.STORAGE_KEYS.OFFLINE_QUEUE), false, "401 wipe must not resurrect purged queue");
+
+  // 4) Switch account mid-refresh does NOT overwrite User B's session
+  const sandboxRefresh = (() => {
+    const storeMap3 = new Map();
+    const chromeMock = {
+      runtime: { lastError: null },
+      storage: {
+        local: {
+          get(keys, cb) {
+            const out = {};
+            const keyList = Array.isArray(keys) ? keys : typeof keys === "string" ? [keys] : Object.keys(keys || {});
+            for (const k of keyList) if (storeMap3.has(k)) out[k] = storeMap3.get(k);
+            cb(out);
+          },
+          set(values, cb) {
+            for (const [k, v] of Object.entries(values || {})) storeMap3.set(k, structuredClone(v));
+            if (cb) cb();
+          },
+          remove(keys, cb) {
+            const keyList = Array.isArray(keys) ? keys : [keys];
+            for (const k of keyList) storeMap3.delete(k);
+            if (cb) cb();
+          },
+        },
+      },
+    };
+    let resolveRefreshFetch;
+    const apiCode = fs.readFileSync(path.join(repoRoot, "extension", "api.js"), "utf8");
+    const sandbox = {
+      globalThis: {},
+      chrome: chromeMock,
+      URL,
+      Date,
+      Math,
+      console,
+      setTimeout,
+      clearTimeout,
+      fetch: async (url) => {
+        if (String(url).includes("/api/auth/refresh")) {
+          return new Promise((r) => {
+            resolveRefreshFetch = r;
+          });
+        }
+        return mockResp(401, { detail: "expired" });
+      },
+    };
+    sandbox.globalThis = sandbox;
+    sandbox.self = sandbox;
+    vm.runInNewContext(apiCode, sandbox, { filename: "extension/api.js" });
+    return { api: sandbox.JustSaveItApi, resolveRefresh: () => resolveRefreshFetch };
+  })();
+  await sandboxRefresh.api.saveAuthSession({
+    access_token: "tok-a",
+    refresh_token: "ref-a",
+    user: { id: "user-a" },
+  });
+  const reqPromise = sandboxRefresh.api.apiRequest("/api/items").catch((e) => e);
+  await new Promise((r) => setTimeout(r, 20));
+  await sandboxRefresh.api.saveAuthSession({
+    access_token: "tok-b",
+    refresh_token: "ref-b",
+    user: { id: "user-b" },
+  });
+  sandboxRefresh.resolveRefresh()(
+    mockResp(200, { access_token: "stale-tok-a2", refresh_token: "stale-ref-a2", user: { id: "user-a" } })
+  );
+  await reqPromise;
+  const activeSession = await sandboxRefresh.api.getSessionState();
+  assert.equal(activeSession.accessToken, "tok-b");
+  assert.equal(activeSession.user.id, "user-b");
+});
+
+test("Frontend C-1 & H-3: dispatchRequest/mutations abort across account switch & signOut/deleteAccount stop realtime sync", async () => {
+  const { api: ls, map: lsMap } = createMemoryLocalStorage();
+  const origLocalStorage = globalThis.localStorage;
+  const origFetch = globalThis.fetch;
+  const origWs = globalThis.WebSocket;
+  globalThis.localStorage = ls;
+
+  const sockets = [];
+  class FakeWs {
+    constructor(url) {
+      this.url = url;
+      this.readyState = 1;
+      this.closed = false;
+      this.listeners = new Map();
+      sockets.push(this);
+    }
+    addEventListener(type, fn) {
+      if (!this.listeners.has(type)) this.listeners.set(type, []);
+      this.listeners.get(type).push(fn);
+    }
+    send() {}
+    close() {
+      this.closed = true;
+    }
+    emit(type, payload = {}) {
+      for (const fn of this.listeners.get(type) || []) fn(payload);
+    }
+  }
+  globalThis.WebSocket = FakeWs;
+
+  try {
+    store.resetSeed();
+    store.applyAuthenticatedSession({
+      mode: "live",
+      accessToken: "jwt-a",
+      refreshToken: "ref-a",
+      user: { id: "user-a", email: "a@example.com", name: "User A" },
+    });
+    store.state.data.folders = [{ id: "fa", name: "Folder A", baseExternalCount: 0 }];
+    store.state.data.links = [{ id: "la", folderId: "fa", url: "https://a.com", title: "A Link", tags: [] }];
+    saveWorkspaceCache("user-a");
+
+    let resolveUserAPost;
+    let replayedWithB = false;
+    let refreshCalledWithB = false;
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      const auth = init?.headers?.Authorization || init?.headers?.authorization || "";
+      if (u.includes("/api/auth/refresh")) {
+        if (String(init.body || "").includes("ref-b")) refreshCalledWithB = true;
+        return mockResp(200, { access_token: "bad-replay", refresh_token: "bad-ref" });
+      }
+      if (u.endsWith("/api/items") && init.method === "POST") {
+        if (auth.includes("jwt-b")) {
+          replayedWithB = true;
+          return mockResp(201, { id: "leaked", url: "https://a.com/new" });
+        }
+        return new Promise((r) => {
+          resolveUserAPost = r;
+        });
+      }
+      return mockResp(200, {});
+    };
+
+    const pCreate = apiClient.createLink({ url: "https://a.com/new", title: "From A", folderId: "fa", skipPreview: true });
+    // User switches to User B before User A's POST responds with 401
+    store.applyAuthenticatedSession({
+      mode: "live",
+      accessToken: "jwt-b",
+      refreshToken: "ref-b",
+      user: { id: "user-b", email: "b@example.com", name: "User B" },
+    });
+    store.state.data.folders = [{ id: "fb", name: "Folder B", baseExternalCount: 0 }];
+    store.state.data.links = [{ id: "lb", folderId: "fb", url: "https://b.com", title: "B Only", tags: [] }];
+    saveWorkspaceCache("user-b");
+
+    resolveUserAPost(mockResp(401, { detail: "A expired" }));
+    const created = await pCreate;
+    assert.equal(created, null);
+    assert.equal(refreshCalledWithB, false, "Must not use User B refresh token for User A 401");
+    assert.equal(replayedWithB, false, "Must not replay User A POST under User B bearer token");
+    assert.equal(store.state.data.user.id, "user-b", "User B must remain logged in");
+    assert.deepEqual(
+      store.state.data.links.map((l) => l.id),
+      ["lb"],
+      "User B links must not be polluted by settling User A mutation"
+    );
+    const cacheB = JSON.parse(lsMap.get("sharely_workspace_cache_v1:user-b"));
+    assert.deepEqual(
+      cacheB.links.map((l) => l.id),
+      ["lb"],
+      "User B cache must not be poisoned"
+    );
+
+    // H-3: signOut stops realtime socket & applyRealtimeDelta refuses unauthenticated state
+    let syncHits = 0;
+    startRealtimeSync({
+      getSupabaseConfig: () => ({ url: "https://demo.supabase.co", anonKey: "anon" }),
+      getAccessToken: () => store.state.api.bearerToken,
+      isAuthenticated: () => Boolean(store.state.data.user?.isAuthenticated),
+      onSync: async () => {
+        syncHits += 1;
+      },
+    });
+    assert.equal(sockets.length, 1);
+    globalThis.fetch = async () => mockResp(200, { logged_out: true });
+    await apiClient.signOut();
+    assert.equal(sockets[0].closed, true, "apiClient.signOut() must close active WebSocket");
+
+    sockets[0].emit("message", {
+      data: JSON.stringify({ event: "DELETE", table: "items", old_record: { id: "lb" } }),
+    });
+    const unauthDelta = await apiClient.applyRealtimeDelta({
+      deltas: [{ table: "items", type: "DELETE", oldRecord: { id: "lb" } }],
+      forceFullSync: false,
+    });
+    assert.equal(unauthDelta.ok, false);
+    assert.equal(unauthDelta.stale, true);
+    assert.equal(syncHits, 0);
+
+    // H-3: deleteAccount also stops active WebSocket
+    store.applyAuthenticatedSession({
+      mode: "live",
+      accessToken: "jwt-c",
+      refreshToken: "ref-c",
+      user: { id: "user-c", email: "c@example.com", name: "User C" },
+    });
+    startRealtimeSync({
+      getSupabaseConfig: () => ({ url: "https://demo.supabase.co", anonKey: "anon" }),
+      getAccessToken: () => store.state.api.bearerToken,
+      isAuthenticated: () => Boolean(store.state.data.user?.isAuthenticated),
+      onSync: async () => {},
+    });
+    assert.equal(sockets.length, 2);
+    globalThis.fetch = async () => mockResp(200, { deleted: true });
+    await apiClient.deleteAccount();
+    assert.equal(sockets[1].closed, true, "apiClient.deleteAccount() must close active WebSocket");
+  } finally {
+    stopRealtimeSync();
+    globalThis.WebSocket = origWs;
+    globalThis.fetch = origFetch;
+    globalThis.localStorage = origLocalStorage;
+  }
+});

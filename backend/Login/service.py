@@ -583,7 +583,9 @@ class AuthService:
         if is_supabase_configured():
             try:
                 service_client = get_supabase_service_client()
-                resp = service_client.table("profiles").select("*").eq("id", user_id).execute()
+                resp = await asyncio.to_thread(
+                    lambda: service_client.table("profiles").select("*").eq("id", user_id).execute()
+                )
                 if resp.data and len(resp.data) > 0:
                     row = resp.data[0]
                     # Fetch user email from auth admin if needed
@@ -627,7 +629,9 @@ class AuthService:
         if is_supabase_configured():
             try:
                 service_client = get_supabase_service_client()
-                resp = service_client.table("profiles").update(updates).eq("id", user_id).execute()
+                resp = await asyncio.to_thread(
+                    lambda: service_client.table("profiles").update(updates).eq("id", user_id).execute()
+                )
                 if resp.data and len(resp.data) > 0:
                     row = resp.data[0]
                     return UserProfileResponse(
@@ -667,14 +671,16 @@ class AuthService:
         if is_supabase_configured():
             try:
                 service_client = get_supabase_service_client()
-                service_client.table("api_tokens").insert({
-                    "id": token_id,
-                    "user_id": user_id,
-                    "name": name,
-                    "token_prefix": token_prefix,
-                    "token_hash": token_hash,
-                    "created_at": created_at,
-                }).execute()
+                await asyncio.to_thread(
+                    lambda: service_client.table("api_tokens").insert({
+                        "id": token_id,
+                        "user_id": user_id,
+                        "name": name,
+                        "token_prefix": token_prefix,
+                        "token_hash": token_hash,
+                        "created_at": created_at,
+                    }).execute()
+                )
             except Exception as e:
                 logger.error("Supabase insert api_token error: %s", e)
 
@@ -708,7 +714,9 @@ class AuthService:
         if is_supabase_configured():
             try:
                 service_client = get_supabase_service_client()
-                resp = service_client.table("api_tokens").select("*").eq("user_id", user_id).is_("revoked_at", "null").order("created_at", desc=True).execute()
+                resp = await asyncio.to_thread(
+                    lambda: service_client.table("api_tokens").select("*").eq("user_id", user_id).is_("revoked_at", "null").order("created_at", desc=True).execute()
+                )
                 if resp.data:
                     return [
                         ApiTokenSummary(
@@ -759,7 +767,9 @@ class AuthService:
         if is_supabase_configured():
             try:
                 service_client = get_supabase_service_client()
-                service_client.table("api_tokens").update({"revoked_at": revoked_at}).eq("id", token_id).eq("user_id", user_id).execute()
+                await asyncio.to_thread(
+                    lambda: service_client.table("api_tokens").update({"revoked_at": revoked_at}).eq("id", token_id).eq("user_id", user_id).execute()
+                )
             except Exception as e:
                 logger.warning("Supabase revoke api_token error: %s", e)
 

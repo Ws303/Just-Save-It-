@@ -24,6 +24,7 @@ import {
   loadCachedWorkspace,
   loadOfflineQueue,
   recordAuthDebugEvent,
+  resolveSessionUserId,
   saveCachedWorkspace,
   saveSession,
   saveThemeMode,
@@ -45,6 +46,7 @@ registerHooks({
 });
 
 const {
+  apiFetch,
   buildPkceChallengePair,
   completeOAuthWithTokens,
   deleteLinkItem,
@@ -588,6 +590,137 @@ test("Cycle 2 [C5, M4, L1]: account isolation on cache/offline queue, in-flight 
     const testDir = dirname(fileURLToPath(import.meta.url));
     const itemScreenCode = readFileSync(resolve(testDir, "../../app/item/[id].tsx"), "utf8");
     assert.match(itemScreenCode, /\^https\?:\\\/\\\//i);
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+  }
+});
+
+test("Cycle 3 [C-2, H-2]: user:null OAuth isolation, guest loadCachedWorkspace fail-closed, apiFetch 401 no-replay, and flush no-resurrect/concurrent-enqueue", async () => {
+  await clearSession();
+  const origFetch = globalThis.fetch;
+
+  const makeFakeJwt = (sub) => {
+    const h = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+    const p = Buffer.from(JSON.stringify({ sub })).toString("base64url");
+    return `${h}.${p}.sig`;
+  };
+
+  try {
+    // 1) User A stores cache & offline item; User B signs in via OAuth fallback with user: null + JWT access_token
+    await saveSession({
+      access_token: makeFakeJwt("mob-user-a"),
+      refresh_token: "ref-a",
+      user: { id: "mob-user-a", email: "a@mob.test" },
+    });
+    await saveCachedWorkspace({
+      items: [{ id: "mob-secret-a", url: "https://secret-a.test", title: "Secret A" }],
+      folders: [],
+      reminders: [],
+    });
+    await enqueueOfflineItem({ url: "https://secret-a.test/q", title: "Queue A" });
+
+    assert.equal(resolveSessionUserId({ access_token: makeFakeJwt("mob-user-b"), refresh_token: "r", user: null }), "mob-user-b");
+    await saveSession({
+      access_token: makeFakeJwt("mob-user-b"),
+      refresh_token: "ref-b",
+      user: null,
+    });
+    assert.equal((await loadCachedWorkspace()).items.length, 0, "User A cache must be purged when switching to user:null JWT");
+    assert.equal((await loadOfflineQueue()).length, 0, "User A offline queue must be purged on user:null switch");
+
+    await enqueueOfflineItem({ url: "https://b.test/queued", title: "B Queue" });
+    assert.equal((await loadOfflineQueue("mob-user-b")).length, 1, "B's queue must stamp JWT sub instead of A's stale _activeUserId");
+
+    // Switching to user:null + opaque non-JWT token ALSO purges prior cache/queue & resets active owner
+    await saveSession({
+      access_token: "opaque-token-c",
+      refresh_token: "ref-c",
+      user: null,
+    });
+    assert.equal((await loadCachedWorkspace()).items.length, 0);
+    assert.equal((await loadOfflineQueue()).length, 0);
+
+    // 2) Signed-out loadCachedWorkspace fails closed even if memory or disk has stale items
+    await clearSession();
+    assert.equal((await loadCachedWorkspace()).items.length, 0);
+    const guestWs = await fetchWorkspace();
+    assert.equal(guestWs.items.length, 0);
+
+    // 3) apiFetch 401 when switching accounts mid-flight MUST NOT refresh or replay under User B
+    await saveSession({
+      access_token: makeFakeJwt("mob-a-401"),
+      refresh_token: "ref-a-401",
+      user: { id: "mob-a-401", email: "a401@mob.test" },
+    });
+    let resolveDelayedReq;
+    let calledRefreshWithB = false;
+    let replayedWithB = false;
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      const auth = init?.headers?.Authorization || "";
+      if (u.includes("grant_type=refresh_token")) {
+        if (String(init.body || "").includes("ref-b-401")) calledRefreshWithB = true;
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ access_token: "bad-new-tok", refresh_token: "bad-ref" }),
+          json: async () => ({ access_token: "bad-new-tok", refresh_token: "bad-ref" }),
+        };
+      }
+      if (auth.includes("mob-b-401-tok")) {
+        replayedWithB = true;
+        return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+      }
+      return new Promise((r) => {
+        resolveDelayedReq = r;
+      });
+    };
+    const pendingReq = apiFetch("/api/items", { method: "POST", body: { url: "https://a.test" } });
+    await new Promise((r) => setTimeout(r, 15));
+    await saveSession({
+      access_token: "mob-b-401-tok",
+      refresh_token: "ref-b-401",
+      user: { id: "mob-b-401", email: "b401@mob.test" },
+    });
+    resolveDelayedReq({ ok: false, status: 401, text: async () => '{"detail":"expired"}', json: async () => ({ detail: "expired" }) });
+    const reqOut = await pendingReq;
+    assert.equal(reqOut.ok, false);
+    assert.equal(calledRefreshWithB, false, "Must not refresh User B session for User A 401");
+    assert.equal(replayedWithB, false, "Must not replay User A request under User B token");
+
+    // 4) flushOfflineQueueWithSender preserves concurrent enqueue & refuses to resurrect after clearSession()
+    await setOfflineQueue([]);
+    await enqueueOfflineItem({ url: "https://b401.test/one", title: "One" });
+    let releaseFirst;
+    const flushOne = flushOfflineQueueWithSender(async () => {
+      await new Promise((r) => {
+        releaseFirst = r;
+      });
+      return "ok";
+    });
+    await new Promise((r) => setTimeout(r, 15));
+    await enqueueOfflineItem({ url: "https://b401.test/two", title: "Concurrent Two" });
+    releaseFirst();
+    const out1 = await flushOne;
+    assert.equal(out1.flushed, 1);
+    const remAfterConcurrent = await loadOfflineQueue();
+    assert.equal(remAfterConcurrent.length, 1);
+    assert.equal(remAfterConcurrent[0].url, "https://b401.test/two");
+
+    // Now simulate logout during flush: purged queue must stay empty!
+    let releaseLogoutFlush;
+    const flushOnLogout = flushOfflineQueueWithSender(async () => {
+      await new Promise((r) => {
+        releaseLogoutFlush = r;
+      });
+      return "retry";
+    });
+    await new Promise((r) => setTimeout(r, 15));
+    await clearSession();
+    releaseLogoutFlush();
+    await flushOnLogout;
+    assert.equal((await loadOfflineQueue("mob-b-401")).length, 0, "Cleared offline queue must not resurrect after clearSession");
   } finally {
     globalThis.fetch = origFetch;
     await clearSession();

@@ -873,7 +873,7 @@ async def test_cycle2_isolated_anon_client_stateless_logout_and_fail_closed_auth
     import Database.supabase_client as sc
     from fastapi import HTTPException
     from Login import auth_dep
-    from Login.service import AuthService
+    from Login.service import AuthService, auth_service
     from Database.repository import _attach_tags_to_item, create_or_bump_item
     from Database.router import _run_local_enrichment
     from Database.schemas import ItemCreateRequest
@@ -1042,3 +1042,131 @@ async def test_cycle2_isolated_anon_client_stateless_logout_and_fail_closed_auth
     updated = isolated_db.table("items").select("*").eq("id", yt["id"]).execute().data[0]
     assert updated["description"] == "Full multi-line video description"
     assert updated["enrich_status"] == "unfurled"
+
+
+@pytest.mark.asyncio
+async def test_cycle3_me_transient_503_cached_yt_upgrade_and_async_oauth_offload(monkeypatch, isolated_db):
+    """CHRIS Cycle 3 M-1/M-2/L-1: build_user_me_payload 503 vs 401, cached donor By-upgrade, and to_thread OAuth/profile ops."""
+    import threading
+    from fastapi import HTTPException
+    from Login import auth_dep
+    from Login.dependencies import CurrentUser
+    from Login.router import build_user_me_payload, get_oauth_url_endpoint
+    from Login.service import AuthService, auth_service
+    from Database.repository import create_or_bump_item
+    from Database.schemas import ItemCreateRequest
+    from Unfurl.service import enrich_item
+
+    # 1. M-1: build_user_me_payload raises 503 WITHOUT blacklisting active user on transient get_user errors
+    uid = "ffffffff-ffff-4fff-8fff-fffffffffff1"
+    auth_dep.clear_live_user_cache(uid)
+    with auth_dep._live_user_lock:
+        auth_dep._DELETED_USER_IDS.discard(uid)
+
+    class _TransientAuth:
+        def get_user(self, _tok):
+            raise TimeoutError("upstream 504 gateway timeout")
+
+    transient_db = SimpleNamespace(
+        table=lambda name: SimpleNamespace(
+            select=lambda *_a: SimpleNamespace(
+                eq=lambda *_b: SimpleNamespace(execute=lambda: SimpleNamespace(data=[]))
+            )
+        ),
+        auth=_TransientAuth(),
+    )
+    user = CurrentUser(id=uid, email="active@example.com", tier="free", access_token="live-jwt-token")
+    with patch("Login.router.is_supabase_configured", return_value=True):
+        with pytest.raises(HTTPException) as exc_503:
+            build_user_me_payload(transient_db, user)
+    assert exc_503.value.status_code == 503
+    assert auth_dep.is_user_deleted(uid) is False
+
+    # Confirm 404/not-found DOES mark deleted and raise 401
+    class _MissingAuth:
+        def get_user(self, _tok):
+            raise RuntimeError("User from sub claim in JWT does not exist (not_found)")
+
+    missing_db = SimpleNamespace(table=transient_db.table, auth=_MissingAuth())
+    with patch("Login.router.is_supabase_configured", return_value=True):
+        with pytest.raises(HTTPException) as exc_401:
+            build_user_me_payload(missing_db, user)
+    assert exc_401.value.status_code == 401
+    assert auth_dep.is_user_deleted(uid) is True
+    with auth_dep._live_user_lock:
+        auth_dep._DELETED_USER_IDS.discard(uid)
+
+    # 2. M-2: enrich_item cached donor fast-path upgrades YouTube 'By ...' descriptions
+    donor = create_or_bump_item(
+        isolated_db,
+        "dddddddd-dddd-4ddd-8ddd-ddddddddddd9",
+        ItemCreateRequest(url="https://www.youtube.com/watch?v=cachedby1234", title="Donor Title"),
+    )
+    isolated_db.table("items").update(
+        {
+            "platform": "youtube",
+            "description": "Rich verified video breakdown from cached donor",
+            "enrich_status": "unfurled",
+            "unfurled_at": "2026-11-15T10:00:00+00:00",
+        }
+    ).eq("id", donor["id"]).execute()
+
+    target = create_or_bump_item(
+        isolated_db,
+        uid,
+        ItemCreateRequest(url="https://www.youtube.com/watch?v=cachedby1234", title="Target Title"),
+    )
+    isolated_db.table("items").update(
+        {
+            "platform": "youtube",
+            "description": "By OldChannel",
+            "enrich_status": "pending",
+        }
+    ).eq("id", target["id"]).execute()
+
+    res = await enrich_item(isolated_db, target["id"], force_refresh=False)
+    assert res["cached"] is True
+    assert res["item"]["description"] == "Rich verified video breakdown from cached donor"
+
+    # 3. L-1: get_oauth_url_endpoint runs sync SDK call in worker thread off event loop
+    loop_tid = threading.get_ident()
+    seen_tids = []
+
+    def _fake_get_oauth(provider: str, redirect_to: str):
+        seen_tids.append(threading.get_ident())
+        return {"provider": provider, "url": f"https://auth.example.com?r={redirect_to}"}
+
+    monkeypatch.setattr(auth_service, "get_oauth_url", _fake_get_oauth)
+    oauth_res = await get_oauth_url_endpoint(provider="google", redirect_to="sharely://auth-callback")
+    assert oauth_res["url"] == "https://auth.example.com?r=sharely://auth-callback"
+    assert len(seen_tids) == 1
+    assert seen_tids[0] != loop_tid
+
+    # Verify wrapped legacy AuthService methods also offload table calls when Supabase is enabled
+    svc_tids = []
+
+    class _FakeTableQuery:
+        def select(self, *_a):
+            return self
+
+        def eq(self, *_a):
+            return self
+
+        def is_(self, *_a):
+            return self
+
+        def order(self, *_a, **_kw):
+            return self
+
+        def execute(self):
+            svc_tids.append(threading.get_ident())
+            return SimpleNamespace(data=[])
+
+    svc = AuthService()
+    with patch("Login.service.is_supabase_configured", return_value=True), patch(
+        "Login.service.get_supabase_service_client",
+        return_value=SimpleNamespace(table=lambda _name: _FakeTableQuery()),
+    ):
+        await svc.list_api_tokens(uid)
+    assert len(svc_tids) == 1
+    assert svc_tids[0] != loop_tid
