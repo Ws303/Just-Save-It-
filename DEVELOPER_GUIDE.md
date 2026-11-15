@@ -13,6 +13,54 @@
 | **Browser Extension (MV3)** | `extension/` | ใช้งานได้ทันทีแบบ Load unpacked (ไม่ต้อง build) ดึง URL/OG/ข้อความที่ไฮไลต์จากแท็บปัจจุบันยิงเข้า Backend โดยตรง |
 | **Frontend Web UI / Prototype** | `frontend/` | มี Design Tokens, Screens และ Prototype API client (`frontend/src/services/apiClient.js`) รอเชื่อมต่อกับ Backend Endpoints จริง |
 
+### 1.1 สถาปัตยกรรมระบบ (System Architecture & Data Flow)
+
+```mermaid
+flowchart TD
+    subgraph Clients["1. Client Layer (ผู้ใช้งาน & AI ภายนอก)"]
+        FE["Frontend Web / Mobile Prototype<br/>(frontend/ — Dual Mode: Mock & Live API)"]
+        EXT["Browser Extension (MV3)<br/>(extension/ — Popup, Context Menu, Cmd+Shift+S)"]
+        AI_EXT["External AI Clients<br/>(Claude Desktop / Cursor)"]
+    end
+
+    subgraph Backend["2. Backend API Layer — FastAPI (backend/main.py)"]
+        AUTH_MOD["Login Module<br/>(/api/auth/*, JWT HS256/ES256, auth_dep)"]
+        DB_MOD["Database Module<br/>(/api/items, /api/folders, /api/tags, /api/export)"]
+        UNF_MOD["Unfurl Engine<br/>(/api/preview, oEmbed/selectolax, SSRF Guard, WebP)"]
+        REM_MOD["Reminders Engine<br/>(/api/reminders*, Timezone Unroller, iOS 64-slot)"]
+        AI_MOD["AI & MCP Server<br/>(/api/ai/summarize 3-Tier, /mcp 13 Tools)"]
+    end
+
+    subgraph StorageSwitch["3. Storage & Database Layer (Database/client.py)"]
+        direction LR
+        LOCAL["Local Dev Mode (Zero-Config)<br/>LocalDevDatabase (.local_dev_db.json)<br/>+ .local_thumbnails/ (/local-media)"]
+        CLOUD["Production Cloud (Supabase)<br/>Auth + Postgres (12 Tables + RLS + FTS)<br/>+ Storage (thumbnails) + pg_net / pg_cron"]
+    end
+
+    subgraph External["4. External Services"]
+        WEB["Target Websites & oEmbed<br/>(YouTube, TikTok, IG, X, Reddit, Web)"]
+        LLM["LLM Providers<br/>(Gemini, Groq, BYOK, Custom/Ollama)"]
+        PUSH["Push Services<br/>(Expo Push, FCM v1, Web Push VAPID)"]
+    end
+
+    FE & EXT -->|"HTTPS + Bearer JWT"| AUTH_MOD & DB_MOD & UNF_MOD & REM_MOD & AI_MOD
+    AI_EXT -->|"PAT (jsi_live_xxx)"| AI_MOD
+
+    AUTH_MOD & DB_MOD & UNF_MOD & REM_MOD & AI_MOD -->|"สลับอัตโนมัติตาม .env"| LOCAL & CLOUD
+    CLOUD -->|"pg_net Webhook (/hooks/item-created)"| UNF_MOD
+    CLOUD -->|"pg_cron (1 min / 10 min)"| REM_MOD & UNF_MOD
+
+    UNF_MOD -->|"SSRF-Guarded Fetch"| WEB
+    AI_MOD -->|"Summarize"| LLM
+    REM_MOD -->|"Send Push"| PUSH
+```
+
+**สรุป Data Flow หลักของระบบ (ตามโค้ดปัจจุบัน):**
+1. **Save & Rich Unfurl Flow:** Client ส่งลิงก์มาที่ `POST /api/items` → ระบบทำ Canonicalize URL + สร้าง `url_hash` กันซ้ำ → บันทึกแถวเริ่มต้น (`enrich_status='pending'`) → จากนั้นรัน `Unfurl` ผ่าน BackgroundTask (โหมด Local) หรือ `pg_net` Webhook (โหมด Cloud) เพื่อดึงข้อมูล OG/oEmbed (จำกัด ≤5 รูป), บีบอัดปก #1 เป็น WebP, และตรวจสอบ `embed_url` ด้วย Allowlist
+2. **Auth & Security Flow:** ผู้ใช้ล็อกอินผ่าน `/api/auth/login` (หรือ Supabase Auth) ได้รับ Bearer JWT → ทุก Route ตรวจสิทธิ์ผ่าน `auth_dep.py` (HS256 / Supabase `get_user`) → ฐานข้อมูลบังคับสิทธิ์ระดับแถวด้วย RLS (`owner_id` / `private.can_access_folder()`)
+3. **Reminder & Push Flow:** ผู้ใช้ตั้งเตือนผ่าน `PUT /api/reminders/{item_id}` → `pg_cron` ยิง `POST /cron/reminders` ทุก 1 นาทีส่งผ่าน Push Adapters (Expo/FCM/VAPID) หรือ iOS ดึง `GET /api/reminders/local-sync` (≤ 64 slots) → ถ้าเป็น `every_n_days` จะเลื่อนรอบถัดไปอัตโนมัติ หรือยกเลิกเมื่อสถานะเป็น `done`
+4. **AI & MCP Flow:** `POST /api/ai/summarize` ตรวจ Cache ใน DB ก่อน (ประหยัดโทเค็น) → หากยังไม่มีจะสกัดข้อความด้วย `trafilatura` แล้วส่งให้ LLM (Built-in Gemini/Groq, BYOK, หรือ Custom) → บันทึกผลและนับโควตารายเดือน | ส่วน External AI เชื่อมเข้า `/mcp` ผ่าน Personal Access Token (`jsi_live_xxx`)
+
 ---
 
 ## 2. โครงสร้างโฟลเดอร์สำคัญ

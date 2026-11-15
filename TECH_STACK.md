@@ -4,37 +4,49 @@
 
 ---
 
-## 1. ภาพรวมสถาปัตยกรรมทั้งระบบ (System Architecture)
+## 1. ภาพรวมสถาปัตยกรรมทั้งระบบ (System Architecture & Data Flow)
 
+```mermaid
+flowchart TD
+    subgraph Clients["1. Client Layer"]
+        FE["Frontend Web / Mobile Prototype<br/>(frontend/ — Dual Mode: Mock & Live API)"]
+        EXT["Browser Extension (MV3)<br/>(extension/ — Popup, Context Menu, Cmd+Shift+S)"]
+        AI_EXT["External AI Clients<br/>(Claude Desktop / Cursor)"]
+    end
+
+    subgraph Backend["2. Backend API Layer — FastAPI (backend/main.py)"]
+        AUTH_MOD["Login Module (/api/auth/*, JWT HS256/ES256)"]
+        DB_MOD["Database Module (/api/items, /api/folders, /api/tags, /api/export)"]
+        UNF_MOD["Unfurl Engine (/api/preview, oEmbed/selectolax, SSRF Guard, WebP)"]
+        REM_MOD["Reminders Engine (/api/reminders*, Unroller, iOS 64-slot)"]
+        AI_MOD["AI & MCP Server (/api/ai/summarize, /mcp 13 Tools)"]
+    end
+
+    subgraph StorageSwitch["3. Storage & Database Layer (Database/client.py)"]
+        LOCAL["Local Dev Mode (Zero-Config)<br/>LocalDevDatabase (.local_dev_db.json) + .local_thumbnails/"]
+        CLOUD["Production Cloud (Supabase)<br/>Auth + Postgres (12 Tables + RLS + FTS) + Storage (thumbnails) + pg_net/pg_cron"]
+    end
+
+    subgraph External["4. External Services"]
+        WEB["Websites & oEmbed (YouTube, TikTok, IG, X, Reddit)"]
+        LLM["LLM Providers (Gemini, Groq, BYOK, Custom/Ollama)"]
+        PUSH["Push Services (Expo Push, FCM v1, Web Push VAPID)"]
+    end
+
+    FE & EXT -->|"HTTPS + Bearer JWT"| AUTH_MOD & DB_MOD & UNF_MOD & REM_MOD & AI_MOD
+    AI_EXT -->|"PAT (jsi_live_xxx)"| AI_MOD
+    AUTH_MOD & DB_MOD & UNF_MOD & REM_MOD & AI_MOD -->|"สลับอัตโนมัติตาม .env"| LOCAL & CLOUD
+    CLOUD -->|"pg_net Webhook & pg_cron"| UNF_MOD & REM_MOD
+    UNF_MOD --> WEB
+    AI_MOD --> LLM
+    REM_MOD --> PUSH
 ```
-[ ผู้ใช้งาน / Clients ]
- ├── 1. Web App (Next.js / React + Tailwind CSS)
- ├── 2. Browser Extension (Chrome/Edge Extension - Manifest V3)
- └── 3. Mobile App (Responsive PWA / Android APK)
-        │
-        │ ทุก Client ยิงผ่าน HTTP REST API + ส่ง JWT Token เดียวกัน
-        ▼
-[ Backend API & AI Engine — FastAPI (Python 3.11+) ]
- ├── Routing & Controllers:
- │    ├── /api/auth/*        (ระบบสมาชิก & Token ยืนยันตัวตน)
- │    ├── /api/links/*       (CRUD ข้อมูลลิงก์, โน้ต, แท็ก, โฟลเดอร์)
- │    ├── /api/preview       (แกะ OpenGraph, oEmbed, รูปภาพ, วิดีโอ)
- │    ├── /api/ai/*          (เรียก LLM สรุปเนื้อหา และสร้าง Embeddings)
- │    └── /api/reminders/*   (ระบบกำหนดเวลาแจ้งเตือน)
- │
- └── Protocols & Services:
-      ├── Link Unfurling Engine (trafilatura, beautifulsoup4, oEmbed)
-      ├── AI Summarizer (Google Gemini 1.5 Flash API)
-      └── MCP Server (Model Context Protocol SDK สำหรับ Claude/Antigravity/Cursor)
-        │
-        │ อ่านและเขียนข้อมูล
-        ▼
-[ Shared Database & Cloud Services — Supabase ]
- ├── PostgreSQL Database    (จัดเก็บความสัมพันธ์ของ Users, Links, Folders, Tags)
- ├── pgvector Extension     (เก็บ Vector Embeddings สำหรับค้นหาลิงก์ด้วย AI Semantic Search)
- ├── Supabase Auth          (ระบบจัดการผู้ใช้และแจกจ่าย JWT Tokens ให้ทุก Client)
- └── Supabase Storage       (จัดเก็บรูปภาพพรีวิว, Thumbnails, และไอคอนแคช)
-```
+
+**Data Flow หลักของระบบ (ตามโค้ดปัจจุบัน):**
+1. **Save & Unfurl Flow:** Client ส่งลิงก์เข้า `POST /api/items` → Canonicalize URL + สร้าง `url_hash` กันซ้ำ → รัน `Unfurl` ผ่าน BackgroundTask (Local) หรือ `pg_net` Webhook (Cloud) ดึง OG/oEmbed (≤5 รูป), บีบอัดปก #1 เป็น WebP, และตรวจสอบ `embed_url` ด้วย Allowlist
+2. **Auth & RLS Flow:** ล็อกอินรับ Bearer JWT → `auth_dep.py` ตรวจสิทธิ์ (HS256 / Supabase `get_user`) → Postgres บังคับสิทธิ์ระดับแถวด้วย RLS (`owner_id` / `private.can_access_folder()`)
+3. **Reminders Flow:** ตั้งเตือนผ่าน `PUT /api/reminders/{item_id}` → `pg_cron` เรียก `POST /cron/reminders` ทุก 1 นาทีส่ง Push (Expo/FCM/VAPID) หรือ iOS ซิงค์ผ่าน `GET /api/reminders/local-sync` (≤ 64 slots)
+4. **AI & MCP Flow:** `POST /api/ai/summarize` ตรวจ DB cache ก่อน → สกัดข้อความด้วย `trafilatura` → สรุปผ่าน Gemini/Groq/BYOK/Custom + นับโควตา | ส่วน External AI เรียก `/mcp` ผ่าน PAT (`jsi_live_xxx`)
 
 ---
 

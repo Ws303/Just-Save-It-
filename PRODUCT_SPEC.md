@@ -216,6 +216,7 @@ flowchart TD
 2. **FastAPI ทำเฉพาะงานที่ client ทำไม่ได้/ไม่ควรทำ:** Rich Unfurl (CORS + 5-image filter + WebP compress), AI (ซ่อน API key + BYOK relay), push, MCP
 3. **FastAPI ใช้ `service_role` เสมอ ต้อง filter `owner_id`/สิทธิ์เองทุก query** — ห้ามรับ `user_id` จาก AI/MCP parameter (ดู §8)
 4. **ประหยัด Storage & Bandwidth สูงสุด:** เก็บไฟล์จริงบน Storage **เฉพาะรูปปก #1 (WebP)** เท่านั้น; รูปที่ 2–5 ใช้ External URL; วิดีโอใช้ Official Embed โหลดตอนกด Play
+5. **โหมดพัฒนาในเครื่อง (Implemented Dual-Mode):** โค้ดปัจจุบันใน `backend/Database/client.py` รองรับการสลับอัตโนมัติระหว่าง `LocalDevDatabase` (Zero-config JSON + `.local_thumbnails/` สำหรับรันเทสต์ทันทีโดยไม่ต้องต่อ Cloud) และ Supabase Cloud จริง ดูรายละเอียด Data Flow และผังระบบล่าสุดใน [DEVELOPER_GUIDE.md §1.1](file:///Users/chanisaniyom/Desktop/Just-Save-It-/DEVELOPER_GUIDE.md) และ [TECH_STACK.md §1](file:///Users/chanisaniyom/Desktop/Just-Save-It-/TECH_STACK.md)
 
 ### 6.1 Tech Stack (ล็อกแล้ว)
 | ชั้น | เลือก | เหตุผล |
