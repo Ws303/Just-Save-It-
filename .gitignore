@@ -48,3 +48,5 @@ venv/
 backend/.local_dev_db.json
 .local_thumbnails/
 backend/.local_thumbnails/
+.qa_users.json
+**/.qa_users.json

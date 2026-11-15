@@ -9,6 +9,7 @@ Handles:
 - MCP Personal Access Tokens (jsi_live_xxx) with SHA-256 hashing
 """
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -20,13 +21,16 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+import httpx
 import jwt
 from fastapi import HTTPException, status
 
 from Database.client import get_supabase_client
 from Database.supabase_client import (
     get_supabase_anon_client,
+    get_supabase_anon_key,
     get_supabase_service_client,
+    get_supabase_url,
     is_supabase_configured,
 )
 from .auth_dep import get_configured_hs256_secret
@@ -183,17 +187,20 @@ class AuthService:
         if is_supabase_configured():
             try:
                 client = get_supabase_anon_client()
-                resp = client.auth.sign_up({
-                    "email": email_clean,
-                    "password": req.password,
-                    "options": {
-                        "data": {
-                            "display_name": display_name,
-                            "locale": "th",
-                            "timezone": "Asia/Bangkok",
-                        }
+                resp = await asyncio.to_thread(
+                    client.auth.sign_up,
+                    {
+                        "email": email_clean,
+                        "password": req.password,
+                        "options": {
+                            "data": {
+                                "display_name": display_name,
+                                "locale": "th",
+                                "timezone": "Asia/Bangkok",
+                            }
+                        },
                     },
-                })
+                )
                 if resp.user and resp.session:
                     user_profile = UserProfileResponse(
                         id=str(resp.user.id),
@@ -262,10 +269,10 @@ class AuthService:
         if is_supabase_configured():
             try:
                 client = get_supabase_anon_client()
-                resp = client.auth.sign_in_with_password({
-                    "email": email_clean,
-                    "password": req.password,
-                })
+                resp = await asyncio.to_thread(
+                    client.auth.sign_in_with_password,
+                    {"email": email_clean, "password": req.password},
+                )
                 if resp.user and resp.session:
                     meta = resp.user.user_metadata or {}
                     profile = UserProfileResponse(
@@ -317,7 +324,7 @@ class AuthService:
         if is_supabase_configured():
             try:
                 client = get_supabase_anon_client()
-                client.auth.sign_in_with_otp({"email": email_clean})
+                await asyncio.to_thread(client.auth.sign_in_with_otp, {"email": email_clean})
                 return MagicLinkResponse(
                     sent=True,
                     email=email_clean,
@@ -377,7 +384,7 @@ class AuthService:
                 if req.raw_nonce:
                     auth_payload["nonce"] = req.raw_nonce
 
-                resp = client.auth.sign_in_with_id_token(auth_payload)
+                resp = await asyncio.to_thread(client.auth.sign_in_with_id_token, auth_payload)
                 if resp.user and resp.session:
                     meta = resp.user.user_metadata or {}
                     display_name = req.full_name or meta.get("full_name") or meta.get("display_name")
@@ -470,7 +477,9 @@ class AuthService:
         if is_supabase_configured():
             try:
                 client = get_supabase_anon_client()
-                resp = client.auth.exchange_code_for_session({"auth_code": code})
+                resp = await asyncio.to_thread(
+                    client.auth.exchange_code_for_session, {"auth_code": code}
+                )
                 if resp.user and resp.session:
                     meta = resp.user.user_metadata or {}
                     profile = UserProfileResponse(
@@ -513,7 +522,7 @@ class AuthService:
         if is_supabase_configured():
             try:
                 client = get_supabase_anon_client()
-                resp = client.auth.refresh_session(refresh_token)
+                resp = await asyncio.to_thread(client.auth.refresh_session, refresh_token)
                 if resp.user and resp.session:
                     meta = resp.user.user_metadata or {}
                     profile = UserProfileResponse(
@@ -553,13 +562,20 @@ class AuthService:
         )
 
     async def logout_user(self, access_token: str) -> Dict[str, bool]:
-        """Sign out user and invalidate session."""
-        if is_supabase_configured():
+        """Sign out user cleanly via stateless GoTrue logout endpoint using caller's bearer token."""
+        clean_token = str(access_token or "").strip()
+        if is_supabase_configured() and clean_token:
             try:
-                client = get_supabase_anon_client()
-                client.auth.sign_out()
+                async with httpx.AsyncClient(timeout=10.0) as http_client:
+                    await http_client.post(
+                        f"{get_supabase_url().rstrip('/')}/auth/v1/logout",
+                        headers={
+                            "apikey": get_supabase_anon_key(),
+                            "Authorization": f"Bearer {clean_token}",
+                        },
+                    )
             except Exception as e:
-                logger.debug("Supabase sign_out error: %s", e)
+                logger.debug("Supabase logout error: %s", e)
         return {"logged_out": True}
 
     async def get_profile(self, user_id: str) -> UserProfileResponse:

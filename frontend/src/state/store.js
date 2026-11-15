@@ -658,6 +658,9 @@ export const store = {
     const prevUserId = this.state.data.user?.id || "";
     const nextUserId = user?.id || prevUserId;
     const isAccountSwitch = Boolean(prevUserId && nextUserId && prevUserId !== nextUserId);
+    if (isAccountSwitch) {
+      this.state.api.authGeneration = (this.state.api.authGeneration || 0) + 1;
+    }
     if (isAccountSwitch && typeof window !== "undefined") {
       this.state.data.folders = [];
       this.state.data.links = [];
@@ -698,6 +701,7 @@ export const store = {
     const shouldClearWorkspace = typeof clearWorkspace === "boolean" ? clearWorkspace : hadRealAuth && this.state.api.mode !== "mock";
     const clearedUserId = String(this.state.data.user?.id || this.state.api?.jwtClaims?.sub || "").trim();
     this.state.data.user.isAuthenticated = false;
+    this.state.api.authGeneration = (this.state.api.authGeneration || 0) + 1;
     this.state.api.bearerToken = "";
     this.state.api.refreshToken = "";
     this.state.api.jwtClaims = null;

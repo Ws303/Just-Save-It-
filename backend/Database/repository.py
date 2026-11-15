@@ -172,6 +172,27 @@ def _attach_tags_to_item(
                     .execute()
                 )
                 created_rows = [dict(r) for r in (getattr(refetch, "data", None) or [])]
+                found_names = {str(r.get("name") or "") for r in created_rows}
+                for single_name in [n for n in missing_names if n not in found_names]:
+                    try:
+                        sres = db.table("tags").insert({"owner_id": user_id, "name": single_name}).execute()
+                        if getattr(sres, "data", None):
+                            created_rows.append(dict(sres.data[0]))
+                    except Exception as inner_exc:
+                        inner_msg = str(inner_exc).lower()
+                        if "23505" in inner_msg or "duplicate" in inner_msg or "unique" in inner_msg:
+                            one = (
+                                db.table("tags")
+                                .select("id, name")
+                                .eq("owner_id", user_id)
+                                .eq("name", single_name)
+                                .limit(1)
+                                .execute()
+                            )
+                            if getattr(one, "data", None):
+                                created_rows.append(dict(one.data[0]))
+                        else:
+                            raise
             else:
                 raise
         for row in created_rows:

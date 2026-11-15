@@ -459,6 +459,8 @@ def test_a8_router_summarize_endpoint_headers_and_auth():
     with patch.dict(
         "os.environ",
         {
+            "SUPABASE_URL": "",
+            "SUPABASE_SERVICE_ROLE_KEY": "",
             "SUPABASE_JWT_SECRET": jwt_secret,
             "ENV": "production",
             "ALLOW_DEV_AUTH_BYPASS": "false",

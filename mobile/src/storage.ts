@@ -63,6 +63,7 @@ export interface MobileReminderItem {
 
 export interface QueuedLinkPayload {
   client_id: string;
+  user_id?: string;
   url: string;
   title?: string;
   note?: string;
@@ -73,6 +74,7 @@ export interface QueuedLinkPayload {
 }
 
 export interface CachedWorkspace {
+  user_id?: string;
   items: MobileLinkItem[];
   folders: MobileFolderItem[];
   reminders: MobileReminderItem[];
@@ -107,6 +109,12 @@ const memoryStorageBackend: StorageBackend = {
 };
 let _memWorkspaceCache: CachedWorkspace | null = null;
 let _memPkceVerifier = "";
+let _authGeneration = 0;
+let _activeUserId = "";
+
+export function getAuthGeneration(): number {
+  return _authGeneration;
+}
 let asyncStoragePromise: Promise<StorageBackend | null> | null = null;
 let secureStoragePromise: Promise<StorageBackend | null> | null = null;
 
@@ -212,15 +220,33 @@ export async function loadSession(): Promise<StoredSession | null> {
 }
 
 export async function saveSession(session: StoredSession): Promise<void> {
+  const prev = await loadSession().catch(() => null);
+  const prevUid = String(prev?.user?.id || _activeUserId || "").trim();
+  const nextUid = String(session.user?.id || "").trim();
+  const fallbackBackend = await getStorageBackend();
+
+  if (prevUid && nextUid && prevUid !== nextUid) {
+    _authGeneration += 1;
+    _memWorkspaceCache = null;
+    await fallbackBackend.removeItem(KEYS.cache);
+    await fallbackBackend.removeItem(KEYS.offlineQueue);
+  } else if (!prevUid && nextUid && _activeUserId !== nextUid) {
+    _authGeneration += 1;
+  }
+  if (nextUid) {
+    _activeUserId = nextUid;
+  }
+
   const secureBackend = await getSecureSessionBackend();
   await secureBackend.setItem(KEYS.session, JSON.stringify(session));
-  const fallbackBackend = await getStorageBackend();
   if (secureBackend !== fallbackBackend) {
     await fallbackBackend.removeItem(KEYS.session);
   }
 }
 
 export async function clearSession(): Promise<void> {
+  _authGeneration += 1;
+  _activeUserId = "";
   _memWorkspaceCache = null;
   _memPkceVerifier = "";
   const secureBackend = await getSecureSessionBackend();
@@ -230,6 +256,7 @@ export async function clearSession(): Promise<void> {
     await fallbackBackend.removeItem(KEYS.session);
   }
   await fallbackBackend.removeItem(KEYS.cache);
+  await fallbackBackend.removeItem(KEYS.offlineQueue);
   await fallbackBackend.removeItem(KEYS.pkceVerifier);
 }
 
@@ -244,20 +271,40 @@ export async function savePkceVerifier(verifier: string): Promise<void> {
   }
 }
 
-export async function consumePkceVerifier(): Promise<string> {
+export async function peekPkceVerifier(): Promise<string> {
   let value = _memPkceVerifier;
-  _memPkceVerifier = "";
-  const backend = await getStorageBackend();
   if (!value) {
+    const backend = await getStorageBackend();
     value = (await backend.getItem(KEYS.pkceVerifier)) || "";
+    if (value) _memPkceVerifier = value.trim();
   }
-  await backend.removeItem(KEYS.pkceVerifier);
   return value.trim();
 }
 
-export async function loadOfflineQueue(): Promise<QueuedLinkPayload[]> {
+export async function clearPkceVerifier(): Promise<void> {
+  _memPkceVerifier = "";
+  const backend = await getStorageBackend();
+  await backend.removeItem(KEYS.pkceVerifier);
+}
+
+export async function consumePkceVerifier(): Promise<string> {
+  const value = await peekPkceVerifier();
+  await clearPkceVerifier();
+  return value;
+}
+
+export async function loadOfflineQueue(expectedUserId?: string): Promise<QueuedLinkPayload[]> {
   const rows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
-  return Array.isArray(rows) ? rows : [];
+  if (!Array.isArray(rows)) return [];
+  let uid = String(expectedUserId ?? "").trim();
+  if (expectedUserId === undefined) {
+    const session = await loadSession().catch(() => null);
+    uid = String(session?.user?.id || _activeUserId || "").trim();
+  }
+  if (!uid) {
+    return rows.filter((item) => !item?.user_id);
+  }
+  return rows.filter((item) => Boolean(item?.user_id) && String(item.user_id).trim() === uid);
 }
 
 export async function setOfflineQueue(queue: QueuedLinkPayload[]): Promise<void> {
@@ -267,16 +314,22 @@ export async function setOfflineQueue(queue: QueuedLinkPayload[]): Promise<void>
 export async function enqueueOfflineItem(
   payload: Omit<QueuedLinkPayload, "client_id" | "queued_at"> & { client_id?: string; queued_at?: string },
 ): Promise<QueuedLinkPayload[]> {
-  const current = await loadOfflineQueue();
+  const session = await loadSession().catch(() => null);
+  const uid = String(payload.user_id ?? session?.user?.id ?? _activeUserId ?? "").trim();
+  const allRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
+  const safeAll = Array.isArray(allRows) ? allRows : [];
+  const foreignRows = uid ? safeAll.filter((item) => Boolean(item?.user_id) && String(item.user_id).trim() !== uid) : [];
+  const ownCurrent = await loadOfflineQueue(uid);
   const entry: QueuedLinkPayload = {
     ...payload,
+    user_id: uid || undefined,
     client_id: payload.client_id || `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     queued_at: payload.queued_at || new Date().toISOString(),
   };
-  const deduped = current.filter((item) => item.url !== entry.url);
-  const next = [entry, ...deduped].slice(0, 100);
+  const deduped = ownCurrent.filter((item) => item.url !== entry.url);
+  const next = [entry, ...deduped, ...foreignRows].slice(0, 100);
   await setOfflineQueue(next);
-  return next;
+  return [entry, ...deduped].slice(0, 100);
 }
 
 export type OfflineFlushOutcome = boolean | "ok" | "retry" | "drop";
@@ -292,8 +345,35 @@ export function classifyQueueFlushStatus(httpStatus: number): "ok" | "retry" | "
 export async function flushOfflineQueueWithSender(
   sender: (item: QueuedLinkPayload) => Promise<OfflineFlushOutcome>,
 ): Promise<{ flushed: number; remaining: number; dropped: number; failed: QueuedLinkPayload[] }> {
-  const queue = await loadOfflineQueue();
-  if (!queue.length) return { flushed: 0, remaining: 0, dropped: 0, failed: [] };
+  const session = await loadSession().catch(() => null);
+  const currentUid = String(session?.user?.id || "").trim();
+  const allRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
+  const safeAll = Array.isArray(allRows) ? allRows : [];
+  if (!safeAll.length) return { flushed: 0, remaining: 0, dropped: 0, failed: [] };
+
+  const foreignRemaining: QueuedLinkPayload[] = [];
+  const queue: QueuedLinkPayload[] = [];
+  for (const entry of safeAll) {
+    const entryUid = String(entry?.user_id || "").trim();
+    if (!currentUid) {
+      if (!entryUid) queue.push(entry);
+      else foreignRemaining.push(entry);
+    } else if (!entryUid) {
+      continue; // Drop legacy unstamped entries when authenticated
+    } else if (entryUid !== currentUid) {
+      foreignRemaining.push(entry);
+    } else {
+      queue.push(entry);
+    }
+  }
+
+  if (!queue.length) {
+    if (foreignRemaining.length !== safeAll.length) {
+      await setOfflineQueue(foreignRemaining);
+    }
+    return { flushed: 0, remaining: 0, dropped: 0, failed: [] };
+  }
+
   const remaining: QueuedLinkPayload[] = [];
   let flushed = 0;
   let dropped = 0;
@@ -311,7 +391,7 @@ export async function flushOfflineQueueWithSender(
       remaining.push(entry);
     }
   }
-  await setOfflineQueue(remaining);
+  await setOfflineQueue([...remaining, ...foreignRemaining]);
   return { flushed, remaining: remaining.length, dropped, failed: remaining };
 }
 
@@ -320,15 +400,28 @@ export function getMemoryCachedWorkspace(): CachedWorkspace | null {
 }
 
 export async function loadCachedWorkspace(): Promise<CachedWorkspace> {
-  if (_memWorkspaceCache) {
-    return _memWorkspaceCache;
-  }
-  const data = await readJson<CachedWorkspace>(KEYS.cache, {
+  const session = await loadSession().catch(() => null);
+  const currentUid = String(session?.user?.id || "").trim();
+  const empty: CachedWorkspace = {
+    user_id: currentUid || undefined,
     items: [],
     folders: [],
     reminders: [],
     updated_at: "",
-  });
+  };
+  if (_memWorkspaceCache) {
+    const cacheUid = String(_memWorkspaceCache.user_id || "").trim();
+    if (currentUid && (!cacheUid || cacheUid !== currentUid)) {
+      _memWorkspaceCache = null;
+    } else {
+      return _memWorkspaceCache;
+    }
+  }
+  const data = await readJson<CachedWorkspace>(KEYS.cache, empty);
+  const dataUid = String(data.user_id || "").trim();
+  if (currentUid && (!dataUid || dataUid !== currentUid)) {
+    return empty;
+  }
   if (data.updated_at || data.items.length > 0 || data.folders.length > 0) {
     _memWorkspaceCache = data;
   }
@@ -336,12 +429,34 @@ export async function loadCachedWorkspace(): Promise<CachedWorkspace> {
 }
 
 export async function saveCachedWorkspace(data: Omit<CachedWorkspace, "updated_at">): Promise<void> {
+  const session = await loadSession().catch(() => null);
+  const currentUid = String(data.user_id ?? session?.user?.id ?? _activeUserId ?? "").trim();
   const stamped: CachedWorkspace = {
     ...data,
+    user_id: currentUid || undefined,
     updated_at: new Date().toISOString(),
   };
   _memWorkspaceCache = stamped;
   await writeJson(KEYS.cache, stamped);
+}
+
+export async function removeCachedLinkItem(itemId: string): Promise<void> {
+  const targetId = String(itemId || "").trim();
+  if (!targetId) return;
+  if (_memWorkspaceCache && Array.isArray(_memWorkspaceCache.items)) {
+    _memWorkspaceCache = {
+      ..._memWorkspaceCache,
+      items: _memWorkspaceCache.items.filter((it) => it.id !== targetId),
+    };
+  }
+  const existing = await readJson<CachedWorkspace | null>(KEYS.cache, null);
+  if (existing && Array.isArray(existing.items)) {
+    const next: CachedWorkspace = {
+      ...existing,
+      items: existing.items.filter((it) => it.id !== targetId),
+    };
+    await writeJson(KEYS.cache, next);
+  }
 }
 
 export interface AuthDebugEvent {
@@ -356,10 +471,13 @@ type DebugListener = (events: AuthDebugEvent[]) => void;
 const _debugListeners = new Set<DebugListener>();
 
 function redactAuthSensitive(text: string): string {
-  return String(text || "").replace(
-    /(access_token|refresh_token|code|code_verifier)=([^&#\s]+)/gi,
-    (_m, key) => `${key}=***`,
-  );
+  return String(text || "")
+    .replace(
+      /(access_token|refresh_token|id_token|code|code_verifier|token|api_key|secret|password)=([^&#\s]+)/gi,
+      (_m, key) => `${key}=***`,
+    )
+    .replace(/(\/invite\/)([A-Za-z0-9_-]+)/gi, "$1***")
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1***");
 }
 
 export function recordAuthDebugEvent(stage: string, detail = ""): void {

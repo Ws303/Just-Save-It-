@@ -18,6 +18,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   completeOAuthWithTokens,
   exchangeOAuthCode,
+  isOAuthExchangeInFlight,
   loginWithPassword,
   prepareGoogleOAuthUrl,
   signupWithPassword,
@@ -142,13 +143,19 @@ export default function LoginScreen() {
         return;
       }
 
-      // On Android Chrome Custom Tabs, OS Intent may deliver the token directly to auth-callback
-      await new Promise((r) => setTimeout(r, 250));
-      const existing = await loadSession().catch(() => null);
-      if (existing?.access_token) {
-        setBusy(false);
-        router.replace("/(tabs)");
-        return;
+      // On Android Chrome Custom Tabs, OS Intent may deliver the token/code directly to auth-callback
+      const maxChecks = 16;
+      for (let i = 0; i < maxChecks; i += 1) {
+        await new Promise((r) => setTimeout(r, 250));
+        const existing = await loadSession().catch(() => null);
+        if (existing?.access_token) {
+          setBusy(false);
+          router.replace("/(tabs)");
+          return;
+        }
+        if (!isOAuthExchangeInFlight() && i >= 1) {
+          break;
+        }
       }
 
       setBusy(false);

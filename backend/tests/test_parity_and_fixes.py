@@ -865,3 +865,180 @@ def test_workspace_endpoint_and_pooled_client_singleton(isolated_db, monkeypatch
         sc._service_client_instance = None
         sc._service_client_key = None
         set_override_supabase_client(isolated_db)
+
+
+@pytest.mark.asyncio
+async def test_cycle2_isolated_anon_client_stateless_logout_and_fail_closed_auth(monkeypatch, isolated_db):
+    """CHRIS C1/M1/H3/M2: isolated anon clients, stateless logout, fail-closed uncached auth check, tag partial 23505 recovery, and YouTube By-upgrade."""
+    import Database.supabase_client as sc
+    from fastapi import HTTPException
+    from Login import auth_dep
+    from Login.service import AuthService
+    from Database.repository import _attach_tags_to_item, create_or_bump_item
+    from Database.router import _run_local_enrichment
+    from Database.schemas import ItemCreateRequest
+    from Unfurl.extractors import UnfurlResult
+
+    # 1. C1: get_supabase_anon_client creates isolated instances per call (no shared mutable GoTrue session)
+    monkeypatch.setenv("SUPABASE_URL", "https://demo-pool.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-secret-key")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "srv-secret-key")
+    with patch("Database.supabase_client.create_client", side_effect=lambda u, k: SimpleNamespace(id=object(), url=u, key=k)):
+        a1 = sc.get_supabase_anon_client()
+        a2 = sc.get_supabase_anon_client()
+        assert a1 is not a2
+
+    # 2. C1: logout_user calls GoTrue /auth/v1/logout directly with caller bearer token
+    logout_calls = []
+
+    class _FakeAsyncClient:
+        def __init__(self, **_kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def post(self, url, headers=None):
+            logout_calls.append((url, headers))
+            return SimpleNamespace(status_code=204)
+
+    monkeypatch.setattr("Login.service.is_supabase_configured", lambda: True)
+    monkeypatch.setattr("Login.service.httpx.AsyncClient", _FakeAsyncClient)
+    svc = AuthService()
+    res = await svc.logout_user("caller-jwt-999")
+    assert res == {"logged_out": True}
+    assert len(logout_calls) == 1
+    assert logout_calls[0][0] == "https://demo-pool.supabase.co/auth/v1/logout"
+    assert logout_calls[0][1]["Authorization"] == "Bearer caller-jwt-999"
+
+    # 3. M1: _verify_live_user_exists fails closed (503) when uncached lookup raises unexpected error
+    uid = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5"
+    auth_dep.clear_live_user_cache(uid)
+    auth_dep._DELETED_USER_IDS.discard(uid)
+
+    class _BrokenDb:
+        def table(self, _name):
+            raise RuntimeError("transient postgrest outage")
+
+    with patch("Login.auth_dep.is_supabase_configured", return_value=True), patch(
+        "Login.auth_dep.get_supabase_client", return_value=_BrokenDb()
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            auth_dep._verify_live_user_exists(uid)
+        assert exc_info.value.status_code == 503
+
+    # 4. H3: multi-row tag 23505 recovery does not silently drop unconflicted sibling tags
+    tag_store = [{"id": "t-food", "owner_id": uid, "name": "food"}]
+    item_tags_store = []
+
+    class _FakeTagQuery:
+        def __init__(self, tbl):
+            self.tbl = tbl
+            self._op = None
+            self._payload = None
+            self._filters = {}
+
+        def select(self, *_cols):
+            self._op = "select"
+            return self
+
+        def eq(self, col, val):
+            self._filters[col] = val
+            return self
+
+        def in_(self, col, vals):
+            self._filters[col] = list(vals)
+            return self
+
+        def limit(self, _n):
+            return self
+
+        def insert(self, payload):
+            self._op = "insert"
+            self._payload = payload
+            return self
+
+        def execute(self):
+            if self.tbl == "tags" and self._op == "select":
+                rows = [r for r in tag_store if r.get("owner_id") == self._filters.get("owner_id")]
+                if "name" in self._filters:
+                    fval = self._filters["name"]
+                    rows = [r for r in rows if (r["name"] in fval if isinstance(fval, list) else r["name"] == fval)]
+                return SimpleNamespace(data=rows)
+            if self.tbl == "tags" and self._op == "insert":
+                rows = self._payload if isinstance(self._payload, list) else [self._payload]
+                existing_names = {r["name"] for r in tag_store if r["owner_id"] == rows[0]["owner_id"]}
+                for r in rows:
+                    if r["name"] in existing_names:
+                        raise RuntimeError("duplicate key value violates unique constraint (23505)")
+                created = []
+                for idx, r in enumerate(rows):
+                    row = {"id": f"t-new-{len(tag_store)+idx}", **r}
+                    tag_store.append(row)
+                    created.append(row)
+                return SimpleNamespace(data=created)
+            if self.tbl == "item_tags" and self._op == "insert":
+                rows = self._payload if isinstance(self._payload, list) else [self._payload]
+                item_tags_store.extend(rows)
+                return SimpleNamespace(data=rows)
+            return SimpleNamespace(data=[])
+
+    # Pre-seed race: simulate first select missing "food" so bulk insert triggers 23505 while "travel" is brand new
+    select_round = 0
+    orig_fake_db = SimpleNamespace(table=lambda name: _FakeTagQuery(name))
+    real_exec = _FakeTagQuery.execute
+
+    def _racing_exec(self):
+        nonlocal select_round
+        if self.tbl == "tags" and self._op == "select" and select_round == 0:
+            select_round += 1
+            return SimpleNamespace(data=[])
+        return real_exec(self)
+
+    with patch.object(_FakeTagQuery, "execute", _racing_exec):
+        attached = _attach_tags_to_item(orig_fake_db, uid, "item-1", ["food", "travel"])
+    assert attached == ["food", "travel"]
+    assert any(r["name"] == "travel" for r in tag_store)
+
+    # 5. M2: _run_local_enrichment passes fetch_full_description=True on YouTube 'By ' item and upgrades description
+    yt = create_or_bump_item(
+        isolated_db,
+        uid,
+        ItemCreateRequest(url="https://www.youtube.com/watch?v=upgrade1234", title="YT"),
+    )
+    isolated_db.table("items").update(
+        {"enrich_status": "pending", "platform": "youtube", "description": "By OldAuthor"}
+    ).eq("id", yt["id"]).execute()
+
+    seen_flags = []
+
+    async def _fake_extract(url, fetch_full_description=False):
+        seen_flags.append(fetch_full_description)
+        return UnfurlResult(
+            url=url,
+            canonical_url=url,
+            url_hash="h",
+            title="Real YT Video",
+            description="Full multi-line video description",
+            image_url="https://i.ytimg.com/vi/upgrade1234/hqdefault.jpg",
+            platform="youtube",
+            content_type="video",
+            embed_type="youtube",
+            embed_url="https://www.youtube-nocookie.com/embed/upgrade1234",
+        )
+
+    async def _fake_cover(url, **_kw):
+        return url, False
+
+    with patch("Unfurl.service.extract_unfurl_metadata", side_effect=_fake_extract), patch(
+        "Unfurl.service.process_and_upload_cover", side_effect=_fake_cover
+    ):
+        await _run_local_enrichment(isolated_db, yt["id"])
+
+    assert seen_flags == [True]
+    updated = isolated_db.table("items").select("*").eq("id", yt["id"]).execute().data[0]
+    assert updated["description"] == "Full multi-line video description"
+    assert updated["enrich_status"] == "unfurled"

@@ -39,8 +39,13 @@ export default function AuthCallbackScreen() {
       if (error) {
         handledRef.current = true;
         recordAuthDebugEvent("callback_error", error);
+        const existing = await loadSession().catch(() => null);
         if (!active) return;
-        router.replace({ pathname: "/login", params: { oauthError: error } });
+        if (existing?.access_token) {
+          router.replace("/(tabs)");
+        } else {
+          router.replace({ pathname: "/login", params: { oauthError: error } });
+        }
         return;
       }
 
@@ -53,10 +58,15 @@ export default function AuthCallbackScreen() {
         if (res.ok) {
           router.replace("/(tabs)");
         } else {
-          router.replace({
-            pathname: "/login",
-            params: { oauthError: res.error || "เข้าสู่ระบบด้วย Google ไม่สำเร็จ" },
-          });
+          const existing = await loadSession().catch(() => null);
+          if (existing?.access_token) {
+            router.replace("/(tabs)");
+          } else {
+            router.replace({
+              pathname: "/login",
+              params: { oauthError: res.error || "เข้าสู่ระบบด้วย Google ไม่สำเร็จ" },
+            });
+          }
         }
         return;
       }
@@ -70,10 +80,15 @@ export default function AuthCallbackScreen() {
         if (res.ok) {
           router.replace("/(tabs)");
         } else {
-          router.replace({
-            pathname: "/login",
-            params: { oauthError: res.error || "แลกรหัสเข้าสู่ระบบ Google ไม่สำเร็จ" },
-          });
+          const existing = await loadSession().catch(() => null);
+          if (existing?.access_token) {
+            router.replace("/(tabs)");
+          } else {
+            router.replace({
+              pathname: "/login",
+              params: { oauthError: res.error || "แลกรหัสเข้าสู่ระบบ Google ไม่สำเร็จ" },
+            });
+          }
         }
         return;
       }

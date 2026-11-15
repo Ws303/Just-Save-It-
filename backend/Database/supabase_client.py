@@ -21,8 +21,6 @@ except ImportError:
 logger = logging.getLogger("just_save_it.database.supabase_client")
 
 _client_lock = threading.Lock()
-_anon_client_instance: Optional[Any] = None
-_anon_client_key: Optional[Tuple[str, str]] = None
 _service_client_instance: Optional[Any] = None
 _service_client_key: Optional[Tuple[str, str]] = None
 
@@ -58,23 +56,12 @@ def is_supabase_configured() -> bool:
 
 
 def get_supabase_anon_client() -> Any:
-    """Obtain singleton client with public anon key (pooled per URL/key pair)."""
-    global _anon_client_instance, _anon_client_key
+    """Create an isolated anon client per auth flow so GoTrue session/PKCE state is never shared across requests."""
     url = get_supabase_url()
     key = get_supabase_anon_key()
-    cache_key = (url, key)
-    if _anon_client_instance is not None and _anon_client_key == cache_key:
-        return _anon_client_instance
-
     if create_client is None:
         raise RuntimeError("Supabase SDK is not installed. Run 'pip install supabase'.")
-
-    with _client_lock:
-        if _anon_client_instance is not None and _anon_client_key == cache_key:
-            return _anon_client_instance
-        _anon_client_instance = create_client(url, key)
-        _anon_client_key = cache_key
-        return _anon_client_instance
+    return create_client(url, key)
 
 
 def get_supabase_service_client() -> Any:

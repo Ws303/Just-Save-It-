@@ -98,18 +98,21 @@ function connectWebSocket() {
     baseUrl.replace(/^https:/i, "wss:").replace(/^http:/i, "ws:").replace(/\/+$/, "") +
     `/realtime/v1/websocket?apikey=${encodeURIComponent(anonKey)}&vsn=1.0.0`;
 
+  let sock;
   try {
-    ws = new WebSocket(wsUrl);
+    sock = new WebSocket(wsUrl);
+    ws = sock;
   } catch {
     return;
   }
 
-  ws.addEventListener("open", () => {
+  sock.addEventListener("open", () => {
+    if (ws !== sock || !running) return;
     reconnectAttempt = 0;
     const token =
       (typeof currentOptions?.getAccessToken === "function" ? currentOptions.getAccessToken() : "") || anonKey;
     try {
-      ws.send(
+      sock.send(
         JSON.stringify({
           topic: "realtime:public",
           event: "phx_join",
@@ -130,7 +133,7 @@ function connectWebSocket() {
         })
       );
       if (token && token !== anonKey) {
-        ws.send(
+        sock.send(
           JSON.stringify({
             topic: "realtime:public",
             event: "access_token",
@@ -144,9 +147,9 @@ function connectWebSocket() {
     }
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = setInterval(() => {
-      if (ws && ws.readyState === 1) {
+      if (ws === sock && sock.readyState === 1) {
         try {
-          ws.send(JSON.stringify({ topic: "phoenix", event: "heartbeat", payload: {}, ref: nextRef() }));
+          sock.send(JSON.stringify({ topic: "phoenix", event: "heartbeat", payload: {}, ref: nextRef() }));
         } catch {
           // ignore
         }
@@ -154,7 +157,8 @@ function connectWebSocket() {
     }, 30000);
   });
 
-  ws.addEventListener("message", (event) => {
+  sock.addEventListener("message", (event) => {
+    if (ws !== sock || !running) return;
     try {
       const msg = JSON.parse(event.data);
       if (
@@ -171,6 +175,7 @@ function connectWebSocket() {
   });
 
   const handleDisconnect = () => {
+    if (ws !== sock) return;
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
@@ -187,10 +192,11 @@ function connectWebSocket() {
     }, delayMs);
   };
 
-  ws.addEventListener("close", handleDisconnect);
-  ws.addEventListener("error", () => {
+  sock.addEventListener("close", handleDisconnect);
+  sock.addEventListener("error", () => {
+    if (ws !== sock) return;
     try {
-      ws?.close();
+      sock.close();
     } catch {
       handleDisconnect();
     }
@@ -246,6 +252,9 @@ export function broadcastLocalChange(reason = "mutation") {
 
 export function stopRealtimeSync() {
   running = false;
+  lastLocalMutationAt = 0;
+  pendingDeltas = [];
+  pendingForceFullSync = false;
   clearTimers();
   if (ws) {
     try {

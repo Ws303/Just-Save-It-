@@ -255,8 +255,13 @@ async def enrich_item(
             }
 
     # 2. Live 0-token extraction + Cover #1 WebP upload
+    old_desc = str(item.get("description") or "").strip()
+    old_plat = str(item.get("platform") or "").lower()
+    needs_yt_full_desc = old_plat == "youtube" and old_desc.startswith("By ")
     try:
-        result = await extract_unfurl_metadata(canon_url, fetch_full_description=force_refresh)
+        result = await extract_unfurl_metadata(
+            canon_url, fetch_full_description=bool(force_refresh or needs_yt_full_desc)
+        )
         final_cover, uploaded_to_storage = await process_and_upload_cover(
             result.image_url,
             url_hash=url_hash,
@@ -292,7 +297,11 @@ async def enrich_item(
         }
         if _should_replace_title(item, force_refresh=force_refresh) and result.title:
             updates["title"] = result.title
-        if (force_refresh or not item.get("description")) and result.description:
+        if result.description and (
+            force_refresh
+            or not old_desc
+            or (needs_yt_full_desc and not result.description.startswith("By "))
+        ):
             updates["description"] = result.description
 
         upd_res = db.table("items").update(updates).eq("id", item_id).execute()

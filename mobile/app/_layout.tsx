@@ -1,6 +1,18 @@
 import React, { Component, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { getRandomValues as expoGetRandomValues } from "expo-crypto";
 import { Stack, useRootNavigationState, useRouter, useSegments } from "expo-router";
+
+const globalWithCrypto = globalThis as unknown as {
+  crypto?: { getRandomValues?: <T extends ArrayBufferView | null>(array: T) => T };
+};
+if (!globalWithCrypto.crypto) {
+  globalWithCrypto.crypto = {
+    getRandomValues: expoGetRandomValues as <T extends ArrayBufferView | null>(array: T) => T,
+  };
+} else if (typeof globalWithCrypto.crypto.getRandomValues !== "function") {
+  globalWithCrypto.crypto.getRandomValues = expoGetRandomValues as <T extends ArrayBufferView | null>(array: T) => T;
+}
 import * as Linking from "expo-linking";
 import { StatusBar } from "expo-status-bar";
 import {
@@ -211,22 +223,41 @@ function RootLayoutContent() {
           if (oauth.error || oauth.errorDescription) {
             const msg = oauth.errorDescription || oauth.error;
             recordAuthDebugEvent("oauth_deeplink_error", msg);
-            if (active) router.replace({ pathname: "/login", params: { oauthError: msg } });
+            const existing = await loadSession().catch(() => null);
+            if (!existing?.access_token && active) {
+              router.replace({ pathname: "/login", params: { oauthError: msg } });
+            }
             return;
           }
           if (oauth.accessToken) {
             const res = await completeOAuthWithTokens(oauth.accessToken, oauth.refreshToken);
             if (active) {
-              if (res.ok) router.replace("/(tabs)");
-              else router.replace({ pathname: "/login", params: { oauthError: res.error || "OAuth ล้มเหลว" } });
+              if (res.ok) {
+                router.replace("/(tabs)");
+              } else {
+                const existing = await loadSession().catch(() => null);
+                if (existing?.access_token) {
+                  router.replace("/(tabs)");
+                } else {
+                  router.replace({ pathname: "/login", params: { oauthError: res.error || "OAuth ล้มเหลว" } });
+                }
+              }
             }
             return;
           }
           if (oauth.code) {
             const res = await exchangeOAuthCode(oauth.code);
             if (active) {
-              if (res.ok) router.replace("/(tabs)");
-              else router.replace({ pathname: "/login", params: { oauthError: res.error || "PKCE ล้มเหลว" } });
+              if (res.ok) {
+                router.replace("/(tabs)");
+              } else {
+                const existing = await loadSession().catch(() => null);
+                if (existing?.access_token) {
+                  router.replace("/(tabs)");
+                } else {
+                  router.replace({ pathname: "/login", params: { oauthError: res.error || "PKCE ล้มเหลว" } });
+                }
+              }
             }
             return;
           }

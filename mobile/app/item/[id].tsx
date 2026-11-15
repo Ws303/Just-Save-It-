@@ -192,7 +192,17 @@ export default function ItemDetailScreen() {
             {item.url}
           </Text>
           <View style={styles.actionRow}>
-            <Pressable style={styles.primaryBtn} onPress={() => void Linking.openURL(item.url)}>
+            <Pressable
+              style={styles.primaryBtn}
+              onPress={() => {
+                const rawUrl = String(item.url || "").trim();
+                if (!/^https?:\/\//i.test(rawUrl)) {
+                  Alert.alert("ลิงก์ไม่ปลอดภัย", "อนุญาตเปิดเฉพาะลิงก์ http หรือ https เท่านั้น");
+                  return;
+                }
+                void Linking.openURL(rawUrl);
+              }}
+            >
               <Text style={styles.primaryBtnText}>เปิดลิงก์ ↗</Text>
             </Pressable>
             <Pressable style={styles.secondaryBtn} onPress={() => void handleRefreshPreview()}>

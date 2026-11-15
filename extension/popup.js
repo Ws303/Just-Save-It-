@@ -930,9 +930,15 @@
     setSaverPaneMode("save");
     renderReminderPicker();
 
-    const cache = preloadedCache || { folders: [], tags: [], recentItems: [], user: null };
     const session = preloadedSession || { user: null };
-    const cachedUser = cache.user || session.user;
+    const rawCache = preloadedCache || { folders: [], tags: [], recentItems: [], user: null };
+    const sessionUid = String((session.user && session.user.id) || "").trim();
+    const cacheUid = String((rawCache.user && rawCache.user.id) || "").trim();
+    const cache =
+      sessionUid && cacheUid && cacheUid !== sessionUid
+        ? { folders: [], tags: [], recentItems: [], user: null }
+        : rawCache;
+    const cachedUser = session.user || cache.user;
     state.cachedUser = cachedUser;
     const userDisplay = (cachedUser && (cachedUser.display_name || cachedUser.email)) || "บัญชี Sharely";
     if (els.userLabel) {
@@ -956,7 +962,41 @@
     void syncWorkspaceBackground(userDisplay);
   }
 
+  function resetSaverMemoryAndInputs() {
+    state.selectedFolderId = "";
+    state.selectedTags = [];
+    state.cachedFolders = [];
+    state.cachedTags = [];
+    state.allRecentItems = [];
+    state.cachedUser = null;
+    state.lastSavedItemId = null;
+    state.previewMeta = null;
+    state.previewUrl = "";
+    state.reminder = {
+      pickerOpen: false,
+      enabled: false,
+      presetKey: "none",
+      selectedDate: "",
+      time: "18:00",
+      scheduleType: "once",
+      repeatEveryDays: 3,
+      viewYearMonth: getBangkokTodayIso().slice(0, 7),
+    };
+    if (els.noteInput) els.noteInput.value = "";
+    if (els.tagsInput) els.tagsInput.value = "";
+    if (els.quickTagInput) els.quickTagInput.value = "";
+    if (els.recentSearchInput) els.recentSearchInput.value = "";
+    if (els.userLabel) els.userLabel.textContent = "";
+    if (els.folderChipWrap) els.folderChipWrap.innerHTML = "";
+    if (els.tagSuggestions) els.tagSuggestions.innerHTML = "";
+    if (els.recentList) els.recentList.innerHTML = "";
+    if (els.recentCount) els.recentCount.textContent = "0";
+    if (els.offlineQueueBar) els.offlineQueueBar.classList.add("hidden");
+    if (els.reminderPickerCard) els.reminderPickerCard.classList.add("hidden");
+  }
+
   function enterAuthView() {
+    resetSaverMemoryAndInputs();
     els.saverView.classList.add("hidden");
     els.authView.classList.remove("hidden");
     els.savedResultCard.classList.add("hidden");

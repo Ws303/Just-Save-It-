@@ -106,6 +106,16 @@
   }
 
   async function saveAuthSession(authPayload) {
+    const prev = await getStorage([STORAGE_KEYS.USER]);
+    const prevUid = String((prev[STORAGE_KEYS.USER] && prev[STORAGE_KEYS.USER].id) || "").trim();
+    const nextUid = String((authPayload && authPayload.user && authPayload.user.id) || "").trim();
+    if (prevUid && nextUid && prevUid !== nextUid) {
+      await removeStorage([
+        STORAGE_KEYS.WORKSPACE_CACHE,
+        STORAGE_KEYS.OFFLINE_QUEUE,
+        STORAGE_KEYS.NOTIFIED_REMINDERS,
+      ]);
+    }
     await setStorage({
       [STORAGE_KEYS.ACCESS_TOKEN]: authPayload.access_token || "",
       [STORAGE_KEYS.REFRESH_TOKEN]: authPayload.refresh_token || "",
@@ -119,16 +129,25 @@
       STORAGE_KEYS.REFRESH_TOKEN,
       STORAGE_KEYS.USER,
       STORAGE_KEYS.WORKSPACE_CACHE,
+      STORAGE_KEYS.OFFLINE_QUEUE,
+      STORAGE_KEYS.NOTIFIED_REMINDERS,
     ]);
   }
 
-  async function getWorkspaceCache() {
-    const res = await getStorage([STORAGE_KEYS.WORKSPACE_CACHE]);
+  async function getWorkspaceCache(expectedUserId = "") {
+    const res = await getStorage([STORAGE_KEYS.WORKSPACE_CACHE, STORAGE_KEYS.USER]);
     const cache = res[STORAGE_KEYS.WORKSPACE_CACHE];
+    const currentUser = res[STORAGE_KEYS.USER];
+    const uid = String(expectedUserId || (currentUser && currentUser.id) || "").trim();
     if (!cache || typeof cache !== "object") {
-      return { folders: [], tags: [], recentItems: [], user: null };
+      return { userId: "", folders: [], tags: [], recentItems: [], user: null };
+    }
+    const cacheUid = String(cache.userId || (cache.user && cache.user.id) || "").trim();
+    if (uid && (!cacheUid || cacheUid !== uid)) {
+      return { userId: "", folders: [], tags: [], recentItems: [], user: null };
     }
     return {
+      userId: cacheUid,
       folders: Array.isArray(cache.folders) ? cache.folders : [],
       tags: Array.isArray(cache.tags) ? cache.tags : [],
       recentItems: Array.isArray(cache.recentItems) ? cache.recentItems : [],
@@ -137,12 +156,17 @@
   }
 
   async function setWorkspaceCache(cache) {
+    const res = await getStorage([STORAGE_KEYS.USER]);
+    const currentUser = res[STORAGE_KEYS.USER];
+    const resolvedUser = (cache && cache.user) || currentUser || null;
+    const uid = String((resolvedUser && resolvedUser.id) || (currentUser && currentUser.id) || "").trim();
     await setStorage({
       [STORAGE_KEYS.WORKSPACE_CACHE]: {
+        userId: uid,
         folders: Array.isArray(cache && cache.folders) ? cache.folders : [],
         tags: Array.isArray(cache && cache.tags) ? cache.tags : [],
         recentItems: Array.isArray(cache && cache.recentItems) ? cache.recentItems : [],
-        user: (cache && cache.user) || null,
+        user: resolvedUser,
         cachedAt: Date.now(),
       },
     });
@@ -304,18 +328,26 @@
     return typeof url === "string" && /^https?:\/\//i.test(url.trim());
   }
 
-  async function getOfflineQueue() {
-    const res = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE]);
-    return Array.isArray(res[STORAGE_KEYS.OFFLINE_QUEUE]) ? res[STORAGE_KEYS.OFFLINE_QUEUE] : [];
+  async function getOfflineQueue(expectedUserId = "") {
+    const res = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE, STORAGE_KEYS.USER]);
+    const raw = Array.isArray(res[STORAGE_KEYS.OFFLINE_QUEUE]) ? res[STORAGE_KEYS.OFFLINE_QUEUE] : [];
+    const uid = String(expectedUserId || (res[STORAGE_KEYS.USER] && res[STORAGE_KEYS.USER].id) || "").trim();
+    if (!uid) {
+      return raw.filter((entry) => !entry?.user_id);
+    }
+    return raw.filter((entry) => Boolean(entry?.user_id) && String(entry.user_id).trim() === uid);
   }
 
   async function enqueueOfflineSave(payload, reason = "offline") {
     if (!payload || !isSaveableHttpUrl(payload.url)) return await getOfflineQueue();
-    const current = await getOfflineQueue();
+    const res = await getStorage([STORAGE_KEYS.USER]);
+    const uid = String((res[STORAGE_KEYS.USER] && res[STORAGE_KEYS.USER].id) || "").trim();
+    const current = await getOfflineQueue(uid);
     const deduped = current.filter((entry) => entry?.payload?.url !== payload.url);
     const next = [
       {
         id: `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        user_id: uid,
         payload,
         reason,
         queued_at: new Date().toISOString(),
@@ -327,8 +359,34 @@
   }
 
   async function flushOfflineQueue(saveFn) {
-    const queue = await getOfflineQueue();
-    if (!queue.length) return { flushed: 0, remaining: 0, failed: 0 };
+    const session = await getSessionState();
+    const currentUid = String((session && session.user && session.user.id) || "").trim();
+    const res = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE]);
+    const allQueue = Array.isArray(res[STORAGE_KEYS.OFFLINE_QUEUE]) ? res[STORAGE_KEYS.OFFLINE_QUEUE] : [];
+    if (!currentUid && typeof saveFn !== "function") {
+      return { flushed: 0, remaining: allQueue.length, failed: 0 };
+    }
+    const foreignRemaining = [];
+    const queue = [];
+    for (const entry of allQueue) {
+      const entryUid = String(entry?.user_id || "").trim();
+      if (!currentUid) {
+        if (!entryUid) queue.push(entry);
+        else foreignRemaining.push(entry);
+      } else if (!entryUid) {
+        continue; // Drop legacy unstamped entries when authenticated to prevent cross-account attribution
+      } else if (entryUid !== currentUid) {
+        foreignRemaining.push(entry);
+      } else {
+        queue.push(entry);
+      }
+    }
+    if (!queue.length) {
+      if (foreignRemaining.length !== allQueue.length) {
+        await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: foreignRemaining });
+      }
+      return { flushed: 0, remaining: 0, failed: 0 };
+    }
     const sender =
       typeof saveFn === "function"
         ? saveFn
@@ -351,7 +409,8 @@
         }
       }
     }
-    await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: remaining });
+    const nextQueue = [...foreignRemaining, ...remaining];
+    await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: nextQueue });
     return { flushed, remaining: remaining.length, failed };
   }
 

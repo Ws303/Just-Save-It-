@@ -92,7 +92,11 @@ def mark_user_deleted(user_id: str) -> None:
 
 def is_user_deleted(user_id: str) -> bool:
     """Return True if the user ID has been revoked/deleted in this worker."""
-    return str(user_id or "").strip() in _DELETED_USER_IDS
+    clean_id = str(user_id or "").strip()
+    if not clean_id:
+        return False
+    with _live_user_lock:
+        return clean_id in _DELETED_USER_IDS
 
 
 def _cache_live_user_verified(sub: str) -> None:
@@ -184,7 +188,11 @@ def _verify_live_user_exists(sub: str) -> None:
     except HTTPException:
         raise
     except Exception as exc:
-        logger.debug("Non-fatal live user existence check skipped for %s: %s", clean_sub, exc)
+        logger.warning("Live user verification failed closed for %s: %s", clean_sub, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication verification temporarily unavailable.",
+        )
 
 
 def _ensure_authenticated_claims(payload: Dict[str, Any]) -> Dict[str, Any]:

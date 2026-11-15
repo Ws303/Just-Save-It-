@@ -1,13 +1,16 @@
 import {
   classifyQueueFlushStatus,
+  clearPkceVerifier,
   clearSession,
-  consumePkceVerifier,
   enqueueOfflineItem,
   flushOfflineQueueWithSender,
+  getAuthGeneration,
   loadCachedWorkspace,
   loadOfflineQueue,
   loadSession,
+  peekPkceVerifier,
   recordAuthDebugEvent,
+  removeCachedLinkItem,
   saveCachedWorkspace,
   savePkceVerifier,
   saveSession,
@@ -36,14 +39,28 @@ export interface McpTokenRecord {
   last_used_at?: string | null;
 }
 
-let _refreshInFlightPromise: Promise<boolean> | null = null;
-let _workspaceInFlightPromise: Promise<{
+type WorkspacePayload = {
   me: JsonRecord | null;
   items: MobileLinkItem[];
   folders: MobileFolderItem[];
   reminders: MobileReminderItem[];
   offline: boolean;
-}> | null = null;
+};
+
+let _refreshInFlightPromise: Promise<boolean> | null = null;
+let _refreshInFlightGen = -1;
+let _workspaceInFlightPromise: Promise<WorkspacePayload> | null = null;
+let _workspaceInFlightGen = -1;
+
+const OAUTH_SETTLED_CACHE_MS = 60_000;
+const _codeExchangePromises = new Map<string, Promise<ApiResult<StoredSession>>>();
+const _codeExchangeResults = new Map<string, { res: ApiResult<StoredSession>; at: number }>();
+const _tokenCompletionPromises = new Map<string, Promise<ApiResult<StoredSession>>>();
+const _tokenCompletionResults = new Map<string, { res: ApiResult<StoredSession>; at: number }>();
+
+export function isOAuthExchangeInFlight(): boolean {
+  return _codeExchangePromises.size > 0 || _tokenCompletionPromises.size > 0;
+}
 
 // RFC 6234 SHA-256 + RFC 7636 PKCE helpers (pure TS for React Native Hermes + Node test parity)
 const SHA256_K = [
@@ -165,8 +182,19 @@ export function buildPkceChallengePair(fixedVerifier?: string): { verifier: stri
     if (cryptoObj && typeof cryptoObj.getRandomValues === "function") {
       cryptoObj.getRandomValues(rnd);
     } else {
-      for (let i = 0; i < rnd.length; i += 1) {
-        rnd[i] = Math.floor(Math.random() * 256);
+      let filled = false;
+      try {
+        // Lazy require avoids loading React Native native modules in Node tests while supporting Hermes
+        const expoCrypto = require("expo-crypto") as { getRandomValues?: (arr: Uint8Array) => Uint8Array };
+        if (typeof expoCrypto?.getRandomValues === "function") {
+          expoCrypto.getRandomValues(rnd);
+          filled = true;
+        }
+      } catch {
+        filled = false;
+      }
+      if (!filled) {
+        throw new Error("Secure random number generator unavailable for PKCE");
       }
     }
     verifier = Array.from(rnd, (b) => chars[b % chars.length]).join("");
@@ -303,39 +331,66 @@ export async function completeOAuthWithTokens(
   if (!cleanAccess) {
     return { ok: false, status: 400, data: null, error: "ไม่พบ Access Token จาก Google" };
   }
-  let userObj: StoredSession["user"] = null;
-  try {
-    const resp = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      method: "GET",
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${cleanAccess}`,
-      },
-    });
-    if (resp.ok) {
-      const rawUser = await parseJsonSafe(resp);
-      const rawMeta = rawUser?.user_metadata as JsonRecord | undefined;
-      if (rawUser?.id || rawUser?.email) {
-        userObj = {
-          id: String(rawUser.id || ""),
-          email: String(rawUser.email || ""),
-          display_name: String(
-            rawMeta?.display_name || rawMeta?.full_name || rawMeta?.name || String(rawUser.email || "").split("@")[0],
-          ),
-        };
-      }
+
+  const cached = _tokenCompletionResults.get(cleanAccess);
+  if (cached && cached.res.ok && Date.now() - cached.at < OAUTH_SETTLED_CACHE_MS) {
+    const cur = await loadSession().catch(() => null);
+    if (cur?.access_token === cleanAccess) {
+      return cached.res;
     }
-  } catch {
-    // Non-fatal: save token session and let /api/workspace hydrate profile
   }
-  const session: StoredSession = {
-    access_token: cleanAccess,
-    refresh_token: cleanRefresh,
-    user: userObj,
-  };
-  await saveSession(session);
-  recordAuthDebugEvent("oauth_session_saved", userObj?.email || "token_ready");
-  return { ok: true, status: 200, data: session };
+
+  const existingPromise = _tokenCompletionPromises.get(cleanAccess);
+  if (existingPromise) {
+    return existingPromise;
+  }
+
+  const task = (async (): Promise<ApiResult<StoredSession>> => {
+    let userObj: StoredSession["user"] = null;
+    try {
+      const resp = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+        method: "GET",
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${cleanAccess}`,
+        },
+      });
+      if (resp.ok) {
+        const rawUser = await parseJsonSafe(resp);
+        const rawMeta = rawUser?.user_metadata as JsonRecord | undefined;
+        if (rawUser?.id || rawUser?.email) {
+          userObj = {
+            id: String(rawUser.id || ""),
+            email: String(rawUser.email || ""),
+            display_name: String(
+              rawMeta?.display_name || rawMeta?.full_name || rawMeta?.name || String(rawUser.email || "").split("@")[0],
+            ),
+          };
+        }
+      }
+    } catch {
+      // Non-fatal: save token session and let /api/workspace hydrate profile
+    }
+    const session: StoredSession = {
+      access_token: cleanAccess,
+      refresh_token: cleanRefresh,
+      user: userObj,
+    };
+    await saveSession(session);
+    recordAuthDebugEvent("oauth_session_saved", userObj?.email || "token_ready");
+    const res: ApiResult<StoredSession> = { ok: true, status: 200, data: session };
+    _tokenCompletionResults.set(cleanAccess, { res, at: Date.now() });
+    return res;
+  })();
+
+  _tokenCompletionPromises.set(cleanAccess, task);
+  try {
+    return await task;
+  } finally {
+    if (_tokenCompletionPromises.get(cleanAccess) === task) {
+      _tokenCompletionPromises.delete(cleanAccess);
+    }
+  }
 }
 
 export async function exchangeOAuthCode(code: string): Promise<ApiResult<StoredSession>> {
@@ -343,63 +398,94 @@ export async function exchangeOAuthCode(code: string): Promise<ApiResult<StoredS
   if (!cleanCode) {
     return { ok: false, status: 400, data: null, error: "ไม่พบ Authorization Code จาก Google" };
   }
-  const verifier = await consumePkceVerifier();
-  try {
-    const resp = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=pkce`, {
-      method: "POST",
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        auth_code: cleanCode,
-        ...(verifier ? { code_verifier: verifier } : {}),
-      }),
-    });
-    const data = await parseJsonSafe(resp);
-    const accessToken = typeof data?.access_token === "string" ? data.access_token : "";
-    if (!resp.ok || !accessToken) {
-      const errMsg =
-        (typeof data?.error_description === "string" && data.error_description) ||
-        (typeof data?.msg === "string" && data.msg) ||
-        (typeof data?.error === "string" && data.error) ||
-        "แลกรหัสยืนยันตัวตน Google ไม่สำเร็จ";
-      recordAuthDebugEvent("pkce_exchange_fail", `HTTP ${resp.status}: ${errMsg}`);
-      return { ok: false, status: resp.status, data: null, error: errMsg };
+
+  const cached = _codeExchangeResults.get(cleanCode);
+  if (cached && cached.res.ok && Date.now() - cached.at < OAUTH_SETTLED_CACHE_MS) {
+    const cur = await loadSession().catch(() => null);
+    if (cur?.access_token && cur.access_token === cached.res.data?.access_token) {
+      return cached.res;
     }
-    const rawUser = data?.user as JsonRecord | undefined;
-    const rawMeta = rawUser?.user_metadata as JsonRecord | undefined;
-    const session: StoredSession = {
-      access_token: accessToken,
-      refresh_token: typeof data?.refresh_token === "string" ? data.refresh_token : "",
-      expires_at: typeof data?.expires_at === "number" ? data.expires_at : undefined,
-      user: rawUser
-        ? {
-            id: String(rawUser.id || ""),
-            email: String(rawUser.email || ""),
-            display_name: String(
-              rawMeta?.display_name || rawMeta?.full_name || rawMeta?.name || String(rawUser.email || "").split("@")[0],
-            ),
-          }
-        : null,
-    };
-    await saveSession(session);
-    recordAuthDebugEvent("pkce_exchange_ok", session.user?.email || "authenticated");
-    return { ok: true, status: resp.status, data: session };
-  } catch (err: unknown) {
-    const msg = getErrorMessage(err, "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ยืนยันตัวตนได้");
-    recordAuthDebugEvent("pkce_exchange_error", msg);
-    return { ok: false, status: 0, data: null, error: msg };
+  }
+
+  const existingPromise = _codeExchangePromises.get(cleanCode);
+  if (existingPromise) {
+    return existingPromise;
+  }
+
+  const task = (async (): Promise<ApiResult<StoredSession>> => {
+    const verifier = await peekPkceVerifier();
+    try {
+      const resp = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=pkce`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          auth_code: cleanCode,
+          ...(verifier ? { code_verifier: verifier } : {}),
+        }),
+      });
+      if (resp.ok || (resp.status >= 400 && resp.status < 500)) {
+        await clearPkceVerifier().catch(() => {});
+      }
+      const data = await parseJsonSafe(resp);
+      const accessToken = typeof data?.access_token === "string" ? data.access_token : "";
+      if (!resp.ok || !accessToken) {
+        const errMsg =
+          (typeof data?.error_description === "string" && data.error_description) ||
+          (typeof data?.msg === "string" && data.msg) ||
+          (typeof data?.error === "string" && data.error) ||
+          "แลกรหัสยืนยันตัวตน Google ไม่สำเร็จ";
+        recordAuthDebugEvent("pkce_exchange_fail", `HTTP ${resp.status}: ${errMsg}`);
+        return { ok: false, status: resp.status, data: null, error: errMsg };
+      }
+      const rawUser = data?.user as JsonRecord | undefined;
+      const rawMeta = rawUser?.user_metadata as JsonRecord | undefined;
+      const session: StoredSession = {
+        access_token: accessToken,
+        refresh_token: typeof data?.refresh_token === "string" ? data.refresh_token : "",
+        expires_at: typeof data?.expires_at === "number" ? data.expires_at : undefined,
+        user: rawUser
+          ? {
+              id: String(rawUser.id || ""),
+              email: String(rawUser.email || ""),
+              display_name: String(
+                rawMeta?.display_name || rawMeta?.full_name || rawMeta?.name || String(rawUser.email || "").split("@")[0],
+              ),
+            }
+          : null,
+      };
+      await saveSession(session);
+      recordAuthDebugEvent("pkce_exchange_ok", session.user?.email || "authenticated");
+      const res: ApiResult<StoredSession> = { ok: true, status: resp.status, data: session };
+      _codeExchangeResults.set(cleanCode, { res, at: Date.now() });
+      return res;
+    } catch (err: unknown) {
+      const msg = getErrorMessage(err, "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ยืนยันตัวตนได้");
+      recordAuthDebugEvent("pkce_exchange_error", msg);
+      return { ok: false, status: 0, data: null, error: msg };
+    }
+  })();
+
+  _codeExchangePromises.set(cleanCode, task);
+  try {
+    return await task;
+  } finally {
+    if (_codeExchangePromises.get(cleanCode) === task) {
+      _codeExchangePromises.delete(cleanCode);
+    }
   }
 }
 
 export async function refreshSession(): Promise<boolean> {
-  if (_refreshInFlightPromise) {
+  const startGen = getAuthGeneration();
+  if (_refreshInFlightPromise && _refreshInFlightGen === startGen) {
     return _refreshInFlightPromise;
   }
-  _refreshInFlightPromise = (async () => {
+  const task = (async (): Promise<boolean> => {
     const current = await loadSession();
-    if (!current?.refresh_token) return false;
+    if (!current?.refresh_token || getAuthGeneration() !== startGen) return false;
     try {
       const resp = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
         method: "POST",
@@ -409,11 +495,13 @@ export async function refreshSession(): Promise<boolean> {
         },
         body: JSON.stringify({ refresh_token: current.refresh_token }),
       });
+      if (getAuthGeneration() !== startGen) return false;
       const data = await parseJsonSafe(resp);
       const accessToken = typeof data?.access_token === "string" ? data.access_token : "";
       if (!resp.ok || !accessToken) return false;
       const rawUser = data?.user as JsonRecord | undefined;
       const rawMeta = rawUser?.user_metadata as JsonRecord | undefined;
+      if (getAuthGeneration() !== startGen) return false;
       await saveSession({
         access_token: accessToken,
         refresh_token: typeof data?.refresh_token === "string" ? data.refresh_token : current.refresh_token,
@@ -431,10 +519,15 @@ export async function refreshSession(): Promise<boolean> {
       return false;
     }
   })();
+  _refreshInFlightPromise = task;
+  _refreshInFlightGen = startGen;
   try {
-    return await _refreshInFlightPromise;
+    return await task;
   } finally {
-    _refreshInFlightPromise = null;
+    if (_refreshInFlightPromise === task) {
+      _refreshInFlightPromise = null;
+      _refreshInFlightGen = -1;
+    }
   }
 }
 
@@ -485,19 +578,70 @@ export async function apiFetch<T = JsonRecord>(
   }
 }
 
-export async function fetchWorkspace(): Promise<{
-  me: JsonRecord | null;
-  items: MobileLinkItem[];
-  folders: MobileFolderItem[];
-  reminders: MobileReminderItem[];
-  offline: boolean;
-}> {
-  if (_workspaceInFlightPromise) {
+function mergeUniqueMobileItems(
+  target: MobileLinkItem[],
+  seenIds: Set<string>,
+  batch: MobileLinkItem[],
+): number {
+  let added = 0;
+  for (const row of batch) {
+    const id = row?.id ? String(row.id) : "";
+    if (id && seenIds.has(id)) continue;
+    if (id) seenIds.add(id);
+    target.push(row);
+    added += 1;
+  }
+  return added;
+}
+
+async function fetchCursorPaginatedItems(
+  firstBatch: MobileLinkItem[],
+  initialCursor: string | null | undefined,
+  startGen: number,
+): Promise<{ aborted: boolean; items: MobileLinkItem[] }> {
+  const items: MobileLinkItem[] = [];
+  const seenIds = new Set<string>();
+  mergeUniqueMobileItems(items, seenIds, firstBatch);
+  let nextCursor = initialCursor || null;
+  let pageCount = 0;
+  while (nextCursor && pageCount < 25) {
+    pageCount += 1;
+    const nextRes = await apiFetch<{ items?: MobileLinkItem[]; next_cursor?: string | null }>(
+      `/api/items?limit=100&cursor=${encodeURIComponent(nextCursor)}`,
+    );
+    if (getAuthGeneration() !== startGen) {
+      return { aborted: true, items: [] };
+    }
+    const batch = nextRes.ok && Array.isArray(nextRes.data?.items) ? nextRes.data.items : [];
+    const added = mergeUniqueMobileItems(items, seenIds, batch);
+    const candidateCursor = nextRes.data?.next_cursor || null;
+    if (batch.length === 0 || added === 0 || !candidateCursor || candidateCursor === nextCursor) {
+      break;
+    }
+    nextCursor = candidateCursor;
+  }
+  return { aborted: false, items };
+}
+
+export async function fetchWorkspace(): Promise<WorkspacePayload> {
+  const startGen = getAuthGeneration();
+  if (_workspaceInFlightPromise && _workspaceInFlightGen === startGen) {
     return _workspaceInFlightPromise;
   }
 
-  _workspaceInFlightPromise = (async () => {
+  const emptyPayload: WorkspacePayload = {
+    me: null,
+    items: [],
+    folders: [],
+    reminders: [],
+    offline: false,
+  };
+
+  const task = (async (): Promise<WorkspacePayload> => {
     const session = await loadSession();
+    if (getAuthGeneration() !== startGen) {
+      return emptyPayload;
+    }
     if (!session?.access_token) {
       const cached = await loadCachedWorkspace();
       return {
@@ -516,23 +660,26 @@ export async function fetchWorkspace(): Promise<{
       next_cursor?: string | null;
     } & JsonRecord>("/api/workspace?limit=100");
 
+    if (getAuthGeneration() !== startGen) {
+      return emptyPayload;
+    }
+
     if (wsRes.ok && wsRes.data && Array.isArray(wsRes.data.items)) {
-      const firstBatch = wsRes.data.items;
-      const items: MobileLinkItem[] = [...firstBatch];
-      let offset = firstBatch.length;
-      while (wsRes.data.next_cursor && firstBatch.length === 100 && offset < 500) {
-        const nextRes = await apiFetch<{ items?: MobileLinkItem[] }>(`/api/items?limit=100&offset=${offset}`);
-        const batch = nextRes.ok && Array.isArray(nextRes.data?.items) ? nextRes.data.items : [];
-        items.push(...batch);
-        if (batch.length < 100) break;
-        offset += batch.length;
+      const paginated = await fetchCursorPaginatedItems(wsRes.data.items, wsRes.data.next_cursor, startGen);
+      if (paginated.aborted || getAuthGeneration() !== startGen) {
+        return emptyPayload;
       }
       const folders = Array.isArray(wsRes.data.folders) ? wsRes.data.folders : [];
       const reminders = Array.isArray(wsRes.data.reminders) ? wsRes.data.reminders : [];
-      await saveCachedWorkspace({ items, folders, reminders });
+      await saveCachedWorkspace({
+        user_id: session.user?.id || undefined,
+        items: paginated.items,
+        folders,
+        reminders,
+      });
       return {
         me: wsRes.data,
-        items,
+        items: paginated.items,
         folders,
         reminders,
         offline: false,
@@ -553,10 +700,14 @@ export async function fetchWorkspace(): Promise<{
     // Legacy 4-endpoint fallback if backend does not have /api/workspace yet
     const [meRes, itemsRes, foldersRes, remRes] = await Promise.all([
       apiFetch<JsonRecord>("/api/auth/me"),
-      apiFetch<{ items?: MobileLinkItem[] }>("/api/items?limit=100"),
+      apiFetch<{ items?: MobileLinkItem[]; next_cursor?: string | null }>("/api/items?limit=100"),
       apiFetch<{ folders?: MobileFolderItem[] }>("/api/folders"),
       apiFetch<{ reminders?: MobileReminderItem[] }>("/api/reminders"),
     ]);
+
+    if (getAuthGeneration() !== startGen) {
+      return emptyPayload;
+    }
 
     if (!itemsRes.ok) {
       const cached = await loadCachedWorkspace();
@@ -570,32 +721,37 @@ export async function fetchWorkspace(): Promise<{
     }
 
     const firstBatch = Array.isArray(itemsRes.data?.items) ? itemsRes.data.items : [];
-    const items: MobileLinkItem[] = [...firstBatch];
-    let offset = firstBatch.length;
-    while (firstBatch.length === 100 && offset < 500) {
-      const nextRes = await apiFetch<{ items?: MobileLinkItem[] }>(`/api/items?limit=100&offset=${offset}`);
-      const batch = nextRes.ok && Array.isArray(nextRes.data?.items) ? nextRes.data.items : [];
-      items.push(...batch);
-      if (batch.length < 100) break;
-      offset += batch.length;
+    const paginated = await fetchCursorPaginatedItems(firstBatch, itemsRes.data?.next_cursor, startGen);
+    if (paginated.aborted || getAuthGeneration() !== startGen) {
+      return emptyPayload;
     }
     const folders = Array.isArray(foldersRes.data?.folders) ? foldersRes.data.folders : [];
     const reminders = Array.isArray(remRes.data?.reminders) ? remRes.data.reminders : [];
 
-    await saveCachedWorkspace({ items, folders, reminders });
+    await saveCachedWorkspace({
+      user_id: session.user?.id || undefined,
+      items: paginated.items,
+      folders,
+      reminders,
+    });
     return {
       me: meRes.ok ? meRes.data : null,
-      items,
+      items: paginated.items,
       folders,
       reminders,
       offline: false,
     };
   })();
 
+  _workspaceInFlightPromise = task;
+  _workspaceInFlightGen = startGen;
   try {
-    return await _workspaceInFlightPromise;
+    return await task;
   } finally {
-    _workspaceInFlightPromise = null;
+    if (_workspaceInFlightPromise === task) {
+      _workspaceInFlightPromise = null;
+      _workspaceInFlightGen = -1;
+    }
   }
 }
 
@@ -623,6 +779,12 @@ export async function saveLinkItem(payload: {
 export async function flushOfflineQueue(
   customSender?: (item: QueuedLinkPayload) => Promise<boolean | "ok" | "retry" | "drop">,
 ): Promise<{ flushed: number; remaining: number }> {
+  if (!customSender) {
+    const session = await loadSession().catch(() => null);
+    if (!session?.access_token) {
+      return { flushed: 0, remaining: await getOfflineQueueCount() };
+    }
+  }
   const sender =
     customSender ||
     (async (entry: QueuedLinkPayload): Promise<"ok" | "retry" | "drop"> => {
@@ -655,7 +817,11 @@ export async function patchLinkItem(itemId: string, patch: Record<string, unknow
 }
 
 export async function deleteLinkItem(itemId: string): Promise<ApiResult<JsonRecord>> {
-  return apiFetch<JsonRecord>(`/api/items/${encodeURIComponent(itemId)}`, { method: "DELETE" });
+  const res = await apiFetch<JsonRecord>(`/api/items/${encodeURIComponent(itemId)}`, { method: "DELETE" });
+  if (res.ok) {
+    await removeCachedLinkItem(itemId).catch(() => {});
+  }
+  return res;
 }
 
 export async function refreshLinkPreview(itemId: string): Promise<ApiResult<MobileLinkItem>> {

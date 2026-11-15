@@ -14,7 +14,31 @@ import { broadcastLocalChange, noteLocalMutation } from "./realtimeClient.js";
 const WORKSPACE_CACHE_PREFIX = "sharely_workspace_cache_v1:";
 const WORKSPACE_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
 let _refreshInFlightPromise = null;
+let _refreshInFlightContextKey = "";
 let _hydrateInFlightPromise = null;
+let _hydrateInFlightContextKey = "";
+
+function getAuthContextKey() {
+  const gen = Number(store.state.api?.authGeneration || 0);
+  const uid = resolveCacheUserId();
+  return `${gen}:${uid || "anon"}`;
+}
+
+function isAuthContextCurrent(expectedKey) {
+  return getAuthContextKey() === expectedKey;
+}
+
+function mergeUniqueRowsById(targetRows, seenIds, batch) {
+  let added = 0;
+  for (const row of batch || []) {
+    const id = row?.id ? String(row.id) : "";
+    if (id && seenIds.has(id)) continue;
+    if (id) seenIds.add(id);
+    targetRows.push(row);
+    added += 1;
+  }
+  return added;
+}
 
 function resolveCacheUserId(userId) {
   return String(userId || store.state.data.user?.id || store.state.api?.jwtClaims?.sub || "").trim();
@@ -787,16 +811,22 @@ export const apiClient = {
     };
 
     const isLiveMode = store.state.api.mode === "live";
-    const folder = getFolderById(localFallback.folderId);
+    const targetFolderId = localFallback.folderId;
+    const folder = getFolderById(targetFolderId);
     let optimisticItem = null;
+    let optimisticIncrementedCount = false;
     if (isLiveMode) {
       optimisticItem = { ...localFallback, pending: true, _optimistic: true };
       store.state.data.links.unshift(optimisticItem);
-      if (folder) folder.baseExternalCount = (folder.baseExternalCount || 0) + 1;
+      if (folder) {
+        folder.baseExternalCount = (folder.baseExternalCount || 0) + 1;
+        optimisticIncrementedCount = true;
+      }
       store.state.ui.highlightLinkId = optimisticItem.id;
       noteLocalMutation();
       store.emit();
     }
+    const optimisticId = optimisticItem?.id || null;
 
     const res = await dispatchRequest({
       method: "POST",
@@ -810,7 +840,12 @@ export const apiClient = {
       if (optimisticItem) {
         const optIdx = store.state.data.links.indexOf(optimisticItem);
         if (optIdx !== -1) store.state.data.links.splice(optIdx, 1);
-        if (folder && folder.baseExternalCount > 0) folder.baseExternalCount -= 1;
+        if (optimisticIncrementedCount && getFolderById(targetFolderId) === folder && folder.baseExternalCount > 0) {
+          folder.baseExternalCount -= 1;
+        }
+        if (optimisticId && store.state.ui.activeLinkId === optimisticId) {
+          store.state.ui.activeLinkId = store.state.data.links[0]?.id || null;
+        }
       }
       store.showToast(res.error || "บันทึกโพสต์ไม่สำเร็จ");
       store.emit();
@@ -818,16 +853,36 @@ export const apiClient = {
     }
 
     const newItem = res.ok && res.data?.id ? { ...localFallback, ...mapBackendItemToUi(res.data) } : localFallback;
-    if (optimisticItem) {
-      const optIdx = store.state.data.links.indexOf(optimisticItem);
-      if (optIdx !== -1) {
-        store.state.data.links.splice(optIdx, 1, newItem);
-      } else {
-        store.state.data.links.unshift(newItem);
+    const wasDeduplicated = Boolean(res.data?.deduplicated);
+    const existingIdx = store.state.data.links.findIndex((item) => item !== optimisticItem && item.id === newItem.id);
+    const optIdx = optimisticItem ? store.state.data.links.indexOf(optimisticItem) : -1;
+
+    if (optIdx !== -1 && existingIdx !== -1) {
+      store.state.data.links.splice(optIdx, 1);
+      const adjExistingIdx = optIdx < existingIdx ? existingIdx - 1 : existingIdx;
+      store.state.data.links.splice(adjExistingIdx, 1, newItem);
+      if (optimisticIncrementedCount && getFolderById(targetFolderId) === folder && folder.baseExternalCount > 0) {
+        folder.baseExternalCount -= 1;
+      }
+    } else if (optIdx !== -1) {
+      store.state.data.links.splice(optIdx, 1, newItem);
+      if (wasDeduplicated && optimisticIncrementedCount && getFolderById(targetFolderId) === folder && folder.baseExternalCount > 0) {
+        folder.baseExternalCount -= 1;
+      }
+    } else if (existingIdx !== -1) {
+      store.state.data.links.splice(existingIdx, 1, newItem);
+      if ((wasDeduplicated || optimisticIncrementedCount) && getFolderById(targetFolderId) === folder && folder.baseExternalCount > 0 && optimisticIncrementedCount) {
+        folder.baseExternalCount -= 1;
       }
     } else {
       store.state.data.links.unshift(newItem);
-      if (folder) folder.baseExternalCount = (folder.baseExternalCount || 0) + 1;
+      if (!optimisticIncrementedCount && !wasDeduplicated && folder) {
+        folder.baseExternalCount = (folder.baseExternalCount || 0) + 1;
+      }
+    }
+
+    if (optimisticId && store.state.ui.activeLinkId === optimisticId) {
+      store.state.ui.activeLinkId = newItem.id;
     }
 
     store.state.data.lastSharedEvent = {
@@ -1014,6 +1069,7 @@ export const apiClient = {
       folder.name = cleanName;
       folder.emoji = cleanEmoji;
       if (cover) folder.cover = cover;
+      noteLocalMutation();
       store.emit();
       const res = await dispatchRequest({
         method: "PATCH",
@@ -1028,7 +1084,15 @@ export const apiClient = {
         store.emit();
         return null;
       }
+      if (res.ok && res.data && typeof res.data === "object") {
+        if (res.data.name) folder.name = res.data.name;
+        if (res.data.emoji) folder.emoji = res.data.emoji;
+        if (res.data.cover_url || res.data.cover) folder.cover = res.data.cover_url || res.data.cover;
+      }
       store.rebuildNotificationsFromWorkspace();
+      saveWorkspaceCache();
+      broadcastLocalChange("saveFolder");
+      store.emit();
       return folder;
     }
 
@@ -1328,16 +1392,17 @@ export const apiClient = {
       return { ok: false, hydrated: false };
     }
 
+    const startKey = getAuthContextKey();
     const cached = loadWorkspaceCache(resolveCacheUserId());
     if (cached) {
       applyWorkspaceCacheSnapshot(cached);
     }
 
-    if (_hydrateInFlightPromise) {
+    if (_hydrateInFlightPromise && _hydrateInFlightContextKey === startKey) {
       return _hydrateInFlightPromise;
     }
 
-    _hydrateInFlightPromise = (async () => {
+    const task = (async () => {
       try {
         const wsRes = await dispatchRequest({
           method: "GET",
@@ -1347,27 +1412,37 @@ export const apiClient = {
           mockHandler: () => ({ status: 404, data: null }),
         });
 
-        if (!store.state.data.user?.isAuthenticated) {
-          return { ok: false, hydrated: false };
+        if (!store.state.data.user?.isAuthenticated || !isAuthContextCurrent(startKey)) {
+          return { ok: false, hydrated: false, stale: true };
         }
 
         if (wsRes?.ok && wsRes.data && Array.isArray(wsRes.data.items)) {
           const d = wsRes.data;
-          const allRows = [...d.items];
-          let offset = allRows.length;
-          while (d.next_cursor && allRows.length === offset && offset > 0 && offset < 500) {
+          const allRows = [];
+          const seenIds = new Set();
+          mergeUniqueRowsById(allRows, seenIds, d.items);
+          let nextCursor = d.next_cursor || null;
+          let pageCount = 0;
+          while (nextCursor && pageCount < 25) {
+            pageCount += 1;
             const nextPage = await dispatchRequest({
               method: "GET",
-              path: `/api/items?limit=100&offset=${offset}`,
+              path: `/api/items?limit=100&cursor=${encodeURIComponent(nextCursor)}`,
               body: null,
               skipUnauthRedirect: true,
-              mockHandler: () => ({ status: 200, data: { items: [] } }),
+              mockHandler: () => ({ status: 200, data: { items: [], next_cursor: null } }),
             });
+            if (!store.state.data.user?.isAuthenticated || !isAuthContextCurrent(startKey)) {
+              return { ok: false, hydrated: false, stale: true };
+            }
             const batch = nextPage?.ok && Array.isArray(nextPage.data?.items) ? nextPage.data.items : [];
-            if (batch.length === 0) break;
-            allRows.push(...batch);
-            if (batch.length < 100) break;
-            offset += 100;
+            const added = mergeUniqueRowsById(allRows, seenIds, batch);
+            const candidateCursor = nextPage?.data?.next_cursor || null;
+            if (batch.length === 0 || added === 0 || !candidateCursor || candidateCursor === nextCursor) break;
+            nextCursor = candidateCursor;
+          }
+          if (!store.state.data.user?.isAuthenticated || !isAuthContextCurrent(startKey)) {
+            return { ok: false, hydrated: false, stale: true };
           }
           applyWorkspacePayload({
             meData: d,
@@ -1376,7 +1451,7 @@ export const apiClient = {
             tags: d.tags,
             reminders: d.reminders,
           });
-          saveWorkspaceCache();
+          saveWorkspaceCache(resolveCacheUserId());
           return {
             ok: true,
             folders: store.state.data.folders.length,
@@ -1423,28 +1498,39 @@ export const apiClient = {
           }),
         ]);
 
-        if (!store.state.data.user?.isAuthenticated) {
-          return { ok: false, hydrated: false };
+        if (!store.state.data.user?.isAuthenticated || !isAuthContextCurrent(startKey)) {
+          return { ok: false, hydrated: false, stale: true };
         }
 
         let itemRows = null;
         if (itemsRes?.ok && Array.isArray(itemsRes.data?.items)) {
-          itemRows = [...itemsRes.data.items];
-          let offset = itemRows.length;
-          while (store.state.api.mode === "live" && itemRows.length === offset && offset > 0 && offset < 500) {
+          itemRows = [];
+          const seenIds = new Set();
+          mergeUniqueRowsById(itemRows, seenIds, itemsRes.data.items);
+          let nextCursor = itemsRes.data?.next_cursor || null;
+          let pageCount = 0;
+          while (store.state.api.mode === "live" && nextCursor && pageCount < 25) {
+            pageCount += 1;
             const nextPage = await dispatchRequest({
               method: "GET",
-              path: `/api/items?limit=100&offset=${offset}`,
+              path: `/api/items?limit=100&cursor=${encodeURIComponent(nextCursor)}`,
               body: null,
               skipUnauthRedirect: true,
-              mockHandler: () => ({ status: 200, data: { items: [] } }),
+              mockHandler: () => ({ status: 200, data: { items: [], next_cursor: null } }),
             });
+            if (!store.state.data.user?.isAuthenticated || !isAuthContextCurrent(startKey)) {
+              return { ok: false, hydrated: false, stale: true };
+            }
             const batch = nextPage?.ok && Array.isArray(nextPage.data?.items) ? nextPage.data.items : [];
-            if (batch.length === 0) break;
-            itemRows.push(...batch);
-            if (batch.length < 100) break;
-            offset += 100;
+            const added = mergeUniqueRowsById(itemRows, seenIds, batch);
+            const candidateCursor = nextPage?.data?.next_cursor || null;
+            if (batch.length === 0 || added === 0 || !candidateCursor || candidateCursor === nextCursor) break;
+            nextCursor = candidateCursor;
           }
+        }
+
+        if (!store.state.data.user?.isAuthenticated || !isAuthContextCurrent(startKey)) {
+          return { ok: false, hydrated: false, stale: true };
         }
 
         applyWorkspacePayload({
@@ -1454,18 +1540,23 @@ export const apiClient = {
           tags: tagsRes?.ok ? tagsRes.data?.tags : null,
           reminders: remindersRes?.ok ? remindersRes.data?.reminders : null,
         });
-        saveWorkspaceCache();
+        saveWorkspaceCache(resolveCacheUserId());
         return {
           ok: Boolean(foldersRes?.ok || itemsRes?.ok),
           folders: store.state.data.folders.length,
           links: store.state.data.links.length,
         };
       } finally {
-        _hydrateInFlightPromise = null;
+        if (_hydrateInFlightPromise === task) {
+          _hydrateInFlightPromise = null;
+          _hydrateInFlightContextKey = "";
+        }
       }
     })();
 
-    return _hydrateInFlightPromise;
+    _hydrateInFlightPromise = task;
+    _hydrateInFlightContextKey = startKey;
+    return task;
   },
 
   async applyRealtimeDelta(syncMeta = {}) {
@@ -1761,10 +1852,11 @@ export const apiClient = {
   },
 
   async refreshSession() {
-    if (_refreshInFlightPromise) {
+    const startKey = getAuthContextKey();
+    if (_refreshInFlightPromise && _refreshInFlightContextKey === startKey) {
       return _refreshInFlightPromise;
     }
-    _refreshInFlightPromise = (async () => {
+    const task = (async () => {
       const authMode = getAuthMode(store.state);
       const refreshToken = store.state.api.refreshToken;
 
@@ -1781,6 +1873,9 @@ export const apiClient = {
           responseBody: res.ok ? { refreshed: true, claims: res.data?.claims } : { error: res.error },
           error: res.ok ? null : res.error,
         });
+        if (!isAuthContextCurrent(startKey)) {
+          return { ok: false, status: 409, error: "Auth context changed during refresh", stale: true };
+        }
         if (res.ok && res.data?.access_token) {
           store.applyAuthenticatedSession({
             user: res.data.user,
@@ -1808,6 +1903,9 @@ export const apiClient = {
           },
         }),
       });
+      if (!isAuthContextCurrent(startKey)) {
+        return { ok: false, status: 409, error: "Auth context changed during refresh", stale: true };
+      }
       if (res.ok && res.data?.access_token) {
         store.applyAuthenticatedSession({
           user: res.data.user,
@@ -1819,10 +1917,15 @@ export const apiClient = {
       }
       return res;
     })();
+    _refreshInFlightPromise = task;
+    _refreshInFlightContextKey = startKey;
     try {
-      return await _refreshInFlightPromise;
+      return await task;
     } finally {
-      _refreshInFlightPromise = null;
+      if (_refreshInFlightPromise === task) {
+        _refreshInFlightPromise = null;
+        _refreshInFlightContextKey = "";
+      }
     }
   },
 

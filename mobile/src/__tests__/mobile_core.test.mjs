@@ -21,6 +21,7 @@ import {
   getAuthDebugEvents,
   getMemoryCachedWorkspace,
   getThemePageBg,
+  loadCachedWorkspace,
   loadOfflineQueue,
   recordAuthDebugEvent,
   saveCachedWorkspace,
@@ -44,6 +45,9 @@ registerHooks({
 });
 
 const {
+  buildPkceChallengePair,
+  completeOAuthWithTokens,
+  deleteLinkItem,
   exchangeOAuthCode,
   fetchWorkspace,
   prepareGoogleOAuthUrl,
@@ -400,4 +404,192 @@ test("recordAuthDebugEvent redacts access_token, refresh_token, code, and code_v
   assert.match(events[0].detail, /code=\*\*\*/);
   assert.match(events[0].detail, /code_verifier=\*\*\*/);
   clearAuthDebugEvents();
+});
+
+test("Cycle 2 [C2]: coalesced OAuth PKCE/token callbacks, CSPRNG fail-closed, and redacted invite/Bearer logs", async () => {
+  const origCrypto = globalThis.crypto;
+  const origFetch = globalThis.fetch;
+
+  // Fail closed when CSPRNG is absent (must never fall back to Math.random)
+  Object.defineProperty(globalThis, "crypto", { value: undefined, configurable: true });
+  try {
+    assert.throws(() => buildPkceChallengePair(), /Secure random number generator unavailable/);
+  } finally {
+    Object.defineProperty(globalThis, "crypto", { value: origCrypto, configurable: true });
+  }
+
+  await clearSession();
+  await prepareGoogleOAuthUrl("sharely://auth-callback");
+  let pkceCalls = 0;
+  let userCalls = 0;
+  try {
+    globalThis.fetch = async (url) => {
+      const target = String(url);
+      if (target.includes("/auth/v1/token?grant_type=pkce")) {
+        pkceCalls += 1;
+        await new Promise((r) => setTimeout(r, 20));
+        const body = {
+          access_token: "coalesced-jwt",
+          refresh_token: "coalesced-ref",
+          user: { id: "u-coalesced", email: "coalesced@example.com" },
+        };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (target.includes("/auth/v1/user")) {
+        userCalls += 1;
+        await new Promise((r) => setTimeout(r, 20));
+        const body = { id: "u-imp", email: "imp@example.com" };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      throw new Error(`Unexpected fetch: ${target}`);
+    };
+
+    const [r1, r2] = await Promise.all([
+      exchangeOAuthCode("dup-code-999"),
+      exchangeOAuthCode("dup-code-999"),
+    ]);
+    const r3 = await exchangeOAuthCode("dup-code-999");
+    assert.equal(pkceCalls, 1, "Duplicate PKCE callback must issue only 1 token request");
+    assert.equal(r1.ok, true);
+    assert.equal(r2.ok, true);
+    assert.equal(r3.ok, true);
+    assert.equal(r1.data?.access_token, "coalesced-jwt");
+
+    const [t1, t2] = await Promise.all([
+      completeOAuthWithTokens("imp-tok-123", "imp-ref-123"),
+      completeOAuthWithTokens("imp-tok-123", "imp-ref-123"),
+    ]);
+    assert.equal(userCalls, 1, "Duplicate implicit token callback must issue only 1 user check");
+    assert.equal(t1.ok, true);
+    assert.equal(t2.ok, true);
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+  }
+
+  // L2: invite tokens, Bearer headers, token/password/secret params are redacted
+  clearAuthDebugEvents();
+  recordAuthDebugEvent(
+    "deep_link",
+    "https://just-save-it-web.onrender.com/invite/secretInvite99?token=tok123&password=pw1&secret=s1 Bearer eyJhbGci.payload.sig",
+  );
+  const dbg = getAuthDebugEvents()[0]?.detail || "";
+  assert.doesNotMatch(dbg, /secretInvite99|tok123|pw1|eyJhbGci/);
+  assert.match(dbg, /\/invite\/\*\*\*/);
+  assert.match(dbg, /token=\*\*\*/);
+  assert.match(dbg, /Bearer \*\*\*/);
+  clearAuthDebugEvents();
+});
+
+test("Cycle 2 [C5, M4, L1]: account isolation on cache/offline queue, in-flight fetch abort, cursor pagination >500 items, delete cache prune, and http(s) URL guard", async () => {
+  await clearSession();
+  const origFetch = globalThis.fetch;
+
+  try {
+    // 1) User A stores cache & offline item, then User B logs in -> User A artifacts purged & isolated
+    await saveSession({ access_token: "tok-a", refresh_token: "ref-a", user: { id: "user-a", email: "a@test.com" } });
+    await saveCachedWorkspace({ items: [{ id: "a-item", url: "https://a.test", title: "Secret A" }], folders: [], reminders: [] });
+    await enqueueOfflineItem({ url: "https://a.test/q", title: "Queue A" });
+    assert.equal((await loadOfflineQueue()).length, 1);
+
+    await saveSession({ access_token: "tok-b", refresh_token: "ref-b", user: { id: "user-b", email: "b@test.com" } });
+    assert.equal((await loadCachedWorkspace()).items.length, 0, "User A cache must be cleared on account switch");
+    assert.equal((await loadOfflineQueue()).length, 0, "User A offline queue must be cleared on account switch");
+
+    // Even if User A's offline queue entry sits in storage alongside User B's, User B only sees/flushes User B's own
+    await enqueueOfflineItem({ url: "https://a.test/foreign", title: "Foreign", user_id: "user-a" });
+    await enqueueOfflineItem({ url: "https://b.test/own", title: "Own" });
+    const ownQueue = await loadOfflineQueue();
+    assert.equal(ownQueue.length, 1);
+    assert.equal(ownQueue[0].url, "https://b.test/own");
+
+    // 2) Mid-flight fetchWorkspace aborted cleanly on logout
+    let resolveDelayed = null;
+    const fetchStarted = new Promise((notify) => {
+      globalThis.fetch = async (url) => {
+        if (String(url).includes("/api/workspace")) {
+          notify();
+          return new Promise((r) => {
+            resolveDelayed = r;
+          });
+        }
+        return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+      };
+    });
+    const wsPromise = fetchWorkspace();
+    await fetchStarted;
+    await clearSession();
+    assert.ok(typeof resolveDelayed === "function");
+    resolveDelayed({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ items: [{ id: "stale-b", url: "https://b.test", title: "Stale B" }], folders: [], reminders: [] }),
+      json: async () => ({ items: [{ id: "stale-b", url: "https://b.test", title: "Stale B" }], folders: [], reminders: [] }),
+    });
+    const abortedWs = await wsPromise;
+    assert.equal(abortedWs.items.length, 0, "Aborted fetch after logout must not leak state");
+    assert.equal(getMemoryCachedWorkspace(), null, "Aborted fetch must not populate cache after clearSession");
+
+    // 3) M4 cursor pagination >500 items with deduplication + L1 delete cache pruning
+    await saveSession({ access_token: "tok-m4", refresh_token: "ref-m4", user: { id: "user-m4", email: "m4@test.com" } });
+    const seenUrls = [];
+    const makeBatch = (start, count, overlap = null) => {
+      const list = [];
+      if (overlap) list.push({ id: overlap, url: `https://m.test/${overlap}`, title: overlap });
+      for (let i = start; i < start + count; i += 1) {
+        list.push({ id: `m-${i}`, url: `https://m.test/${i}`, title: `Item ${i}` });
+      }
+      return list;
+    };
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      seenUrls.push(u);
+      if (u.includes("/api/workspace")) {
+        const body = { id: "user-m4", items: makeBatch(0, 100), folders: [], reminders: [], next_cursor: "mc-1" };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (u.includes("cursor=mc-1")) {
+        const body = { items: makeBatch(100, 100, "m-99"), next_cursor: "mc-2" };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (u.includes("cursor=mc-2")) {
+        const body = { items: makeBatch(200, 100), next_cursor: "mc-3" };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (u.includes("cursor=mc-3")) {
+        const body = { items: makeBatch(300, 100), next_cursor: "mc-4" };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (u.includes("cursor=mc-4")) {
+        const body = { items: makeBatch(400, 100), next_cursor: "mc-5" };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (u.includes("cursor=mc-5")) {
+        const body = { items: makeBatch(500, 100), next_cursor: null };
+        return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body };
+      }
+      if (u.endsWith("/api/items/m-0") && init.method === "DELETE") {
+        return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+      }
+      throw new Error(`Unexpected URL: ${u}`);
+    };
+
+    const m4Ws = await fetchWorkspace();
+    assert.equal(m4Ws.items.length, 600, "Mobile fetchWorkspace must hydrate >500 items and deduplicate overlap");
+    assert.equal(seenUrls.some((u) => u.includes("offset=")), false);
+
+    // L1: deleteLinkItem prunes item immediately from memory & stored cache
+    const delRes = await deleteLinkItem("m-0");
+    assert.equal(delRes.ok, true);
+    assert.equal(getMemoryCachedWorkspace()?.items.some((it) => it.id === "m-0"), false);
+    assert.equal((await loadCachedWorkspace()).items.some((it) => it.id === "m-0"), false);
+
+    // L1: item/[id].tsx Linking.openURL allows only http(s)
+    const testDir = dirname(fileURLToPath(import.meta.url));
+    const itemScreenCode = readFileSync(resolve(testDir, "../../app/item/[id].tsx"), "utf8");
+    assert.match(itemScreenCode, /\^https\?:\\\/\\\//i);
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+  }
 });
