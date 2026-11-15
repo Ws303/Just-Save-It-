@@ -3955,6 +3955,18 @@ a {
   color: #55596a;
 }
 
+.figma-detail-post-desc {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #55596a;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
 .figma-detail-reminder-pill {
   align-self: flex-start;
   height: 36px;

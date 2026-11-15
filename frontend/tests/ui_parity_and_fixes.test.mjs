@@ -373,3 +373,46 @@ test("Phase C: 4-state workflow status mapping, platform/contentType filtering, 
   assert.match(menuHtml, /data-refresh-preview-sheet="1"/);
   assert.match(menuHtml, /data-set-workflow-status="todo"/);
 });
+
+test("v2 Polish: YouTube URL derives playable embed + thumbnail, Link Detail shows description, and AI summarize keeps Note isolated", async () => {
+  const { deriveVideoEmbedInfo, renderRichPreviewBox, renderLinkDetailScreen } = await import("../src/screens/links.js");
+
+  const derived = deriveVideoEmbedInfo({ url: "https://youtu.be/dQw4w9WgXcQ?t=10" });
+  assert.equal(derived.embedUrl, "https://www.youtube.com/embed/dQw4w9WgXcQ");
+  assert.equal(derived.thumbUrl, "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg");
+
+  const rawYtItem = {
+    id: "yt-raw-1",
+    url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    title: "Never Gonna Give You Up",
+    description: "Official remastered 4K music video description.",
+    platform: "YouTube",
+    tags: [],
+    note: "โน้ตส่วนตัวของฉัน",
+  };
+  const posterHtml = renderRichPreviewBox(rawYtItem, { videoPlaying: false });
+  assert.match(posterHtml, /https:\/\/i\.ytimg\.com\/vi\/dQw4w9WgXcQ\/hqdefault\.jpg/);
+  assert.match(posterHtml, /data-action="play-embed-video"/);
+
+  const iframeHtml = renderRichPreviewBox(rawYtItem, { videoPlaying: true });
+  assert.match(iframeHtml, /<iframe[^>]+https:\/\/www\.youtube\.com\/embed\/dQw4w9WgXcQ\?autoplay=1&(?:amp;)?playsinline=1/);
+
+  store.resetSeed();
+  store.state.api.mode = "mock";
+  store.state.data.links.unshift(rawYtItem);
+  store.state.ui.activeLinkId = rawYtItem.id;
+  store.state.ui.screen = "linkDetail";
+  const mobileDetailHtml = renderLinkDetailScreen(store.state);
+  assert.match(mobileDetailHtml, /class="figma-detail-post-desc"/);
+  assert.match(mobileDetailHtml, /Official remastered 4K music video description\./);
+
+  store.state.ui.viewportMode = "web";
+  store.state.ui.pcSection = "linkDetail";
+  const desktopDetailHtml = renderWebView(store.state);
+  assert.match(desktopDetailHtml, /class="figma-detail-post-desc"/);
+  assert.match(desktopDetailHtml, /Official remastered 4K music video description\./);
+
+  assert.equal(store.state.api.summarizeOptions.saveToNote, false);
+  await apiClient.summarizeLink(rawYtItem.id, { forceRefresh: true, saveToNote: false });
+  assert.equal(rawYtItem.note, "โน้ตส่วนตัวของฉัน");
+});

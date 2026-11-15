@@ -384,6 +384,21 @@ def delete_my_account(
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
     """Delete the authenticated user's account and cascade-remove all owned data."""
+    # Revoke upstream Auth user FIRST so transient auth failures do not leave orphan Auth accounts
+    auth_admin = getattr(getattr(db, "auth", None), "admin", None)
+    if auth_admin is not None and callable(getattr(auth_admin, "delete_user", None)):
+        try:
+            auth_admin.delete_user(user_id)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "not found" not in msg and "404" not in msg:
+                logger.error("auth_admin.delete_user failed for %s: %s", user_id, exc)
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Failed to delete upstream authentication user; account data preserved.",
+                ) from exc
+    mark_user_deleted(user_id)
+
     owned_items_res = db.table("items").select("id").eq("owner_id", user_id).execute()
     owned_item_ids = [row["id"] for row in (owned_items_res.data or []) if row.get("id")]
 
@@ -412,11 +427,7 @@ def delete_my_account(
         db.table("beta_feedback").delete().eq("user_id", user_id).execute()
     except Exception as exc:
         logger.debug("Optional beta_feedback cleanup skipped during account deletion: %s", exc)
-    auth_admin = getattr(getattr(db, "auth", None), "admin", None)
-    if auth_admin is not None and callable(getattr(auth_admin, "delete_user", None)):
-        auth_admin.delete_user(user_id)
 
     db.table("profiles").delete().eq("id", user_id).execute()
-    mark_user_deleted(user_id)
 
     return {"deleted": True, "user_id": user_id}

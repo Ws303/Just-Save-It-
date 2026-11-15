@@ -34,10 +34,20 @@ from Unfurl.security import redact_secrets_in_text
 CHROME_EXTENSION_ORIGIN_REGEX = r"^chrome-extension://[a-p]{32}$"
 
 
+_DEFAULT_CORS_ORIGINS = (
+    "https://just-save-it-web.onrender.com,"
+    "http://localhost:4173,http://127.0.0.1:4173,"
+    "http://localhost:3000,http://127.0.0.1:3000,"
+    "http://localhost:8081"
+)
+
+
 def parse_cors_settings():
     """Resolve CORS origins, regex (allowing unpacked Chrome extensions), and credentials flag."""
-    raw_origins = os.getenv("CORS_ALLOW_ORIGINS", "*").strip()
-    cors_origins = [o.strip() for o in raw_origins.split(",") if o.strip()] or ["*"]
+    raw_origins = os.getenv("CORS_ALLOW_ORIGINS", _DEFAULT_CORS_ORIGINS).strip()
+    cors_origins = [o.strip() for o in raw_origins.split(",") if o.strip()] or [
+        o.strip() for o in _DEFAULT_CORS_ORIGINS.split(",")
+    ]
     allow_all = "*" in cors_origins
     default_regex = "" if allow_all else CHROME_EXTENSION_ORIGIN_REGEX
     cors_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX", default_regex).strip() or None

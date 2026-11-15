@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -100,7 +101,7 @@ export default function LoginScreen() {
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         <View style={styles.hero}>
           <View style={styles.logoBadge}>
-            <Text style={styles.logoMark}>🔖</Text>
+            <Image source={require("../assets/icon.png")} style={styles.logoImage} resizeMode="cover" />
           </View>
           <Text style={styles.brandTitle}>SHARELY</Text>
           <Text style={styles.brandSubtitle}>เก็บลิงก์ง่าย แชร์ไว ในที่เดียว</Text>
@@ -222,16 +223,20 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 28,
   },
   logoBadge: {
-    width: 68,
-    height: 68,
+    width: 72,
+    height: 72,
     borderRadius: 22,
     backgroundColor: "#FDFBF7",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 14,
+    overflow: "hidden",
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.65)",
   },
-  logoMark: {
-    fontSize: 32,
+  logoImage: {
+    width: "100%",
+    height: "100%",
   },
   brandTitle: {
     color: "#FDFBF7",

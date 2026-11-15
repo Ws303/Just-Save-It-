@@ -278,6 +278,12 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
             bump_updates["embed_url"] = clean_embed_url
         if req.media_items:
             bump_updates["media_items"] = req.media_items
+        if req.embed_type and req.embed_type != "none":
+            bump_updates["embed_type"] = req.embed_type
+        if req.platform:
+            bump_updates["platform"] = req.platform
+        if req.content_type:
+            bump_updates["content_type"] = req.content_type
         if req.is_favorite is not None:
             bump_updates["is_favorite"] = bool(req.is_favorite)
         if existing_item.get("status") in ("done", "archived") and (
@@ -290,6 +296,20 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
             bump_updates["status"] = req.status
             if req.status != "done":
                 bump_updates["done_at"] = None
+
+        merged_after_bump = {**existing_item, **bump_updates}
+        merged_desc = str(merged_after_bump.get("description") or "").strip()
+        merged_plat = str(merged_after_bump.get("platform") or "").lower()
+        needs_re_enrich = (
+            not merged_after_bump.get("image_url")
+            or not merged_desc
+            or (merged_plat == "youtube" and merged_desc.startswith("By "))
+            or (merged_plat in ("youtube", "tiktok", "vimeo") and not merged_after_bump.get("embed_url"))
+        )
+        if needs_re_enrich:
+            bump_updates["enrich_status"] = "pending"
+            bump_updates["enrich_attempts"] = 0
+
         try:
             upd_res = db.table("items").update(bump_updates).eq("id", item_id).execute()
         except Exception as exc:
@@ -1103,6 +1123,8 @@ def export_user_data(db: Any, user_id: str) -> Dict[str, Any]:
         query = db.table("items").select("*").eq("owner_id", user_id)
         if hasattr(query, "order") and callable(getattr(query, "order", None)):
             query = query.order("saved_at", desc=True)
+            if hasattr(query, "order") and callable(getattr(query, "order", None)):
+                query = query.order("id", desc=True)
         if hasattr(query, "range") and callable(getattr(query, "range", None)):
             batch = [dict(r) for r in (query.range(offset, offset + page_size - 1).execute().data or [])]
         else:

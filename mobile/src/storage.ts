@@ -124,8 +124,7 @@ function toSecureStorageBackend(mod: unknown): StorageBackend | null {
 
 async function getSecureSessionBackend(): Promise<StorageBackend> {
   if (!secureStoragePromise) {
-    const pkgName = ["expo", "secure", "store"].join("-");
-    secureStoragePromise = import(pkgName)
+    secureStoragePromise = import("expo-secure-store")
       .then((mod) => toSecureStorageBackend(mod))
       .catch(() => null);
   }
@@ -251,6 +250,14 @@ export async function enqueueOfflineItem(
 }
 
 export type OfflineFlushOutcome = boolean | "ok" | "retry" | "drop";
+
+export function classifyQueueFlushStatus(httpStatus: number): "ok" | "retry" | "drop" {
+  if (httpStatus >= 200 && httpStatus < 300) return "ok";
+  if (httpStatus === 400 || httpStatus === 403 || httpStatus === 404 || httpStatus === 422) {
+    return "drop";
+  }
+  return "retry";
+}
 
 export async function flushOfflineQueueWithSender(
   sender: (item: QueuedLinkPayload) => Promise<OfflineFlushOutcome>,

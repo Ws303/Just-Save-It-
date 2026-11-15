@@ -11,8 +11,8 @@
     <!-- Top Header (Figma 468:619) -->
     <header class="topbar">
       <div class="brand">
+        <img src="icons/icon48.png" alt="Sharely" class="brand-logo" />
         <span class="brand-wordmark">Sharely</span>
-        <img src="icons/icon32.png" alt="Sharely" class="brand-logo" />
         <span id="healthBadge" class="status-pill status-checking">Checking...</span>
       </div>
       <div class="topbar-actions">
@@ -50,7 +50,9 @@
     <!-- Auth View (Figma 468:600 E10) -->
     <main id="authView" class="view hidden">
       <div class="card hero-card">
-        <div class="hero-icon-badge">🍒</div>
+        <div class="hero-icon-badge">
+          <img src="icons/icon48.png" alt="Sharely" class="hero-icon-img" />
+        </div>
         <p class="hero-title">เข้าสู่ระบบ Sharely</p>
         <p class="hero-sub">เข้าสู่ระบบเพื่อบันทึกลิงก์จาก Chrome ลงในคลังของคุณได้ทันที</p>
         <button id="webConnectBtn" type="button" class="btn btn-primary btn-full" style="margin-top:8px;">
@@ -200,19 +202,48 @@
               </select>
             </div>
             <div>
-              <label for="reminderPreset" class="field-label">ตั้งเตือนดูทีหลัง</label>
-              <select id="reminderPreset" class="input">
-                <option value="">ไม่ตั้งเตือน</option>
-                <option value="tomorrow_9am">พรุ่งนี้ 09:00</option>
-                <option value="in_3_days">อีก 3 วัน 20:00</option>
-                <option value="custom">กำหนดวันเวลาเอง</option>
-              </select>
+              <label class="field-label">ตั้งเตือนดูทีหลัง</label>
+              <button id="reminderTriggerBtn" type="button" class="input reminder-trigger-btn">
+                <span id="reminderSummaryLabel">⏰ ไม่ตั้งเตือน</span>
+                <span class="reminder-chevron">▾</span>
+              </button>
             </div>
           </div>
 
-          <div id="customReminderGroup" class="hidden">
-            <label for="customReminderInput" class="field-label">วันเวลาที่ต้องการแจ้งเตือน</label>
-            <input id="customReminderInput" type="datetime-local" class="input" />
+          <div id="reminderPickerCard" class="reminder-picker-card hidden">
+            <div class="reminder-preset-row">
+              <button type="button" class="reminder-chip active" data-rem-preset="none">ไม่ตั้ง</button>
+              <button type="button" class="reminder-chip" data-rem-preset="today_18">วันนี้ 18:00</button>
+              <button type="button" class="reminder-chip" data-rem-preset="tomorrow_9">พรุ่งนี้ 09:00</button>
+              <button type="button" class="reminder-chip" data-rem-preset="in_3_days">อีก 3 วัน</button>
+            </div>
+
+            <div class="reminder-recur-row">
+              <div class="reminder-recur-tabs">
+                <button id="recurOnceBtn" type="button" class="recur-tab active">ครั้งเดียว</button>
+                <button id="recurRepeatBtn" type="button" class="recur-tab">ซ้ำทุก N วัน</button>
+              </div>
+              <div id="repeatStepperGroup" class="repeat-stepper hidden">
+                <button id="repeatDaysMinus" type="button" class="stepper-btn" aria-label="ลดจำนวนวัน">−</button>
+                <span id="repeatDaysValue" class="stepper-val">3 วัน</span>
+                <button id="repeatDaysPlus" type="button" class="stepper-btn" aria-label="เพิ่มจำนวนวัน">+</button>
+              </div>
+            </div>
+
+            <div class="cal-header">
+              <button id="calPrevBtn" type="button" class="cal-nav-btn" aria-label="เดือนก่อนหน้า">‹</button>
+              <span id="calMonthLabel" class="cal-month-label">พฤศจิกายน 2569</span>
+              <button id="calNextBtn" type="button" class="cal-nav-btn" aria-label="เดือนถัดไป">›</button>
+            </div>
+            <div class="cal-weekdays">
+              <span>อา</span><span>จ</span><span>อ</span><span>พ</span><span>พฤ</span><span>ศ</span><span>ส</span>
+            </div>
+            <div id="calDaysGrid" class="cal-days-grid"></div>
+
+            <div class="reminder-time-row">
+              <label for="reminderTimeInput" class="field-label" style="margin:0;">เวลาแจ้งเตือน</label>
+              <input id="reminderTimeInput" type="time" class="input time-input" value="18:00" />
+            </div>
           </div>
 
           <button id="saveItemBtn" type="submit" class="btn btn-primary btn-full">

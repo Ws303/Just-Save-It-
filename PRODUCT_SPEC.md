@@ -181,10 +181,10 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     subgraph Clients
-        W["Web App - Next.js (iframe embed + Carousel)"]
-        A["Android - Expo (WebView + Pager)"]
-        I["iOS - Expo (WebView + Pager)"]
-        E["Extension - WXT MV3"]
+        W["Web App - Vanilla ES Modules (iframe embed + Carousel)"]
+        A["Android - Expo SDK 53 + Expo Router"]
+        I["iOS - Expo SDK 53 + Expo Router"]
+        E["Extension - Chrome MV3 Vanilla JS"]
         M["External AI - Claude/Cursor"]
     end
     subgraph Supabase
@@ -200,13 +200,13 @@ flowchart TD
         NOTI["Notification Sender"]
         MCP["Remote MCP (Streamable HTTP - 13 Tools)"]
     end
-    W & A & I & E -->|"supabase-js + JWT (CRUD ตรงผ่าน RLS)"| PG
+    W & A & I & E -->|"FastAPI REST + JWT (CRUD + RLS)"| PG
     W & A & I & E --> AUTH
     PG --> RT --> W & A & I & E
     PG -->|"DB Webhook"| UNF --> ST
     UNF --> PG
     W & A & I -->|"On-demand AI / Preview"| AI --> PG
-    CRON -->|"ทุก 1 นาที: reminders ที่ถึงเวลา"| NOTI -->|"Expo Push (FCM/APNs) / Web Push"| A & I & W
+    CRON -->|"ทุก 5 นาที: reminders ที่ถึงเวลา"| NOTI -->|"Expo Push (FCM/APNs) / Web Push"| A & I & W
     PG -.->|"iOS Pre-APNs: Local Sync (<=64)"| I
     M -->|"PAT: jsi_xxx"| MCP --> PG
 ```

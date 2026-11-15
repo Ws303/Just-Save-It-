@@ -1,4 +1,5 @@
 import {
+  classifyQueueFlushStatus,
   clearSession,
   enqueueOfflineItem,
   flushOfflineQueueWithSender,
@@ -326,8 +327,7 @@ export async function flushOfflineQueue(
         },
       });
       if (res.ok) return "ok";
-      if (res.status === 400 || res.status === 404 || res.status === 422) return "drop";
-      return "retry";
+      return classifyQueueFlushStatus(res.status);
     });
 
   const out = await flushOfflineQueueWithSender(sender);

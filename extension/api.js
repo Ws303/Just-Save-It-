@@ -19,6 +19,7 @@
     USER: "jsi_user",
     OFFLINE_QUEUE: "jsi_offline_queue",
     NOTIFIED_REMINDERS: "jsi_notified_reminders",
+    WORKSPACE_CACHE: "jsi_workspace_cache",
   };
   const memoryStorage = {};
   let _refreshInFlightPromise = null;
@@ -117,7 +118,34 @@
       STORAGE_KEYS.ACCESS_TOKEN,
       STORAGE_KEYS.REFRESH_TOKEN,
       STORAGE_KEYS.USER,
+      STORAGE_KEYS.WORKSPACE_CACHE,
     ]);
+  }
+
+  async function getWorkspaceCache() {
+    const res = await getStorage([STORAGE_KEYS.WORKSPACE_CACHE]);
+    const cache = res[STORAGE_KEYS.WORKSPACE_CACHE];
+    if (!cache || typeof cache !== "object") {
+      return { folders: [], tags: [], recentItems: [], user: null };
+    }
+    return {
+      folders: Array.isArray(cache.folders) ? cache.folders : [],
+      tags: Array.isArray(cache.tags) ? cache.tags : [],
+      recentItems: Array.isArray(cache.recentItems) ? cache.recentItems : [],
+      user: cache.user || null,
+    };
+  }
+
+  async function setWorkspaceCache(cache) {
+    await setStorage({
+      [STORAGE_KEYS.WORKSPACE_CACHE]: {
+        folders: Array.isArray(cache && cache.folders) ? cache.folders : [],
+        tags: Array.isArray(cache && cache.tags) ? cache.tags : [],
+        recentItems: Array.isArray(cache && cache.recentItems) ? cache.recentItems : [],
+        user: (cache && cache.user) || null,
+        cachedAt: Date.now(),
+      },
+    });
   }
 
   async function setBackendUrl(rawUrl) {
@@ -358,6 +386,8 @@
     getSessionState,
     saveAuthSession,
     clearAuthSession,
+    getWorkspaceCache,
+    setWorkspaceCache,
     setBackendUrl,
     getStorage,
     setStorage,

@@ -145,7 +145,26 @@ export default function ProfileScreen() {
       Alert.alert("ส่งออกข้อมูลไม่สำเร็จ", res.error || "กรุณาลองใหม่");
       return;
     }
-    const jsonString = JSON.stringify(res.data, null, 2);
+    const rawItems = Array.isArray((res.data as { items?: unknown[] }).items)
+      ? ((res.data as { items: unknown[] }).items)
+      : [];
+    let jsonString = JSON.stringify(res.data, null, 2);
+    const MAX_BINDER_CHARS = 250_000;
+    if (jsonString.length > MAX_BINDER_CHARS) {
+      const ratio = Math.max(10, Math.floor((rawItems.length * MAX_BINDER_CHARS) / jsonString.length));
+      const truncatedPayload = {
+        ...res.data,
+        _truncated_for_android_share: true,
+        _total_items: rawItems.length,
+        _exported_items: ratio,
+        items: rawItems.slice(0, ratio),
+      };
+      jsonString = JSON.stringify(truncatedPayload, null, 2).slice(0, MAX_BINDER_CHARS);
+      Alert.alert(
+        "ขนาดข้อมูลส่งออกเกินขีดจำกัดแชร์บนมือถือ",
+        `ตัดรายการเหลือ ${ratio} จาก ${rawItems.length} รายการ เพื่อหลีกเลี่ยงขีดจำกัด Android Binder (ดาวน์โหลดฉบับเต็มได้ที่ WebApp)`,
+      );
+    }
     await Share.share({
       title: "just-save-it-export.json",
       message: jsonString,

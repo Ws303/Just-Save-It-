@@ -9,6 +9,7 @@ Mitigates RISK-001:
 
 import logging
 import os
+import time
 from typing import Any, Dict, Optional, Set
 
 import jwt
@@ -63,6 +64,8 @@ def _get_jwk_client(supabase_url: str) -> PyJWKClient:
 
 
 _DELETED_USER_IDS: Set[str] = set()
+_ACTIVE_USER_VERIFIED_UNTIL: Dict[str, float] = {}
+_ACTIVE_USER_CACHE_TTL_SEC = 30.0
 
 
 def mark_user_deleted(user_id: str) -> None:
@@ -70,11 +73,44 @@ def mark_user_deleted(user_id: str) -> None:
     clean_id = str(user_id or "").strip()
     if clean_id:
         _DELETED_USER_IDS.add(clean_id)
+        _ACTIVE_USER_VERIFIED_UNTIL.pop(clean_id, None)
 
 
 def is_user_deleted(user_id: str) -> bool:
     """Return True if the user ID has been revoked/deleted in this worker."""
     return str(user_id or "").strip() in _DELETED_USER_IDS
+
+
+def _verify_live_user_exists(sub: str) -> None:
+    """Cross-worker revocation check against live Supabase when local worker lacks delete cache."""
+    if not is_supabase_configured():
+        return
+    now = time.monotonic()
+    if now < _ACTIVE_USER_VERIFIED_UNTIL.get(sub, 0.0):
+        return
+    try:
+        db = get_supabase_client()
+        prof_res = db.table("profiles").select("id").eq("id", sub).limit(1).execute()
+        if getattr(prof_res, "data", None):
+            _ACTIVE_USER_VERIFIED_UNTIL[sub] = now + _ACTIVE_USER_CACHE_TTL_SEC
+            return
+        auth_admin = getattr(getattr(db, "auth", None), "admin", None)
+        get_user_by_id = getattr(auth_admin, "get_user_by_id", None) if auth_admin is not None else None
+        if callable(get_user_by_id):
+            user_resp = get_user_by_id(sub)
+            if getattr(user_resp, "user", None) and getattr(user_resp.user, "id", None):
+                _ACTIVE_USER_VERIFIED_UNTIL[sub] = now + _ACTIVE_USER_CACHE_TTL_SEC
+                return
+            mark_user_deleted(sub)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: user account has been deleted.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.debug("Non-fatal live user existence check skipped for %s: %s", sub, exc)
 
 
 def _ensure_authenticated_claims(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -98,6 +134,7 @@ def _ensure_authenticated_claims(payload: Dict[str, Any]) -> Dict[str, Any]:
             detail="Unauthorized: anonymous API key cannot be used as user session.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    _verify_live_user_exists(sub)
     return payload
 
 

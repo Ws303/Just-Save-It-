@@ -1,5 +1,6 @@
 """Rich Unfurl service orchestration: 7-day cross-user cache, DB update, preview, and retry cron."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any, Dict, List, Optional
@@ -64,6 +65,10 @@ def find_recent_unfurl_cache(
             continue
         if row.get("enrich_status") not in ("unfurled", "done"):
             continue
+        row_plat = str(row.get("platform") or "").lower()
+        row_desc = str(row.get("description") or "").strip()
+        if row_plat == "youtube" and (not row_desc or row_desc.startswith("By ")):
+            continue
         unfurled_dt = _parse_iso(row.get("unfurled_at"))
         if unfurled_dt is None or unfurled_dt < cutoff:
             continue
@@ -122,7 +127,7 @@ async def preview_url_readonly(
     """Return read-only preview for a URL (30/min rate-limited at router) with 0 DB/Storage writes."""
     canon_url = canonicalize_url(raw_url)
     try:
-        validate_safe_url(canon_url)
+        await asyncio.to_thread(validate_safe_url, canon_url)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

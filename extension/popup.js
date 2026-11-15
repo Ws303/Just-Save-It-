@@ -4,6 +4,103 @@
   const api = window.JustSaveItApi;
   const CLOUD_WEB_URL = "https://just-save-it-web.onrender.com";
 
+  const THAI_MONTH_NAMES = [
+    "มกราคม",
+    "กุมภาพันธ์",
+    "มีนาคม",
+    "เมษายน",
+    "พฤษภาคม",
+    "มิถุนายน",
+    "กรกฎาคม",
+    "สิงหาคม",
+    "กันยายน",
+    "ตุลาคม",
+    "พฤศจิกายน",
+    "ธันวาคม",
+  ];
+  const THAI_MONTH_SHORT = [
+    "ม.ค.",
+    "ก.พ.",
+    "มี.ค.",
+    "เม.ย.",
+    "พ.ค.",
+    "มิ.ย.",
+    "ก.ค.",
+    "ส.ค.",
+    "ก.ย.",
+    "ต.ค.",
+    "พ.ย.",
+    "ธ.ค.",
+  ];
+
+  function getBangkokTodayIso(now = new Date()) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Bangkok",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).formatToParts(now);
+      const y = parts.find((p) => p.type === "year")?.value;
+      const m = parts.find((p) => p.type === "month")?.value;
+      const d = parts.find((p) => p.type === "day")?.value;
+      if (y && m && d) return `${y}-${m}-${d}`;
+    } catch (_err) {
+      // Fallback below
+    }
+    return now.toISOString().slice(0, 10);
+  }
+
+  function addDaysToIso(baseIso, deltaDays) {
+    const [y, m, d] = baseIso.split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d + deltaDays));
+    return dt.toISOString().slice(0, 10);
+  }
+
+  function stepYearMonth(ym, deltaMonths) {
+    const [yStr, mStr] = String(ym || getBangkokTodayIso().slice(0, 7)).split("-");
+    const y = Number(yStr) || new Date().getFullYear();
+    const m = (Number(mStr) || 1) - 1;
+    const total = y * 12 + m + Number(deltaMonths || 0);
+    const nextY = Math.floor(total / 12);
+    const nextM = ((total % 12) + 12) % 12;
+    return `${nextY}-${String(nextM + 1).padStart(2, "0")}`;
+  }
+
+  function formatThaiMonthYear(ym) {
+    const [yStr, mStr] = String(ym || getBangkokTodayIso().slice(0, 7)).split("-");
+    const y = Number(yStr) || new Date().getFullYear();
+    const m = Math.max(1, Math.min(12, Number(mStr) || 1));
+    return `${THAI_MONTH_NAMES[m - 1]} ${y + 543}`;
+  }
+
+  function formatThaiDateShort(isoDate) {
+    const parts = String(isoDate || "").split("-").map(Number);
+    if (parts.length !== 3 || !parts[1] || !parts[2]) return isoDate;
+    return `${parts[2]} ${THAI_MONTH_SHORT[parts[1] - 1] || ""}`.trim();
+  }
+
+  function normalizeMediaUrlList(rawList, fallbackImageUrl = "") {
+    const urls = [];
+    const candidates = Array.isArray(rawList) ? rawList : [];
+    for (const entry of candidates) {
+      let u = "";
+      if (typeof entry === "string") {
+        u = entry.trim();
+      } else if (entry && typeof entry === "object") {
+        u = String(entry.media_url || entry.url || entry.thumbnail_url || "").trim();
+      }
+      if (u && api.isSaveableHttpUrl(u) && !urls.includes(u)) {
+        urls.push(u);
+      }
+      if (urls.length >= 5) break;
+    }
+    if (!urls.length && fallbackImageUrl && api.isSaveableHttpUrl(fallbackImageUrl)) {
+      urls.push(fallbackImageUrl.trim());
+    }
+    return urls;
+  }
+
   const state = {
     authMode: "login",
     activeViewMode: "save", // "save" | "recent"
@@ -12,7 +109,19 @@
     lastSavedItemId: null,
     activeTabId: null,
     allRecentItems: [],
+    cachedFolders: [],
+    cachedTags: [],
     userTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Bangkok",
+    reminder: {
+      pickerOpen: false,
+      enabled: false,
+      presetKey: "none",
+      selectedDate: "",
+      time: "18:00",
+      scheduleType: "once", // "once" | "every_n_days"
+      repeatEveryDays: 3,
+      viewYearMonth: getBangkokTodayIso().slice(0, 7),
+    },
   };
 
   const els = {
@@ -75,9 +184,22 @@
     tagSuggestions: document.getElementById("tagSuggestions"),
     noteInput: document.getElementById("noteInput"),
     statusSelect: document.getElementById("statusSelect"),
-    reminderPreset: document.getElementById("reminderPreset"),
-    customReminderGroup: document.getElementById("customReminderGroup"),
-    customReminderInput: document.getElementById("customReminderInput"),
+
+    reminderTriggerBtn: document.getElementById("reminderTriggerBtn"),
+    reminderSummaryLabel: document.getElementById("reminderSummaryLabel"),
+    reminderPickerCard: document.getElementById("reminderPickerCard"),
+    recurOnceBtn: document.getElementById("recurOnceBtn"),
+    recurRepeatBtn: document.getElementById("recurRepeatBtn"),
+    repeatStepperGroup: document.getElementById("repeatStepperGroup"),
+    repeatDaysMinus: document.getElementById("repeatDaysMinus"),
+    repeatDaysValue: document.getElementById("repeatDaysValue"),
+    repeatDaysPlus: document.getElementById("repeatDaysPlus"),
+    calPrevBtn: document.getElementById("calPrevBtn"),
+    calMonthLabel: document.getElementById("calMonthLabel"),
+    calNextBtn: document.getElementById("calNextBtn"),
+    calDaysGrid: document.getElementById("calDaysGrid"),
+    reminderTimeInput: document.getElementById("reminderTimeInput"),
+
     saveItemBtn: document.getElementById("saveItemBtn"),
 
     savedResultCard: document.getElementById("savedResultCard"),
@@ -110,16 +232,21 @@
     chrome.tabs.create({ url: getWebAppOrigin() });
   }
 
-  async function refreshOfflineQueueBanner() {
+  function renderOfflineQueueCount(queue) {
     if (!els.offlineQueueBar) return;
-    const queue = await api.getOfflineQueue();
-    if (queue.length > 0) {
-      els.offlineQueueCount.textContent = String(queue.length);
+    const len = Array.isArray(queue) ? queue.length : 0;
+    if (len > 0) {
+      els.offlineQueueCount.textContent = String(len);
       els.offlineQueueBar.classList.remove("hidden");
     } else {
       els.offlineQueueCount.textContent = "0";
       els.offlineQueueBar.classList.add("hidden");
     }
+  }
+
+  async function refreshOfflineQueueBanner() {
+    const queue = await api.getOfflineQueue();
+    renderOfflineQueueCount(queue);
   }
 
   async function updateHealthStatus(overrideUrl) {
@@ -207,6 +334,36 @@
     const order = ["inbox", "todo", "done"];
     const idx = order.indexOf(current);
     return order[(idx + 1) % order.length];
+  }
+
+  function renderFoldersDropdown(folders) {
+    state.cachedFolders = Array.isArray(folders) ? folders : [];
+    const currentFolderId = els.folderSelect.value;
+    els.folderSelect.innerHTML = '<option value="">-- ยังไม่เลือกโฟลเดอร์ --</option>';
+    for (const folder of state.cachedFolders) {
+      const opt = document.createElement("option");
+      opt.value = folder.id;
+      opt.textContent = `${folder.emoji || "📁"} ${folder.name}`;
+      els.folderSelect.appendChild(opt);
+    }
+    if (currentFolderId && state.cachedFolders.some((f) => f.id === currentFolderId)) {
+      els.folderSelect.value = currentFolderId;
+    }
+  }
+
+  function renderTagChips(tags) {
+    state.cachedTags = Array.isArray(tags) ? tags : [];
+    els.tagSuggestions.innerHTML = "";
+    for (const tag of state.cachedTags.slice(0, 12)) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tag-chip";
+      btn.dataset.tagName = tag.name;
+      btn.textContent = `#${tag.name}`;
+      btn.addEventListener("click", () => toggleTagChip(tag.name));
+      els.tagSuggestions.appendChild(btn);
+    }
+    syncTagChipSelection();
   }
 
   function renderRecentItems(items) {
@@ -307,54 +464,193 @@
     }
   }
 
+  function renderReminderPicker() {
+    const r = state.reminder;
+    if (els.reminderPickerCard) {
+      els.reminderPickerCard.classList.toggle("hidden", !r.pickerOpen);
+    }
+    if (els.reminderTriggerBtn) {
+      els.reminderTriggerBtn.classList.toggle("has-reminder", Boolean(r.enabled && r.selectedDate));
+    }
+    if (els.reminderSummaryLabel) {
+      if (!r.enabled || !r.selectedDate) {
+        els.reminderSummaryLabel.textContent = "⏰ ไม่ตั้งเตือน";
+      } else if (r.scheduleType === "every_n_days") {
+        els.reminderSummaryLabel.textContent = `🔁 ทุก ${r.repeatEveryDays} วัน · ${r.time}`;
+      } else {
+        els.reminderSummaryLabel.textContent = `📅 ${formatThaiDateShort(r.selectedDate)} · ${r.time}`;
+      }
+    }
+
+    for (const chip of document.querySelectorAll("[data-rem-preset]")) {
+      const key = chip.getAttribute("data-rem-preset");
+      const active = r.enabled ? r.presetKey === key : key === "none";
+      chip.classList.toggle("active", active);
+    }
+
+    if (els.recurOnceBtn && els.recurRepeatBtn && els.repeatStepperGroup) {
+      const isRepeat = r.scheduleType === "every_n_days";
+      els.recurOnceBtn.classList.toggle("active", !isRepeat);
+      els.recurRepeatBtn.classList.toggle("active", isRepeat);
+      els.repeatStepperGroup.classList.toggle("hidden", !isRepeat);
+      if (els.repeatDaysValue) {
+        els.repeatDaysValue.textContent = `${r.repeatEveryDays} วัน`;
+      }
+    }
+
+    if (els.reminderTimeInput && els.reminderTimeInput.value !== r.time) {
+      els.reminderTimeInput.value = r.time;
+    }
+
+    if (els.calMonthLabel) {
+      els.calMonthLabel.textContent = formatThaiMonthYear(r.viewYearMonth);
+    }
+    if (!els.calDaysGrid) return;
+
+    const todayIso = getBangkokTodayIso();
+    const [yStr, mStr] = r.viewYearMonth.split("-");
+    const year = Number(yStr) || new Date().getFullYear();
+    const month = Math.max(1, Math.min(12, Number(mStr) || 1));
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const leadingEmpty = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+
+    els.calDaysGrid.innerHTML = "";
+    for (let i = 0; i < leadingEmpty; i += 1) {
+      const emptyEl = document.createElement("span");
+      emptyEl.className = "cal-day empty";
+      els.calDaysGrid.appendChild(emptyEl);
+    }
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const isoDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      const isPast = isoDate < todayIso;
+      const isToday = isoDate === todayIso;
+      const isSelected = r.enabled && r.selectedDate === isoDate;
+
+      const dayBtn = document.createElement("button");
+      dayBtn.type = "button";
+      dayBtn.className = "cal-day";
+      if (isToday) dayBtn.classList.add("is-today");
+      if (isSelected) dayBtn.classList.add("selected");
+      dayBtn.textContent = String(day);
+      dayBtn.disabled = isPast;
+      dayBtn.dataset.calDate = isoDate;
+      dayBtn.addEventListener("click", () => {
+        r.enabled = true;
+        r.presetKey = "custom";
+        r.selectedDate = isoDate;
+        renderReminderPicker();
+      });
+      els.calDaysGrid.appendChild(dayBtn);
+    }
+  }
+
+  function applyReminderPreset(presetKey) {
+    const r = state.reminder;
+    const todayIso = getBangkokTodayIso();
+    if (presetKey === "none") {
+      r.enabled = false;
+      r.presetKey = "none";
+      r.selectedDate = "";
+    } else if (presetKey === "today_18") {
+      r.enabled = true;
+      r.presetKey = "today_18";
+      r.selectedDate = todayIso;
+      r.time = "18:00";
+      r.viewYearMonth = todayIso.slice(0, 7);
+    } else if (presetKey === "tomorrow_9") {
+      const tmIso = addDaysToIso(todayIso, 1);
+      r.enabled = true;
+      r.presetKey = "tomorrow_9";
+      r.selectedDate = tmIso;
+      r.time = "09:00";
+      r.viewYearMonth = tmIso.slice(0, 7);
+    } else if (presetKey === "in_3_days") {
+      const d3Iso = addDaysToIso(todayIso, 3);
+      r.enabled = true;
+      r.presetKey = "in_3_days";
+      r.selectedDate = d3Iso;
+      r.time = "20:00";
+      r.viewYearMonth = d3Iso.slice(0, 7);
+    }
+    renderReminderPicker();
+  }
+
+  function buildReminderPayload() {
+    const r = state.reminder;
+    if (!r.enabled || !r.selectedDate) return undefined;
+
+    const [hhRaw, mmRaw] = String(r.time || "18:00").split(":");
+    const hh = String(Math.max(0, Math.min(23, Number(hhRaw) || 18))).padStart(2, "0");
+    const mm = String(Math.max(0, Math.min(59, Number(mmRaw) || 0))).padStart(2, "0");
+    const isoLocalBangkok = `${r.selectedDate}T${hh}:${mm}:00+07:00`;
+    const remindAtDate = new Date(isoLocalBangkok);
+    if (Number.isNaN(remindAtDate.getTime())) {
+      throw new Error("รูปแบบวันเวลาที่ต้องการแจ้งเตือนไม่ถูกต้อง");
+    }
+
+    if (r.scheduleType === "every_n_days") {
+      return {
+        schedule_type: "every_n_days",
+        repeat_every_days: Math.max(1, Math.min(365, Number(r.repeatEveryDays) || 3)),
+        remind_time: `${hh}:${mm}:00`,
+        remind_at: remindAtDate.toISOString(),
+        timezone: state.userTimezone,
+        title_snapshot: els.titleInput.value.trim() || undefined,
+      };
+    }
+
+    return {
+      schedule_type: "once",
+      remind_at: remindAtDate.toISOString(),
+      timezone: state.userTimezone,
+      title_snapshot: els.titleInput.value.trim() || undefined,
+    };
+  }
+
   async function refreshRecentList(search = "") {
     try {
       const itemsRes = await api.fetchRecentItems({ search, limit: 20 });
-      renderRecentItems(itemsRes.items || []);
+      const items = itemsRes.items || [];
+      renderRecentItems(items);
+      if (!search) {
+        api.setWorkspaceCache({
+          folders: state.cachedFolders,
+          tags: state.cachedTags,
+          recentItems: items,
+        }).catch(() => {});
+      }
     } catch (err) {
       showBanner(`โหลดรายการล่าสุดไม่สำเร็จ: ${err.message}`, "error");
     }
   }
 
-  async function loadUserWorkspace() {
+  async function loadUserWorkspace(profileUser = null) {
     const [foldersRes, tagsRes, itemsRes] = await Promise.all([
       api.apiRequest("/api/folders"),
       api.apiRequest("/api/tags"),
       api.fetchRecentItems({ limit: 20 }),
     ]);
 
-    const currentFolderId = els.folderSelect.value;
-    els.folderSelect.innerHTML = '<option value="">-- ยังไม่เลือกโฟลเดอร์ --</option>';
-    for (const folder of foldersRes.folders || []) {
-      const opt = document.createElement("option");
-      opt.value = folder.id;
-      opt.textContent = `${folder.emoji || "📁"} ${folder.name}`;
-      els.folderSelect.appendChild(opt);
-    }
-    if (currentFolderId) {
-      els.folderSelect.value = currentFolderId;
-    }
+    const folders = foldersRes.folders || [];
+    const tags = tagsRes.tags || [];
+    const items = itemsRes.items || [];
+    renderFoldersDropdown(folders);
+    renderTagChips(tags);
+    renderRecentItems(items);
 
-    els.tagSuggestions.innerHTML = "";
-    for (const tag of (tagsRes.tags || []).slice(0, 12)) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "tag-chip";
-      btn.dataset.tagName = tag.name;
-      btn.textContent = `#${tag.name}`;
-      btn.addEventListener("click", () => toggleTagChip(tag.name));
-      els.tagSuggestions.appendChild(btn);
-    }
-    syncTagChipSelection();
-
-    renderRecentItems(itemsRes.items || []);
+    await api.setWorkspaceCache({
+      folders,
+      tags,
+      recentItems: items,
+      user: profileUser,
+    });
   }
 
   async function fetchPreviewForUrl(targetUrl, forceRefresh = false) {
     if (!api.isSaveableHttpUrl(targetUrl)) return;
     els.previewSourceBadge.textContent = "กำลังพรีวิว...";
     try {
-      const preview = await api.apiRequest("/api/items/preview", {
+      const preview = await api.apiRequest("/api/preview", {
         method: "POST",
         body: { url: targetUrl, force_refresh: forceRefresh },
       });
@@ -370,9 +666,11 @@
         els.siteNameLabel.textContent = preview.site_name;
       }
 
-      const firstMedia =
-        Array.isArray(preview.media_items) && preview.media_items[0] ? preview.media_items[0].url : null;
-      const thumb = preview.thumbnail_url || firstMedia;
+      const mediaUrls = normalizeMediaUrlList(
+        preview.media_items,
+        preview.image_url || preview.thumbnail_url || ""
+      );
+      const thumb = preview.image_url || preview.thumbnail_url || mediaUrls[0] || "";
       if (thumb) {
         renderPreviewThumbnail(thumb);
       }
@@ -381,22 +679,18 @@
     }
   }
 
-  async function ensureDomAssistPermission(url) {
-    if (!chrome.permissions || typeof chrome.permissions.contains !== "function") return true;
+  async function checkDomAssistPermissionPassive(url) {
+    if (!chrome.permissions || typeof chrome.permissions.contains !== "function") return false;
     try {
       const originPattern = new URL(url).origin + "/*";
-      const has = await chrome.permissions.contains({ origins: [originPattern] });
-      if (has) return true;
-      return await chrome.permissions.request({ origins: [originPattern] });
+      return await chrome.permissions.contains({ origins: [originPattern] });
     } catch (_err) {
       return false;
     }
   }
 
-  async function populateActiveTab() {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab || !tab.url) return;
-
+  function populateFromTabSync(tab) {
+    if (!tab || !tab.url) return null;
     const rawUrl = tab.url.trim();
     const saveable = api.isSaveableHttpUrl(rawUrl);
     els.blockedTabCard.classList.toggle("hidden", saveable);
@@ -405,90 +699,95 @@
       els.contentTypeBadge.textContent = "blocked";
       els.previewSourceBadge.textContent = "ไม่รองรับแท็บนี้";
       els.siteNameLabel.textContent = tab.title || "แท็บระบบเบราว์เซอร์";
-      return;
+      return null;
     }
 
     state.activeTabId = tab.id || null;
     els.urlInput.value = rawUrl;
     els.titleInput.value = (tab.title || "").trim();
     els.siteNameLabel.textContent = rawUrl;
+    return rawUrl;
+  }
 
-    let domMeta = null;
-    if (tab.id && (await ensureDomAssistPermission(rawUrl))) {
-      domMeta = await api.runDomAssist(tab.id);
+  async function enrichActiveTabAsync(tab, rawUrl) {
+    if (!rawUrl) return;
+    if (tab && tab.id && (await checkDomAssistPermissionPassive(rawUrl))) {
+      try {
+        const domMeta = await api.runDomAssist(tab.id);
+        state.domMeta = domMeta;
+        if (domMeta) {
+          if (domMeta.title && (!els.titleInput.value || domMeta.title.length > els.titleInput.value.length)) {
+            els.titleInput.value = domMeta.title;
+          }
+          if (domMeta.site_name) {
+            els.siteNameLabel.textContent = domMeta.site_name;
+          }
+          if (domMeta.selected_text && !els.noteInput.value) {
+            els.noteInput.value = domMeta.selected_text;
+          }
+          const domThumbs = normalizeMediaUrlList(domMeta.media_items);
+          if (domThumbs[0]) {
+            renderPreviewThumbnail(domThumbs[0]);
+          }
+        }
+      } catch (_err) {
+        // Passive DOM assist best-effort only
+      }
     }
-    state.domMeta = domMeta;
-    if (domMeta) {
-      if (domMeta.title && (!els.titleInput.value || domMeta.title.length > els.titleInput.value.length)) {
-        els.titleInput.value = domMeta.title;
-      }
-      if (domMeta.site_name) {
-        els.siteNameLabel.textContent = domMeta.site_name;
-      }
-      if (domMeta.selected_text && !els.noteInput.value) {
-        els.noteInput.value = domMeta.selected_text;
-      }
-      if (Array.isArray(domMeta.media_items) && domMeta.media_items[0]) {
-        renderPreviewThumbnail(domMeta.media_items[0].url);
-      }
-    }
-
     await fetchPreviewForUrl(rawUrl, false);
   }
 
-  function buildReminderPayload() {
-    const preset = els.reminderPreset.value;
-    if (!preset) return undefined;
-
-    let remindAtDate;
-    if (preset === "tomorrow_9am") {
-      remindAtDate = new Date();
-      remindAtDate.setDate(remindAtDate.getDate() + 1);
-      remindAtDate.setHours(9, 0, 0, 0);
-    } else if (preset === "in_3_days") {
-      remindAtDate = new Date();
-      remindAtDate.setDate(remindAtDate.getDate() + 3);
-      remindAtDate.setHours(20, 0, 0, 0);
-    } else if (preset === "custom") {
-      if (!els.customReminderInput.value) {
-        throw new Error("กรุณาเลือกวันเวลาสำหรับแจ้งเตือนแบบกำหนดเอง");
-      }
-      remindAtDate = new Date(els.customReminderInput.value);
+  async function populateActiveTab() {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const rawUrl = populateFromTabSync(tab);
+    if (rawUrl) {
+      await enrichActiveTabAsync(tab, rawUrl);
     }
-
-    if (!remindAtDate || Number.isNaN(remindAtDate.getTime())) {
-      throw new Error("รูปแบบวันเวลาที่ต้องการแจ้งเตือนไม่ถูกต้อง");
-    }
-
-    return {
-      schedule_type: "once",
-      remind_at: remindAtDate.toISOString(),
-      timezone: state.userTimezone,
-      title_snapshot: els.titleInput.value.trim() || undefined,
-    };
   }
 
-  async function enterSaverView() {
+  async function enterSaverView(preloadedSession = null, preloadedCache = null, preloadedTab = null) {
     els.authView.classList.add("hidden");
     els.saverView.classList.remove("hidden");
     setSaverPaneMode("save");
-    await refreshOfflineQueueBanner();
+    renderReminderPicker();
 
-    const session = await api.getSessionState();
-    const userDisplay =
-      (session.user && (session.user.display_name || session.user.email)) || "กำลังตรวจสอบผู้ใช้...";
+    const session = preloadedSession || (await api.getSessionState());
+    const cache = preloadedCache || (await api.getWorkspaceCache());
+    const cachedUser = cache.user || session.user;
+    const userDisplay = (cachedUser && (cachedUser.display_name || cachedUser.email)) || "บัญชี Sharely";
     els.userLabel.textContent = `👤 ${userDisplay}`;
 
+    if (cache.folders.length) renderFoldersDropdown(cache.folders);
+    if (cache.tags.length) renderTagChips(cache.tags);
+    if (cache.recentItems.length) renderRecentItems(cache.recentItems);
+
+    if (preloadedTab && preloadedTab.url) {
+      const rawUrl = populateFromTabSync(preloadedTab);
+      if (rawUrl) {
+        void enrichActiveTabAsync(preloadedTab, rawUrl);
+      }
+    } else {
+      void populateActiveTab();
+    }
+
+    void refreshOfflineQueueBanner();
+
     try {
-      const me = await api.apiRequest("/api/auth/me");
-      const profile = me.user || me.profile || {};
+      const [me] = await Promise.all([
+        api.apiRequest("/api/auth/me"),
+        loadUserWorkspace(),
+      ]);
+      const profile = (me && (me.user || me.profile)) || {};
       const name = profile.display_name || profile.email || userDisplay;
       const quotaLeft =
-        me.ai_quota && typeof me.ai_quota.remaining === "number" ? ` · AI เหลือ ${me.ai_quota.remaining}` : "";
+        me && me.ai_quota && typeof me.ai_quota.remaining === "number" ? ` · AI เหลือ ${me.ai_quota.remaining}` : "";
       els.userLabel.textContent = `👤 ${name}${quotaLeft}`;
-
-      await loadUserWorkspace();
-      await populateActiveTab();
+      void api.setWorkspaceCache({
+        folders: state.cachedFolders,
+        tags: state.cachedTags,
+        recentItems: state.allRecentItems,
+        user: profile,
+      });
     } catch (err) {
       if (err.status === 401) {
         await api.clearAuthSession();
@@ -496,8 +795,7 @@
         showBanner("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่อีกครั้ง", "error");
         return;
       }
-      await populateActiveTab();
-      showBanner(`โหลดข้อมูลบางส่วนไม่สำเร็จ (${err.message}) — คุณยังสามารถบันทึกเข้าคิวออฟไลน์ได้`, "error");
+      showBanner(`ซิงก์ข้อมูลพื้นหลังไม่สำเร็จ (${err.message}) — บันทึกลิงก์ได้ทันทีหรือเข้าคิวออฟไลน์`, "error");
     }
   }
 
@@ -559,7 +857,6 @@
           const data = res && res[0] && res[0].result;
           if (data && data.accessToken) {
             if (data.apiBaseUrl) {
-              await api.setBackendUrl(data.apiBaseUrl);
               els.backendUrlInput.value = await api.setBackendUrl(data.apiBaseUrl);
             }
             await api.loginWithAccessToken(data.accessToken, data.refreshToken || "");
@@ -701,14 +998,12 @@
       return;
     }
 
-    const previewMedia =
-      state.previewMeta && Array.isArray(state.previewMeta.media_items) && state.previewMeta.media_items.length
-        ? state.previewMeta.media_items
-        : null;
-    const domMedia =
-      state.domMeta && Array.isArray(state.domMeta.media_items) && state.domMeta.media_items.length
-        ? state.domMeta.media_items
-        : null;
+    const previewImage =
+      (state.previewMeta && (state.previewMeta.image_url || state.previewMeta.thumbnail_url)) || "";
+    const previewMedia = normalizeMediaUrlList(state.previewMeta && state.previewMeta.media_items, previewImage);
+    const domMedia = normalizeMediaUrlList(state.domMeta && state.domMeta.media_items);
+    const mergedMedia = previewMedia.length ? previewMedia : domMedia;
+    const coverImage = previewImage || mergedMedia[0] || undefined;
     const tags = parseTagList();
 
     const payload = {
@@ -724,7 +1019,10 @@
       status: els.statusSelect.value || "inbox",
       platform: (state.previewMeta && state.previewMeta.platform) || undefined,
       content_type: (state.previewMeta && state.previewMeta.content_type) || undefined,
-      media_items: previewMedia || domMedia || undefined,
+      image_url: coverImage,
+      embed_type: (state.previewMeta && state.previewMeta.embed_type) || undefined,
+      embed_url: (state.previewMeta && state.previewMeta.embed_url) || undefined,
+      media_items: mergedMedia.length ? mergedMedia : undefined,
       reminder,
     };
 
@@ -794,7 +1092,7 @@
       const savedUrl = await api.setBackendUrl(els.backendUrlInput.value);
       els.backendUrlInput.value = savedUrl;
       syncLocalDemoVisibility(savedUrl);
-      await updateHealthStatus(savedUrl);
+      void updateHealthStatus(savedUrl);
       showBanner(`อัปเดต Backend URL เป็น ${savedUrl} แล้ว`, "info");
     });
 
@@ -803,7 +1101,7 @@
         const savedUrl = await api.setBackendUrl(api.BACKEND_PRESETS.cloud);
         els.backendUrlInput.value = savedUrl;
         syncLocalDemoVisibility(savedUrl);
-        await updateHealthStatus(savedUrl);
+        void updateHealthStatus(savedUrl);
         showBanner("สลับไปยัง Render Production Cloud แล้ว", "info");
       });
     }
@@ -813,7 +1111,7 @@
         const savedUrl = await api.setBackendUrl(api.BACKEND_PRESETS.local);
         els.backendUrlInput.value = savedUrl;
         syncLocalDemoVisibility(savedUrl);
-        await updateHealthStatus(savedUrl);
+        void updateHealthStatus(savedUrl);
         showBanner("สลับไปยัง Local Dev (127.0.0.1:8000) แล้ว", "info");
       });
     }
@@ -895,16 +1193,67 @@
     els.createFolderBtn.addEventListener("click", handleCreateFolder);
     els.tagsInput.addEventListener("input", syncTagChipSelection);
 
-    els.reminderPreset.addEventListener("change", () => {
-      const isCustom = els.reminderPreset.value === "custom";
-      els.customReminderGroup.classList.toggle("hidden", !isCustom);
-      if (isCustom && !els.customReminderInput.value) {
-        const defaultDt = new Date(Date.now() + 2 * 60 * 60 * 1000);
-        defaultDt.setMinutes(0, 0, 0);
-        const offsetMs = defaultDt.getTimezoneOffset() * 60000;
-        els.customReminderInput.value = new Date(defaultDt - offsetMs).toISOString().slice(0, 16);
-      }
-    });
+    if (els.reminderTriggerBtn) {
+      els.reminderTriggerBtn.addEventListener("click", () => {
+        state.reminder.pickerOpen = !state.reminder.pickerOpen;
+        if (state.reminder.pickerOpen && !state.reminder.selectedDate) {
+          state.reminder.viewYearMonth = getBangkokTodayIso().slice(0, 7);
+        }
+        renderReminderPicker();
+      });
+    }
+
+    for (const chip of document.querySelectorAll("[data-rem-preset]")) {
+      chip.addEventListener("click", () => {
+        applyReminderPreset(chip.getAttribute("data-rem-preset") || "none");
+      });
+    }
+
+    if (els.recurOnceBtn && els.recurRepeatBtn) {
+      els.recurOnceBtn.addEventListener("click", () => {
+        state.reminder.scheduleType = "once";
+        renderReminderPicker();
+      });
+      els.recurRepeatBtn.addEventListener("click", () => {
+        state.reminder.scheduleType = "every_n_days";
+        if (!state.reminder.selectedDate) {
+          state.reminder.enabled = true;
+          state.reminder.selectedDate = getBangkokTodayIso();
+        }
+        renderReminderPicker();
+      });
+    }
+
+    if (els.repeatDaysMinus && els.repeatDaysPlus) {
+      els.repeatDaysMinus.addEventListener("click", () => {
+        state.reminder.repeatEveryDays = Math.max(1, Number(state.reminder.repeatEveryDays || 3) - 1);
+        renderReminderPicker();
+      });
+      els.repeatDaysPlus.addEventListener("click", () => {
+        state.reminder.repeatEveryDays = Math.min(365, Number(state.reminder.repeatEveryDays || 3) + 1);
+        renderReminderPicker();
+      });
+    }
+
+    if (els.calPrevBtn && els.calNextBtn) {
+      els.calPrevBtn.addEventListener("click", () => {
+        state.reminder.viewYearMonth = stepYearMonth(state.reminder.viewYearMonth, -1);
+        renderReminderPicker();
+      });
+      els.calNextBtn.addEventListener("click", () => {
+        state.reminder.viewYearMonth = stepYearMonth(state.reminder.viewYearMonth, 1);
+        renderReminderPicker();
+      });
+    }
+
+    if (els.reminderTimeInput) {
+      els.reminderTimeInput.addEventListener("input", () => {
+        state.reminder.time = els.reminderTimeInput.value || "18:00";
+        if (state.reminder.enabled) {
+          renderReminderPicker();
+        }
+      });
+    }
 
     els.saveForm.addEventListener("submit", handleSaveItem);
     els.aiSummarizeBtn.addEventListener("click", handleAiSummarize);
@@ -912,13 +1261,21 @@
 
   async function init() {
     bindEvents();
-    const session = await api.getSessionState();
+    const [session, cachedWorkspace, activeTabs] = await Promise.all([
+      api.getSessionState(),
+      api.getWorkspaceCache(),
+      chrome.tabs && typeof chrome.tabs.query === "function"
+        ? chrome.tabs.query({ active: true, currentWindow: true }).catch(() => [])
+        : Promise.resolve([]),
+    ]);
+
     els.backendUrlInput.value = session.backendUrl;
     syncLocalDemoVisibility(session.backendUrl);
-    await updateHealthStatus(session.backendUrl);
+    void updateHealthStatus(session.backendUrl);
 
     if (session.accessToken) {
-      await enterSaverView();
+      const tab = Array.isArray(activeTabs) ? activeTabs[0] : null;
+      await enterSaverView(session, cachedWorkspace, tab);
     } else {
       enterAuthView();
     }

@@ -15,9 +15,19 @@ function setActionBadge(text, color) {
 
 function ensureSyncAlarm() {
   if (chrome.alarms && typeof chrome.alarms.create === "function") {
-    chrome.alarms.create(SYNC_ALARM_NAME, { periodInMinutes: 5 });
+    if (typeof chrome.alarms.get === "function") {
+      chrome.alarms.get(SYNC_ALARM_NAME, (existing) => {
+        if (!existing) {
+          chrome.alarms.create(SYNC_ALARM_NAME, { periodInMinutes: 5 });
+        }
+      });
+    } else {
+      chrome.alarms.create(SYNC_ALARM_NAME, { periodInMinutes: 5 });
+    }
   }
 }
+
+ensureSyncAlarm();
 
 function setupContextMenus() {
   chrome.contextMenus.removeAll(() => {

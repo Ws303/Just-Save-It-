@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { planIosLocalNotifications } from "../notifications.ts";
 import { extractInviteTokenFromUrl, extractSharedUrlFromIntent } from "../shareIntent.ts";
 import {
+  classifyQueueFlushStatus,
   enqueueOfflineItem,
   flushOfflineQueueWithSender,
   loadOfflineQueue,
@@ -122,4 +123,11 @@ test("offline queue drops permanent 4xx poison-pill entries while retaining retr
   const remaining = await loadOfflineQueue();
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].url, "https://example.com/transient-503");
+
+  assert.equal(classifyQueueFlushStatus(400), "drop");
+  assert.equal(classifyQueueFlushStatus(403), "drop");
+  assert.equal(classifyQueueFlushStatus(404), "drop");
+  assert.equal(classifyQueueFlushStatus(422), "drop");
+  assert.equal(classifyQueueFlushStatus(503), "retry");
+  assert.equal(classifyQueueFlushStatus(201), "ok");
 });

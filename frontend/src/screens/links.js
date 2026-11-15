@@ -57,27 +57,90 @@ function getPreviewMediaImages(item) {
 }
 
 /**
+ * Derive fallback video embed URL and thumbnail locally when raw URL is a supported video platform
+ * (e.g., before backend unfurl enrichment completes).
+ */
+export function deriveVideoEmbedInfo(item) {
+  const rawUrl = String(item?.url || "").trim();
+  const explicitEmbed = resolveAllowlistedEmbedUrl(item?.embedUrl || item?.embed_url);
+  let embedUrl = explicitEmbed;
+  let thumbUrl = "";
+  let platform = item?.platform || "";
+
+  if (rawUrl) {
+    try {
+      const parsed = new URL(rawUrl);
+      const host = parsed.hostname.toLowerCase();
+      if (host === "youtu.be" || host.endsWith(".youtu.be") || host.includes("youtube.com")) {
+        let ytId = "";
+        if (host === "youtu.be" || host.endsWith(".youtu.be")) {
+          ytId = parsed.pathname.split("/").filter(Boolean)[0] || "";
+        } else if (parsed.pathname === "/watch") {
+          ytId = parsed.searchParams.get("v") || "";
+        } else {
+          const m = parsed.pathname.match(/^\/(?:embed|shorts|live)\/([A-Za-z0-9_-]{6,})/);
+          if (m) ytId = m[1];
+        }
+        if (/^[A-Za-z0-9_-]{6,}$/.test(ytId)) {
+          embedUrl = embedUrl || `https://www.youtube.com/embed/${ytId}`;
+          thumbUrl = `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`;
+          platform = platform || "YouTube";
+        }
+      } else if (host === "vimeo.com" || host === "www.vimeo.com") {
+        const vm = parsed.pathname.match(/^\/(\d{5,})/);
+        if (vm) {
+          embedUrl = embedUrl || `https://player.vimeo.com/video/${vm[1]}`;
+          platform = platform || "Vimeo";
+        }
+      } else if (host.includes("tiktok.com")) {
+        const tm = parsed.pathname.match(/\/video\/(\d+)/);
+        if (tm) {
+          embedUrl = embedUrl || `https://www.tiktok.com/embed/v2/${tm[1]}`;
+          platform = platform || "TikTok";
+        }
+      }
+    } catch {}
+  }
+  return { embedUrl: resolveAllowlistedEmbedUrl(embedUrl), thumbUrl, platform };
+}
+
+function withAutoplayParam(embedUrl) {
+  try {
+    const u = new URL(embedUrl);
+    if (u.hostname.includes("youtube.com") || u.hostname.includes("youtube-nocookie.com") || u.hostname.includes("vimeo.com")) {
+      u.searchParams.set("autoplay", "1");
+      u.searchParams.set("playsinline", "1");
+    }
+    return u.toString();
+  } catch {
+    return embedUrl;
+  }
+}
+
+/**
  * Spec 1A: Rich Preview rendered strictly inside the 358x186px (15px radius) container.
  * No extra rows are added outside this container.
  */
 export function renderRichPreviewBox(item, uiState = {}, options = {}) {
   const boxClass = options.desktop ? "figma-rich-preview-box is-desktop" : "figma-rich-preview-box";
-  const safeEmbedUrl = resolveAllowlistedEmbedUrl(item?.embedUrl || item?.embed_url);
+  const derivedVideo = deriveVideoEmbedInfo(item);
+  const safeEmbedUrl = derivedVideo.embedUrl;
   const mediaImages = getPreviewMediaImages(item);
-  const singleCover = resolveMediaThumbUrl(item) || mediaImages[0] || "";
+  const singleCover = resolveMediaThumbUrl(item) || mediaImages[0] || derivedVideo.thumbUrl || "";
 
   // Case 1: Interactive video iframe on allowlisted domain
   if (safeEmbedUrl) {
     if (uiState.videoPlaying) {
+      const activeSrc = withAutoplayParam(safeEmbedUrl);
       return `
         <div class="${boxClass}" data-node-id="319:6103">
           <iframe
             class="figma-preview-iframe"
-            src="${escHtml(safeEmbedUrl)}"
+            src="${escHtml(activeSrc)}"
             title="${escHtml(item?.title || "ตัวอย่างวิดีโอ")}"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
             allowfullscreen
-            sandbox="allow-scripts allow-same-origin allow-presentation"
+            sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
             referrerpolicy="strict-origin-when-cross-origin"
           ></iframe>
           <button
@@ -107,7 +170,7 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
         >
           ${icons.play(22)}
         </button>
-        <span class="figma-preview-badge">${escHtml(item?.platform || "Video")} · แตะเพื่อเล่น</span>
+        <span class="figma-preview-badge">${escHtml(derivedVideo.platform || item?.platform || "Video")} · แตะเพื่อเล่น</span>
       </div>
     `;
   }
@@ -346,6 +409,11 @@ export function renderLinkDetailScreen(state) {
           <p class="figma-detail-post-meta">
             ${escHtml(item.platform || "Web")} · ${escHtml(item.savedAgo || "เมื่อสักครู่")} · ${escHtml(folder?.name || "ทั่วไป")}
           </p>
+          ${
+            item.description && String(item.description).trim() && String(item.description).trim() !== String(item.title || "").trim()
+              ? `<p class="figma-detail-post-desc">${escHtml(item.description)}</p>`
+              : ""
+          }
         </div>
 
         <button type="button" class="figma-detail-reminder-pill" data-open-reminder="${escHtml(item.id)}">

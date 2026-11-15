@@ -1,114 +1,136 @@
-import React, { useEffect, useRef } from "react";
-import { Stack, useRouter, useSegments } from "expo-router";
+import React, { useEffect, useRef, useState } from "react";
+import { Stack, useRootNavigationState, useRouter, useSegments } from "expo-router";
 import * as Linking from "expo-linking";
 import { StatusBar } from "expo-status-bar";
 import { acceptFolderInvite, fetchWorkspace, flushOfflineQueue } from "../src/api";
 import { syncLocalRemindersWithOs } from "../src/notifications";
 import { extractInviteTokenFromUrl, extractSharedUrlFromIntent } from "../src/shareIntent";
-import { loadSession } from "../src/storage";
+import { AppThemeMode, loadSession, loadThemeMode } from "../src/storage";
 
 export default function RootLayout() {
   const router = useRouter();
+  const rootNavState = useRootNavigationState();
   const segments = useSegments();
   const incomingUrl = Linking.useURL();
   const hydratedUserRef = useRef<string>("");
   const pendingDeepLinkRef = useRef<string | null>(null);
+  const [themeMode, setThemeMode] = useState<AppThemeMode>("cream");
+  const navReady = Boolean(rootNavState?.key);
 
   useEffect(() => {
+    void loadThemeMode().then((mode) => setThemeMode(mode)).catch(() => {});
+  }, [segments]);
+
+  useEffect(() => {
+    if (!navReady) return;
     let active = true;
     async function processDeepLink(rawUrl: string) {
-      const inviteToken = extractInviteTokenFromUrl(rawUrl);
-      if (inviteToken) {
-        await acceptFolderInvite(inviteToken);
-        if (active) router.replace("/(tabs)/folders");
-        return;
-      }
+      try {
+        const inviteToken = extractInviteTokenFromUrl(rawUrl);
+        if (inviteToken) {
+          await acceptFolderInvite(inviteToken);
+          if (active) router.replace("/(tabs)/folders");
+          return;
+        }
 
-      const extracted = extractSharedUrlFromIntent(rawUrl);
-      if (extracted?.url) {
-        router.replace({
-          pathname: "/(tabs)",
-          params: {
-            sharedUrl: extracted.url,
-            sharedTitle: extracted.title || "",
-          },
-        });
+        const extracted = extractSharedUrlFromIntent(rawUrl);
+        if (extracted?.url) {
+          router.replace({
+            pathname: "/(tabs)",
+            params: {
+              sharedUrl: extracted.url,
+              sharedTitle: extracted.title || "",
+            },
+          });
+        }
+      } catch {
+        // Ignore malformed or transient deep link errors during cold start
       }
     }
 
     async function bootstrap() {
-      const session = await loadSession();
-      if (!active) return;
-      const inLogin = segments[0] === "login";
+      try {
+        const session = await loadSession();
+        if (!active) return;
+        const inLogin = segments[0] === "login";
 
-      if (!session?.access_token) {
-        hydratedUserRef.current = "";
-        if (!inLogin) {
-          router.replace("/login");
+        if (!session?.access_token) {
+          hydratedUserRef.current = "";
+          if (!inLogin) {
+            router.replace("/login");
+          }
+          return;
         }
-        return;
-      }
 
-      if (inLogin) {
-        router.replace("/(tabs)");
-      }
-
-      const sessionKey = session.user?.id || session.access_token;
-      if (hydratedUserRef.current !== sessionKey) {
-        hydratedUserRef.current = sessionKey;
-        await flushOfflineQueue();
-        const ws = await fetchWorkspace();
-        if (active && ws.reminders.length > 0) {
-          await syncLocalRemindersWithOs(ws.reminders);
+        if (inLogin) {
+          router.replace("/(tabs)");
         }
-      }
 
-      if (active && pendingDeepLinkRef.current) {
-        const queuedUrl = pendingDeepLinkRef.current;
-        pendingDeepLinkRef.current = null;
-        await processDeepLink(queuedUrl);
+        const sessionKey = session.user?.id || session.access_token;
+        if (hydratedUserRef.current !== sessionKey) {
+          hydratedUserRef.current = sessionKey;
+          await flushOfflineQueue().catch(() => {});
+          const ws = await fetchWorkspace().catch(() => ({ items: [], folders: [], reminders: [] }));
+          if (active && Array.isArray(ws.reminders) && ws.reminders.length > 0) {
+            await syncLocalRemindersWithOs(ws.reminders).catch(() => {});
+          }
+        }
+
+        if (active && pendingDeepLinkRef.current) {
+          const queuedUrl = pendingDeepLinkRef.current;
+          pendingDeepLinkRef.current = null;
+          await processDeepLink(queuedUrl);
+        }
+      } catch {
+        // Never allow boot hydration failures to crash RootLayout
       }
     }
     void bootstrap();
     return () => {
       active = false;
     };
-  }, [segments, router]);
+  }, [navReady, segments, router]);
 
   useEffect(() => {
-    if (!incomingUrl) return;
+    if (!incomingUrl || !navReady) return;
     let active = true;
     async function handleDeepLink(rawUrl: string) {
-      const session = await loadSession();
-      if (!active) return;
-      if (!session?.access_token) {
-        pendingDeepLinkRef.current = rawUrl;
-        return;
-      }
+      try {
+        const session = await loadSession();
+        if (!active) return;
+        if (!session?.access_token) {
+          pendingDeepLinkRef.current = rawUrl;
+          return;
+        }
 
-      const inviteToken = extractInviteTokenFromUrl(rawUrl);
-      if (inviteToken) {
-        await acceptFolderInvite(inviteToken);
-        if (active) router.replace("/(tabs)/folders");
-        return;
-      }
+        const inviteToken = extractInviteTokenFromUrl(rawUrl);
+        if (inviteToken) {
+          await acceptFolderInvite(inviteToken);
+          if (active) router.replace("/(tabs)/folders");
+          return;
+        }
 
-      const extracted = extractSharedUrlFromIntent(rawUrl);
-      if (extracted?.url) {
-        router.replace({
-          pathname: "/(tabs)",
-          params: {
-            sharedUrl: extracted.url,
-            sharedTitle: extracted.title || "",
-          },
-        });
+        const extracted = extractSharedUrlFromIntent(rawUrl);
+        if (extracted?.url) {
+          router.replace({
+            pathname: "/(tabs)",
+            params: {
+              sharedUrl: extracted.url,
+              sharedTitle: extracted.title || "",
+            },
+          });
+        }
+      } catch {
+        // Guard runtime deep link handler from uncaught promise rejection
       }
     }
     void handleDeepLink(incomingUrl);
     return () => {
       active = false;
     };
-  }, [incomingUrl, router]);
+  }, [incomingUrl, navReady, router]);
+
+  const bgColor = themeMode === "dark" ? "#1C1917" : themeMode === "white" ? "#FFFFFF" : "#F6F3EC";
 
   return (
     <>
@@ -118,7 +140,7 @@ export default function RootLayout() {
           headerStyle: { backgroundColor: "#880808" },
           headerTintColor: "#FDFBF7",
           headerTitleStyle: { fontWeight: "700" },
-          contentStyle: { backgroundColor: "#F6F3EC" },
+          contentStyle: { backgroundColor: bgColor },
         }}
       >
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

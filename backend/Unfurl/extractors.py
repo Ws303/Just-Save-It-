@@ -471,6 +471,7 @@ async def _extract_youtube(canon_url: str, url_hash: str) -> UnfurlResult:
     images: List[Any] = []
     title = None
     description = None
+    author = None
     if isinstance(oembed, dict):
         title = oembed.get("title")
         author = clean_text_field(oembed.get("author_name"), unescape_html=True)
@@ -481,14 +482,22 @@ async def _extract_youtube(canon_url: str, url_hash: str) -> UnfurlResult:
     if video_id:
         images.append(f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")
 
-    if not title or not images:
+    needs_html_meta = (
+        not title
+        or not images
+        or not description
+        or (author and description == f"By {author}")
+    )
+    if needs_html_meta:
         try:
             html_meta = await _fetch_generic_html_meta(canon_url)
             title = title or html_meta.get("title")
-            description = description or html_meta.get("description")
+            html_desc = clean_text_field(html_meta.get("description"), unescape_html=True)
+            if html_desc and html_desc != (clean_text_field(title, unescape_html=True) or ""):
+                description = html_desc
             images.extend(html_meta.get("media_items") or [])
         except Exception:
-            if not oembed:
+            if not oembed and not video_id:
                 raise
 
     return UnfurlResult(
@@ -516,6 +525,7 @@ async def _extract_tiktok(canon_url: str, url_hash: str) -> UnfurlResult:
     embed_url = None
     title = None
     description = None
+    author = None
     images: List[Any] = []
     if isinstance(oembed, dict):
         title = oembed.get("title")
@@ -532,11 +542,19 @@ async def _extract_tiktok(canon_url: str, url_hash: str) -> UnfurlResult:
     if not embed_url and video_id:
         embed_url = validate_embed_url("tiktok", f"https://www.tiktok.com/embed/v2/{video_id}")
 
-    if not title or not images:
+    needs_html_meta = (
+        not title
+        or not images
+        or not description
+        or (author and description == f"@{author}")
+    )
+    if needs_html_meta:
         try:
             html_meta = await _fetch_generic_html_meta(canon_url)
             title = title or html_meta.get("title")
-            description = description or html_meta.get("description")
+            html_desc = clean_text_field(html_meta.get("description"), unescape_html=True)
+            if html_desc and html_desc != (clean_text_field(title, unescape_html=True) or ""):
+                description = html_desc
             images.extend(html_meta.get("media_items") or [])
         except Exception:
             if not oembed:
@@ -798,10 +816,10 @@ async def _extract_x(canon_url: str, url_hash: str) -> UnfurlResult:
         else None
     )
 
-    if not title:
+    if not title or not images:
         try:
             html_meta = await _fetch_generic_html_meta(canon_url)
-            title = html_meta.get("title")
+            title = title or html_meta.get("title")
             description = description or html_meta.get("description")
             images.extend(html_meta.get("media_items") or [])
         except Exception:

@@ -9,14 +9,16 @@
   "theme_color": "#D9383A",
   "icons": [
     {
-      "src": "/assets/icons/cherry-selected.svg",
-      "sizes": "any",
-      "type": "image/svg+xml"
+      "src": "/assets/sharely-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
     },
     {
-      "src": "/assets/covers/coffee.png",
+      "src": "/assets/sharely-icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ],
   "share_target": {

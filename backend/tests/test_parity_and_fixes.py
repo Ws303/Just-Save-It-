@@ -536,3 +536,85 @@ def test_mcp_create_item_rejects_ssrf_targets(isolated_db):
     finally:
         set_authenticated_user_id(None)
         set_override_db(None)
+
+
+@pytest.mark.asyncio
+async def test_extract_youtube_and_x_fetch_real_html_description_and_images():
+    """YouTube fetches HTML meta description even with oEmbed present; X fetches HTML images even with title present."""
+    from Unfurl.extractors import extract_unfurl_metadata
+
+    yt_oembed = {
+        "title": "Demo Video Title",
+        "author_name": "CreatorChannel",
+        "thumbnail_url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+        "html": '<iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ"></iframe>',
+    }
+    yt_html_meta = {
+        "title": "Demo Video Title",
+        "description": "Full real video description extracted from YouTube meta tag.",
+        "media_items": ["https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"],
+    }
+    with (
+        patch("Unfurl.extractors._fetch_json_safely", new=AsyncMock(return_value=yt_oembed)),
+        patch("Unfurl.extractors._fetch_generic_html_meta", new=AsyncMock(return_value=yt_html_meta)) as mock_html,
+    ):
+        res_yt = await extract_unfurl_metadata("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        mock_html.assert_awaited_once()
+        assert res_yt.description == "Full real video description extracted from YouTube meta tag."
+        assert res_yt.embed_url == "https://www.youtube.com/embed/dQw4w9WgXcQ"
+        assert len(res_yt.media_items) >= 1
+
+    x_oembed = {
+        "author_name": "AliceDev",
+        "html": "<blockquote><p>Check out this cool architecture diagram!</p></blockquote>",
+    }
+    x_html_meta = {
+        "title": "AliceDev on X",
+        "description": "Check out this cool architecture diagram!",
+        "media_items": ["https://pbs.twimg.com/media/demo123.jpg"],
+    }
+    with (
+        patch("Unfurl.extractors._fetch_json_safely", new=AsyncMock(return_value=x_oembed)),
+        patch("Unfurl.extractors._fetch_generic_html_meta", new=AsyncMock(return_value=x_html_meta)) as mock_x_html,
+    ):
+        res_x = await extract_unfurl_metadata("https://x.com/AliceDev/status/1234567890")
+        mock_x_html.assert_awaited_once()
+        assert "https://pbs.twimg.com/media/demo123.jpg" in res_x.media_items
+
+
+def test_duplicate_bump_missing_preview_triggers_re_enrichment_and_safe_default_cors(isolated_db, monkeypatch):
+    """Bumping a deduplicated item lacking image/description/embed marks enrich_status='pending'; default CORS is non-wildcard."""
+    from main import parse_cors_settings
+
+    monkeypatch.delenv("CORS_ALLOW_ORIGINS", raising=False)
+    monkeypatch.delenv("CORS_ALLOW_ORIGIN_REGEX", raising=False)
+    origins, regex, allow_creds = parse_cors_settings()
+    assert "*" not in origins
+    assert "https://just-save-it-web.onrender.com" in origins
+    assert allow_creds is True
+    assert regex is not None
+
+    user_id = "11111111-1111-4111-8111-111111111111"
+    created = create_or_bump_item(
+        isolated_db,
+        user_id,
+        ItemCreateRequest(url="https://www.youtube.com/watch?v=abcDEF12345", title="YT Raw"),
+    )
+    isolated_db.table("items").update(
+        {"enrich_status": "unfurled", "platform": "youtube", "description": "By OldAuthor"}
+    ).eq("id", created["id"]).execute()
+
+    bumped = create_or_bump_item(
+        isolated_db,
+        user_id,
+        ItemCreateRequest(
+            url="https://www.youtube.com/watch?v=abcDEF12345",
+            title="YT Raw",
+            embed_type="youtube",
+            platform="youtube",
+            content_type="video",
+        ),
+    )
+    assert bumped["deduplicated"] is True
+    assert bumped["enrich_status"] == "pending"
+    assert bumped["embed_type"] == "youtube"

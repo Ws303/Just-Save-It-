@@ -158,7 +158,9 @@ function recordLog({ method, path, mode, status, durationMs, headers, requestBod
     error: error || null,
   };
   store.state.api.logs = [entry, ...store.state.api.logs.slice(0, 39)];
-  store.emit();
+  if (store.state.ui?.inspectorVisible) {
+    store.emit();
+  }
   return entry;
 }
 
@@ -713,7 +715,7 @@ export const apiClient = {
     return item;
   },
 
-  async refreshItemPreview(itemId) {
+  async refreshItemPreview(itemId, { silent = false } = {}) {
     const item = getLinkById(itemId);
     if (!item) return { ok: false, status: 404, error: "ไม่พบรายการ" };
     const res = await dispatchRequest({
@@ -740,7 +742,7 @@ export const apiClient = {
       }),
     });
     if (!res.ok) {
-      store.showToast(res.error || "รีเฟรชพรีวิวลิงก์ไม่สำเร็จ");
+      if (!silent) store.showToast(res.error || "รีเฟรชพรีวิวลิงก์ไม่สำเร็จ");
       return res;
     }
     const rawUpdated = res.data?.item || res.data;
@@ -757,7 +759,7 @@ export const apiClient = {
       Object.assign(item, mapped, { savedAgo: item.savedAgo });
       store.emit();
     }
-    store.showToast("รีเฟรชพรีวิวลิงก์แล้ว");
+    if (!silent) store.showToast("รีเฟรชพรีวิวลิงก์แล้ว");
     return res;
   },
 
@@ -1971,6 +1973,57 @@ export const apiClient = {
 
   async testMcpTool(toolName, params = {}) {
     const started = performance.now();
+    if (!this.isMockMode()) {
+      const baseUrl = store.state.api.baseUrl.replace(/\/+$/, "");
+      const token = (store.state.api.mcpApiToken || store.state.api.bearerToken || "").trim();
+      if (token) {
+        const rpcPayload = {
+          jsonrpc: "2.0",
+          id: Date.now(),
+          method: "tools/call",
+          params: { name: toolName, arguments: params || {} },
+        };
+        try {
+          const resp = await fetch(`${baseUrl}/mcp`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json, text/event-stream",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify(rpcPayload),
+          });
+          const rawText = await resp.text();
+          let parsedBody = rawText;
+          try {
+            parsedBody = JSON.parse(rawText);
+          } catch {}
+          store.state.api.lastMcpResult = { toolName, params, result: parsedBody, liveHttpStatus: resp.status };
+          recordLog({
+            method: "POST",
+            path: "/mcp",
+            mode: "live",
+            status: resp.status,
+            durationMs: performance.now() - started,
+            headers: { Authorization: "Bearer ***" },
+            requestBody: rpcPayload,
+            responseBody: parsedBody,
+          });
+          if (resp.ok) return parsedBody;
+        } catch (err) {
+          recordLog({
+            method: "POST",
+            path: "/mcp",
+            mode: "live",
+            status: 0,
+            durationMs: performance.now() - started,
+            headers: { Authorization: "Bearer ***" },
+            requestBody: rpcPayload,
+            error: err?.message || "MCP network error",
+          });
+        }
+      }
+    }
     await sleep(60);
     const { data } = store.state;
     let result;

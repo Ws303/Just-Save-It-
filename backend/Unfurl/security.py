@@ -6,6 +6,7 @@ Provides:
 3. Thread-safe in-memory sliding-window rate limiter (`collections.deque`) with injectable clock.
 """
 
+import asyncio
 from collections import deque
 import hashlib
 import hmac
@@ -268,7 +269,7 @@ async def stream_fetch_limited(
     """Stream HTTP GET with per-hop SSRF validation and bounded memory accumulation."""
     if not sanitize_external_url(url):
         raise ValueError(f"SSRF Alert: Unsafe external URL '{redact_secrets_in_text(url)}'.")
-    current_url = validate_safe_url(url)
+    current_url = await asyncio.to_thread(validate_safe_url, url)
 
     async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=False) as client:
         for _ in range(max_redirects + 1):
@@ -281,7 +282,7 @@ async def stream_fetch_limited(
                     next_url = urllib.parse.urljoin(current_url, location)
                     if not sanitize_external_url(next_url):
                         raise ValueError("SSRF Alert: Redirect target is unsafe.")
-                    current_url = validate_safe_url(next_url)
+                    current_url = await asyncio.to_thread(validate_safe_url, next_url)
                     continue
 
                 content_type = (

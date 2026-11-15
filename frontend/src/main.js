@@ -409,6 +409,33 @@ async function copyText(text) {
   }
 }
 
+const _autoEnrichedItemIds = new Set();
+let _searchEmitRaf = 0;
+
+function scheduleSearchEmit() {
+  if (typeof requestAnimationFrame !== "function") {
+    store.emit();
+    return;
+  }
+  if (_searchEmitRaf) cancelAnimationFrame(_searchEmitRaf);
+  _searchEmitRaf = requestAnimationFrame(() => {
+    _searchEmitRaf = 0;
+    store.emit();
+  });
+}
+
+function maybeAutoEnrichItem(itemId) {
+  if (!itemId || store.state.api.mode !== "live" || _autoEnrichedItemIds.has(itemId)) return;
+  const item = getLinkById(itemId);
+  if (!item) return;
+  const desc = String(item.description || "").trim();
+  const isYt = /youtube\.com|youtu\.be/i.test(String(item.url || "")) || String(item.platform || "").toLowerCase() === "youtube";
+  const needsEnrich = !item.coverUrl || !desc || (isYt && (desc.startsWith("By ") || !item.embed_url));
+  if (!needsEnrich) return;
+  _autoEnrichedItemIds.add(itemId);
+  apiClient.refreshItemPreview(itemId, { silent: true }).catch(() => {});
+}
+
 // =========================================================
 // DELEGATED INPUT / CHANGE HANDLERS
 // =========================================================
@@ -418,13 +445,13 @@ appEl.addEventListener("input", (e) => {
 
   if (el.dataset.searchInput === "home") {
     ui.homeSearch = el.value;
-    store.emit();
+    scheduleSearchEmit();
   } else if (el.dataset.searchInput === "folders") {
     ui.folderSearch = el.value;
-    store.emit();
+    scheduleSearchEmit();
   } else if (el.dataset.searchInput === "folderDetail") {
     ui.folderDetailSearch = el.value;
-    store.emit();
+    scheduleSearchEmit();
   } else if (el.dataset.bindDisplaynameSignup) {
     ui.authDisplayName = el.value;
     ui.authError = null;
@@ -880,7 +907,10 @@ appEl.addEventListener("click", async (e) => {
       ui.aiConfirmModalOpen = false;
       ui.aiSummaryStatus = "loading";
       store.emit();
-      const res = await apiClient.summarizeLink(targetId, { forceRefresh: Boolean(d.forceRefresh) });
+      const res = await apiClient.summarizeLink(targetId, {
+        forceRefresh: Boolean(d.forceRefresh),
+        saveToNote: false,
+      });
       if (ui.aiRequestId !== reqId || ui.activeLinkId !== targetId) return;
       ui.aiSummaryStatus = res.ok ? "success" : "error";
       store.showToast(res.ok ? "สรุปเนื้อหาด้วย AI สำเร็จ" : `สรุปไม่สำเร็จ: ${res.error || "ลองใหม่"}`);
@@ -1086,6 +1116,13 @@ appEl.addEventListener("click", async (e) => {
       activeFolderId: d.openFolder,
       viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
     });
+    apiClient.listFolderMembers(d.openFolder).then((membersRes) => {
+      if (membersRes.ok && membersRes.data) {
+        ui.folderMembers = ui.folderMembers || {};
+        ui.folderMembers[d.openFolder] = membersRes.data;
+        if (ui.activeFolderId === d.openFolder) store.emit();
+      }
+    }).catch(() => {});
     return;
   }
   if (d.openLink) {
@@ -1094,6 +1131,7 @@ appEl.addEventListener("click", async (e) => {
       prevPcSection: ui.pcSection && ui.pcSection !== "linkDetail" ? ui.pcSection : ui.prevPcSection || "home",
       viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
     });
+    maybeAutoEnrichItem(d.openLink);
     return;
   }
   if (d.linkNav) {
@@ -1928,6 +1966,7 @@ appEl.addEventListener("click", async (e) => {
       tagPopoverOpen: false,
       viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
     });
+    maybeAutoEnrichItem(d.selectWebLink);
     return;
   }
   if (d.extUnfurl) {

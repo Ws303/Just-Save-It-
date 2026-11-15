@@ -7,6 +7,7 @@ Enforces:
 4. Token safety: Trims combined text to at most 6,000 characters.
 """
 
+import asyncio
 import ipaddress
 import logging
 import re
@@ -141,7 +142,7 @@ async def _fetch_url_safely(
     max_bytes: int = MAX_HTML_BYTES,
 ) -> httpx.Response:
     """Fetch URL with per-hop SSRF validation on HTTP redirects and hard byte cap."""
-    current_url = validate_safe_url(url)
+    current_url = await asyncio.to_thread(validate_safe_url, url)
     use_stream = _should_use_stream(client)
     for _ in range(max_redirects + 1):
         if use_stream:
@@ -156,7 +157,7 @@ async def _fetch_url_safely(
                             request=getattr(stream_resp, "request", None),
                         )
                     next_url = urllib.parse.urljoin(current_url, location)
-                    current_url = validate_safe_url(next_url)
+                    current_url = await asyncio.to_thread(validate_safe_url, next_url)
                     continue
 
                 buf = bytearray()
@@ -180,7 +181,7 @@ async def _fetch_url_safely(
             if not location:
                 return _cap_response_bytes(resp, max_bytes)
             next_url = urllib.parse.urljoin(current_url, location)
-            current_url = validate_safe_url(next_url)
+            current_url = await asyncio.to_thread(validate_safe_url, next_url)
             continue
         return _cap_response_bytes(resp, max_bytes)
     raise ValueError(f"Exceeded maximum redirects ({max_redirects}) for URL '{url}'.")
@@ -248,7 +249,7 @@ async def extract_text_for_ai(
 
     # 1. SSRF Safety Check
     try:
-        validate_safe_url(url)
+        await asyncio.to_thread(validate_safe_url, url)
     except ValueError as ve:
         logger.warning("SSRF Guard blocked URL '%s': %s", url, ve)
         return fallback_content[:MAX_EXTRACTED_CHARS]

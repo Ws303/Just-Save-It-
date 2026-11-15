@@ -476,7 +476,7 @@ export const store = {
       isSummarizing: false,
       summarizeOptions: {
         forceRefresh: false,
-        saveToNote: true,
+        saveToNote: false,
       },
       logs: [],
       lastMcpResult: null,

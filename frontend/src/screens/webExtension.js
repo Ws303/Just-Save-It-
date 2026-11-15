@@ -181,6 +181,11 @@ function renderDesktopLinkDetail(state) {
             <p class="figma-detail-post-meta">
               ${escHtml(item.platform || "Web")} · ${escHtml(folderLabel)} · ${escHtml(item.savedAgo || "เมื่อสักครู่")}
             </p>
+            ${
+              item.description && String(item.description).trim() && String(item.description).trim() !== String(item.title || "").trim()
+                ? `<p class="figma-detail-post-desc">${escHtml(item.description)}</p>`
+                : ""
+            }
           </div>
 
           <a
