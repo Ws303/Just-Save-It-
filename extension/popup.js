@@ -1536,7 +1536,11 @@
         (startSess.user && startSess.user.id) || api.parseJwtSub(startSess.accessToken) || "",
       ).trim();
       try {
-        await api.apiRequest("/api/auth/logout", { method: "POST", skipRefresh: true });
+        await api.apiRequest("/api/auth/logout", {
+          method: "POST",
+          skipRefresh: true,
+          skipClearOn401: true,
+        });
       } catch (_err) {
         // Always clear local session unless replaced mid-flight
       }
@@ -1546,9 +1550,10 @@
         (latestSess.user && latestSess.user.id) || api.parseJwtSub(latestSess.accessToken) || "",
       ).trim();
       const switchedUser = Boolean(
-        (startUid && latestUid && latestUid !== startUid) ||
-          (!startUid && latestUid) ||
-          (!startUid && !latestUid && latestSess.accessToken && latestSess.accessToken !== startSess.accessToken),
+        latestSess.accessToken &&
+          (startUid
+            ? latestUid !== startUid
+            : Boolean(latestUid) || latestSess.accessToken !== startSess.accessToken),
       );
       if (switchedUser) return;
       await api.clearAuthSession();

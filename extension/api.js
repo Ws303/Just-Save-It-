@@ -414,7 +414,12 @@
       }
     }
     if (!response.ok) {
-      if (response.status === 401 && requireAuth && _sessionGeneration === startGen) {
+      if (
+        response.status === 401 &&
+        requireAuth &&
+        !options.skipClearOn401 &&
+        _sessionGeneration === startGen
+      ) {
         const latestSession = await getSessionState();
         if (
           attemptedToken &&

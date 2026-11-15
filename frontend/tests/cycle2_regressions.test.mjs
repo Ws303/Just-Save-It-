@@ -2097,4 +2097,38 @@ test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quic
   assert.equal(refreshCalledOnLogout, false, "logoutBtn must pass skipRefresh so /api/auth/logout 401 does not trigger refresh");
   assert.equal(storeMap.get("jsi_access_token"), undefined, "Same-user token rotation or 401 must still clear session on logout");
   assert.equal(hostLogoutSameUser.getEl("authView").classList.contains("hidden"), false, "authView must open after logout");
+
+  // 7. Cycle 11: standalone 401 on /api/auth/logout (no concurrent rotation) transitions to authView cleanly
+  storeMap.clear();
+  const hostPlain401Logout = createPopup401Host(async (url) => {
+    const u = String(url);
+    if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+    if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "u-plain401", email: "p401@t.com" } });
+    if (u.endsWith("/api/auth/logout")) return mkResp(401, { detail: "revoked" });
+    return mkResp(200, {});
+  });
+  await hostPlain401Logout.initAuthed("u-plain401");
+  await hostPlain401Logout.getEl("logoutBtn").dispatch("click");
+  assert.equal(storeMap.get("jsi_access_token"), undefined, "Standalone 401 on logout must clear token");
+  assert.equal(hostPlain401Logout.getEl("authView").classList.contains("hidden"), false, "Standalone 401 on logout must open authView cleanly");
+
+  // 8. Cycle 11: identified startUid user logging out while cross-context opaque user: null User B connects must preserve User B
+  storeMap.clear();
+  let resolveOpaqueSwitchLogout = null;
+  const hostOpaqueSwitch = createPopup401Host(async (url) => {
+    const u = String(url);
+    if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+    if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "u-ident-a", email: "ia@t.com" } });
+    if (u.endsWith("/api/auth/logout")) return new Promise((r) => { resolveOpaqueSwitchLogout = r; });
+    return mkResp(200, {});
+  });
+  await hostOpaqueSwitch.initAuthed("u-ident-a");
+  const opaqueSwitchTask = hostOpaqueSwitch.getEl("logoutBtn").dispatch("click");
+  await new Promise((r) => setTimeout(r, 15));
+  storeMap.set("jsi_access_token", "opaque-user-b");
+  storeMap.set("jsi_user", null);
+  resolveOpaqueSwitchLogout(mkResp(200, { ok: true }));
+  await opaqueSwitchTask;
+  assert.equal(storeMap.get("jsi_access_token"), "opaque-user-b", "Identified User A logout must preserve cross-context opaque User B token");
+  assert.equal(hostOpaqueSwitch.getEl("authView").classList.contains("hidden"), true, "Popup must remain authenticated for User B");
 });
