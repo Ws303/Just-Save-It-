@@ -428,10 +428,22 @@
       return btn;
     };
 
-    els.folderChipWrap.insertBefore(createBtn("ไม่ใส่โฟลเดอร์", ""), els.toggleNewFolderBtn);
+    const anchor =
+      els.toggleNewFolderBtn && els.toggleNewFolderBtn.parentNode === els.folderChipWrap
+        ? els.toggleNewFolderBtn
+        : null;
+    const insertFolderChip = (btn) => {
+      if (anchor) {
+        els.folderChipWrap.insertBefore(btn, anchor);
+      } else {
+        els.folderChipWrap.appendChild(btn);
+      }
+    };
+
+    insertFolderChip(createBtn("ไม่ใส่โฟลเดอร์", ""));
     for (const folder of state.cachedFolders) {
       const prefix = folder.emoji ? `${folder.emoji} ` : "";
-      els.folderChipWrap.insertBefore(createBtn(`${prefix}${folder.name}`, folder.id), els.toggleNewFolderBtn);
+      insertFolderChip(createBtn(`${prefix}${folder.name}`, folder.id));
     }
   }
 
@@ -987,12 +999,17 @@
     if (els.quickTagInput) els.quickTagInput.value = "";
     if (els.recentSearchInput) els.recentSearchInput.value = "";
     if (els.userLabel) els.userLabel.textContent = "";
-    if (els.folderChipWrap) els.folderChipWrap.innerHTML = "";
+    if (els.folderChipWrap) {
+      for (const oldChip of els.folderChipWrap.querySelectorAll("[data-folder-choice]")) {
+        oldChip.remove();
+      }
+    }
     if (els.tagSuggestions) els.tagSuggestions.innerHTML = "";
     if (els.recentList) els.recentList.innerHTML = "";
     if (els.recentCount) els.recentCount.textContent = "0";
     if (els.offlineQueueBar) els.offlineQueueBar.classList.add("hidden");
     if (els.reminderPickerCard) els.reminderPickerCard.classList.add("hidden");
+    if (els.feedbackBanner) els.feedbackBanner.classList.add("hidden");
   }
 
   function enterAuthView() {
@@ -1533,7 +1550,7 @@
     const [session, cachedWorkspace, activeTabs] = await Promise.all([
       api.getSessionState(),
       api.getWorkspaceCache(),
-      chrome.tabs && typeof chrome.tabs.query === "function"
+      typeof chrome !== "undefined" && chrome.tabs && typeof chrome.tabs.query === "function"
         ? chrome.tabs.query({ active: true, currentWindow: true }).catch(() => [])
         : Promise.resolve([]),
     ]);

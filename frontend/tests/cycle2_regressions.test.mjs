@@ -155,6 +155,8 @@ test("Extension C4: cross-account cache & offline queue isolation + narrow CSS +
   assert.match(popupCss, /width:\s*min\(400px,\s*100vw\)/);
   const popupJs = fs.readFileSync(path.join(repoRoot, "extension", "popup.js"), "utf8");
   assert.match(popupJs, /resetSaverMemoryAndInputs/);
+  assert.doesNotMatch(popupJs, /els\.folderChipWrap\.innerHTML\s*=\s*""/);
+  assert.match(popupJs, /toggleNewFolderBtn\.parentNode\s*===\s*els\.folderChipWrap/);
 });
 
 test("Frontend H1: realtimeClient ignores stale socket callbacks after stop/restart", () => {
