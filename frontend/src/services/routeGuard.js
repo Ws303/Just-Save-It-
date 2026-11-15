@@ -173,3 +173,64 @@ export function guardNavigation({
     reason: "allowed",
   };
 }
+
+/**
+ * Process Supabase Auth session/sign-out events without referencing stale closures directly.
+ */
+export function handleSupabaseAuthChange(
+  { event, session, claims, user },
+  {
+    getState,
+    resetHydratedUser,
+    stopRealtimeSync,
+    clearSession,
+    applyAuthenticatedSession,
+    hydrateOnceIfNeeded,
+    completePostAuthNavigation,
+  }
+) {
+  const state = getState();
+  if (event === "SIGNED_OUT") {
+    resetHydratedUser();
+    stopRealtimeSync();
+    if (getAuthMode(state) === "supabase" && state?.data?.user?.isAuthenticated) {
+      clearSession({ redirectToLogin: state?.ui?.authGuardEnabled !== false });
+    }
+    return { handled: "signed_out" };
+  }
+  if (session?.access_token) {
+    if (state?.api) state.api.authProvider = "supabase";
+    applyAuthenticatedSession({
+      user,
+      accessToken: session.access_token,
+      refreshToken: session.refresh_token || "",
+      claims,
+    });
+    hydrateOnceIfNeeded();
+    if (["login", "emailLogin", "checkEmail"].includes(state?.ui?.screen)) {
+      completePostAuthNavigation("home");
+    }
+    return { handled: "authenticated" };
+  }
+  return { handled: "noop" };
+}
+
+/**
+ * Coalesce rapid input re-renders onto a single animation frame when RAF is available.
+ */
+export function createFrameCoalescer(fn, { raf, caf } = {}) {
+  const reqFrame = raf ?? (typeof requestAnimationFrame === "function" ? requestAnimationFrame : null);
+  const cancelFrame = caf ?? (typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : null);
+  let handle = 0;
+  return () => {
+    if (typeof reqFrame !== "function") {
+      fn();
+      return;
+    }
+    if (handle && typeof cancelFrame === "function") cancelFrame(handle);
+    handle = reqFrame(() => {
+      handle = 0;
+      fn();
+    });
+  };
+}

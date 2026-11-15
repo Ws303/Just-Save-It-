@@ -281,9 +281,9 @@ export default function ItemDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#F6F3EC" },
+  root: { flex: 1, backgroundColor: "transparent" },
   content: { padding: 16, gap: 14, paddingBottom: 36 },
-  centerBox: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#F6F3EC" },
+  centerBox: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "transparent" },
   emptyTitle: { fontSize: 16, fontWeight: "700", color: "#44403C" },
   card: {
     backgroundColor: "#FDFBF7",

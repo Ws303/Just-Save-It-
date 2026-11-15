@@ -1,6 +1,7 @@
 """Regression tests for Cloud API bugs, folder covers, invite preview, AI model ID mapping, and enrichment."""
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -657,3 +658,53 @@ async def test_fetch_url_safely_strips_content_encoding_on_stream_bytes():
     assert resp.status_code == 200
     assert resp.json()["title"] == "Me at the zoo"
     assert "content-encoding" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_verify_live_user_exists_rejects_not_found_exception_without_stale_cache():
+    """Live revocation check rejects get_user_by_id not-found exceptions immediately without 30s TTL cache."""
+    from fastapi import HTTPException
+    from Login import auth_dep
+
+    uid = "dddddddd-dddd-4ddd-8ddd-ddddddddddd4"
+    profiles_calls = 0
+
+    class _ProfilesTable:
+        def select(self, *_args):
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def execute(self):
+            nonlocal profiles_calls
+            profiles_calls += 1
+            if profiles_calls == 1:
+                return SimpleNamespace(data=[{"id": uid}])
+            return SimpleNamespace(data=[])
+
+    class _FakeAuthAdmin:
+        def get_user_by_id(self, target_uid):
+            raise RuntimeError(f"AuthApiError: User not found (404) for {target_uid}")
+
+    fake_db = SimpleNamespace(
+        table=lambda _name: _ProfilesTable(),
+        auth=SimpleNamespace(admin=_FakeAuthAdmin()),
+    )
+
+    try:
+        with patch("Login.auth_dep.is_supabase_configured", return_value=True), patch(
+            "Login.auth_dep.get_supabase_client", return_value=fake_db
+        ):
+            # 1st check succeeds while profile exists
+            auth_dep._verify_live_user_exists(uid)
+            # 2nd check immediately sees deleted profile & 404 auth exception without stale cache window
+            with pytest.raises(HTTPException) as exc_info:
+                auth_dep._verify_live_user_exists(uid)
+            assert exc_info.value.status_code == 401
+            assert auth_dep.is_user_deleted(uid) is True
+    finally:
+        auth_dep._DELETED_USER_IDS.discard(uid)

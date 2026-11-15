@@ -20,6 +20,8 @@ import {
   hasValidSession,
   isProtectedScreen,
   isProtectedViewport,
+  handleSupabaseAuthChange,
+  createFrameCoalescer,
 } from "./services/routeGuard.js";
 import { supabaseAuth } from "./services/supabaseAuth.js";
 import { enableWebPush, disableWebPush } from "./services/pushClient.js";
@@ -410,19 +412,7 @@ async function copyText(text) {
 }
 
 const _autoEnrichedItemIds = new Set();
-let _searchEmitRaf = 0;
-
-function scheduleSearchEmit() {
-  if (typeof requestAnimationFrame !== "function") {
-    store.emit();
-    return;
-  }
-  if (_searchEmitRaf) cancelAnimationFrame(_searchEmitRaf);
-  _searchEmitRaf = requestAnimationFrame(() => {
-    _searchEmitRaf = 0;
-    store.emit();
-  });
-}
+const scheduleSearchEmit = createFrameCoalescer(() => store.emit());
 
 function maybeAutoEnrichItem(itemId) {
   if (!itemId || store.state.api.mode !== "live" || _autoEnrichedItemIds.has(itemId)) return;
@@ -2487,6 +2477,18 @@ apiClient
   })
   .catch(() => {});
 
+const _supabaseAuthDeps = {
+  getState: () => store.state,
+  resetHydratedUser: () => {
+    _lastHydratedUserId = "";
+  },
+  stopRealtimeSync,
+  clearSession: (opts) => store.clearSession(opts),
+  applyAuthenticatedSession: (payload) => store.applyAuthenticatedSession(payload),
+  hydrateOnceIfNeeded,
+  completePostAuthNavigation,
+};
+
 // Hydrate & listen for live Supabase Auth session / OAuth / Magic-Link callbacks
 supabaseAuth
   .init(
@@ -2494,43 +2496,11 @@ supabaseAuth
       supabaseUrl: store.state.api.supabaseUrl,
       supabaseAnonKey: store.state.api.supabaseAnonKey,
     },
-    ({ event, session, claims, user }) => {
-      if (event === "SIGNED_OUT") {
-        _lastHydratedToken = "";
-        stopRealtimeSync();
-        if (getAuthMode(store.state) === "supabase" && store.state.data.user?.isAuthenticated) {
-          store.clearSession({ redirectToLogin: store.state.ui.authGuardEnabled !== false });
-        }
-        return;
-      }
-      if (session?.access_token) {
-        store.state.api.authProvider = "supabase";
-        store.applyAuthenticatedSession({
-          user,
-          accessToken: session.access_token,
-          refreshToken: session.refresh_token || "",
-          claims,
-        });
-        hydrateOnceIfNeeded();
-        if (["login", "emailLogin", "checkEmail"].includes(store.state.ui.screen)) {
-          completePostAuthNavigation("home");
-        }
-      }
-    }
+    (changePayload) => handleSupabaseAuthChange(changePayload, _supabaseAuthDeps)
   )
   .then(async ({ session, claims, user }) => {
     if (session?.access_token) {
-      store.state.api.authProvider = "supabase";
-      store.applyAuthenticatedSession({
-        user,
-        accessToken: session.access_token,
-        refreshToken: session.refresh_token || "",
-        claims,
-      });
-      hydrateOnceIfNeeded();
-      if (["login", "emailLogin", "checkEmail"].includes(store.state.ui.screen)) {
-        completePostAuthNavigation("home");
-      }
+      handleSupabaseAuthChange({ event: "INITIAL_SESSION", session, claims, user }, _supabaseAuthDeps);
     } else if (bootParams.oauthCode) {
       const cbRes = await apiClient.exchangeOAuthCode(bootParams.oauthCode);
       if (cbRes?.ok && hasValidSession(store.state)) {

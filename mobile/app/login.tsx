@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -16,7 +16,7 @@ import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { useRouter } from "expo-router";
 import { getGoogleOAuthUrl, loginWithPassword, signupWithPassword } from "../src/api";
-import { saveSession } from "../src/storage";
+import { AppThemeMode, getThemePageBg, loadThemeMode, saveSession, subscribeThemeMode } from "../src/storage";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -28,6 +28,12 @@ export default function LoginScreen() {
   const [displayName, setDisplayName] = useState("");
   const [busy, setBusy] = useState(false);
   const [errorText, setErrorText] = useState("");
+  const [themeMode, setThemeMode] = useState<AppThemeMode>("cream");
+
+  useEffect(() => {
+    void loadThemeMode().then((m) => setThemeMode(m)).catch(() => {});
+    return subscribeThemeMode((m) => setThemeMode(m));
+  }, []);
 
   async function handleSubmit() {
     if (!email.trim() || !password) {
@@ -95,7 +101,7 @@ export default function LoginScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.root}
+      style={[styles.root, { backgroundColor: getThemePageBg(themeMode) }]}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
@@ -207,7 +213,7 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#F6F3EC",
+    backgroundColor: "transparent",
   },
   scrollContent: {
     flexGrow: 1,

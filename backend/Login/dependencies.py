@@ -6,6 +6,7 @@ Provides:
 - get_optional_current_user: Optional auth dependency
 """
 
+import asyncio
 from dataclasses import dataclass
 from typing import Optional
 
@@ -32,7 +33,8 @@ async def get_current_user(
     x_user_id: Optional[str] = Header(None, alias="X-User-Id", description="Dev-only user ID override"),
 ) -> CurrentUser:
     """Verify Bearer JWT token (or gated dev X-User-Id) and return CurrentUser."""
-    payload = extract_bearer_or_dev_payload(
+    payload = await asyncio.to_thread(
+        extract_bearer_or_dev_payload,
         credentials=credentials,
         authorization=authorization,
         x_user_id=x_user_id,

@@ -1,14 +1,21 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import { planIosLocalNotifications } from "../notifications.ts";
 import { extractInviteTokenFromUrl, extractSharedUrlFromIntent } from "../shareIntent.ts";
 import {
+  buildBoundedExportPayloadJson,
   classifyQueueFlushStatus,
   enqueueOfflineItem,
   flushOfflineQueueWithSender,
+  getThemePageBg,
   loadOfflineQueue,
+  saveThemeMode,
   setOfflineQueue,
+  subscribeThemeMode,
 } from "../storage.ts";
 
 test("planIosLocalNotifications enforces <= 64 cap and ascending sort", () => {
@@ -130,4 +137,45 @@ test("offline queue drops permanent 4xx poison-pill entries while retaining retr
   assert.equal(classifyQueueFlushStatus(422), "drop");
   assert.equal(classifyQueueFlushStatus(503), "retry");
   assert.equal(classifyQueueFlushStatus(201), "ok");
+});
+
+test("L-RES-2 / L-RES-3 / L-RES-1: theme subscription, valid bounded PDPA JSON, and expo-router query-string runtime requirement", async () => {
+  assert.equal(getThemePageBg("cream"), "#F6F3EC");
+  assert.equal(getThemePageBg("white"), "#FFFFFF");
+  assert.equal(getThemePageBg("dark"), "#1C1917");
+
+  const seenModes = [];
+  const unsub = subscribeThemeMode((mode) => seenModes.push(mode));
+  try {
+    await saveThemeMode("dark");
+    await saveThemeMode("white");
+  } finally {
+    unsub();
+  }
+  assert.deepEqual(seenModes, ["dark", "white"]);
+
+  // Fewer than 10 huge items exceeding maxChars must STILL produce valid parseable JSON <= maxChars
+  const hugeItems = Array.from({ length: 5 }, (_, idx) => ({
+    id: `huge-${idx}`,
+    url: `https://example.com/${idx}`,
+    note: "x".repeat(400),
+  }));
+  const bounded = buildBoundedExportPayloadJson({ user: { id: "u1" }, items: hugeItems }, 900);
+  assert.equal(bounded.truncated, true);
+  assert.ok(bounded.jsonString.length <= 900, `Expected <= 900 chars, got ${bounded.jsonString.length}`);
+  assert.ok(bounded.exportedItems < 5 && bounded.exportedItems >= 1, `Unexpected exported count: ${bounded.exportedItems}`);
+  const parsed = JSON.parse(bounded.jsonString);
+  assert.equal(parsed._truncated_for_android_share, true);
+  assert.equal(parsed.items.length, bounded.exportedItems);
+
+  // Document & assert L-RES-1: expo-router calls require("query-string") without listing it in its dependencies
+  const testDir = dirname(fileURLToPath(import.meta.url));
+  const routerPathFromState = resolve(testDir, "../../node_modules/expo-router/build/fork/getPathFromState.js");
+  const routerPkgPath = resolve(testDir, "../../node_modules/expo-router/package.json");
+  if (existsSync(routerPathFromState) && existsSync(routerPkgPath)) {
+    const code = readFileSync(routerPathFromState, "utf8");
+    const pkg = JSON.parse(readFileSync(routerPkgPath, "utf8"));
+    assert.match(code, /require\(["']query-string["']\)/);
+    assert.equal(Boolean(pkg.dependencies?.["query-string"]), false);
+  }
 });

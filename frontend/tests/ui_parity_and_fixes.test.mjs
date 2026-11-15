@@ -416,3 +416,82 @@ test("v2 Polish: YouTube URL derives playable embed + thumbnail, Link Detail sho
   await apiClient.summarizeLink(rawYtItem.id, { forceRefresh: true, saveToNote: false });
   assert.equal(rawYtItem.note, "โน้ตส่วนตัวของฉัน");
 });
+
+test("L-NEW-2 / H-NEW-1: SIGNED_OUT resets hydration without ReferenceError, rAF coalesces renders, and recordLog skips hidden emit", async () => {
+  const { handleSupabaseAuthChange, createFrameCoalescer } = await import("../src/services/routeGuard.js");
+
+  let hydratedUser = "uid-123";
+  let realtimeStopped = 0;
+  let clearedOpts = null;
+  store.resetSeed();
+  store.state.api.authProvider = "supabase";
+  store.state.data.user.isAuthenticated = true;
+
+  const out = handleSupabaseAuthChange(
+    { event: "SIGNED_OUT" },
+    {
+      getState: () => store.state,
+      resetHydratedUser: () => {
+        hydratedUser = "";
+      },
+      stopRealtimeSync: () => {
+        realtimeStopped += 1;
+      },
+      clearSession: (opts) => {
+        clearedOpts = opts;
+      },
+      applyAuthenticatedSession: () => {},
+      hydrateOnceIfNeeded: () => {},
+      completePostAuthNavigation: () => {},
+    }
+  );
+  assert.equal(out.handled, "signed_out");
+  assert.equal(hydratedUser, "");
+  assert.equal(realtimeStopped, 1);
+  assert.deepEqual(clearedOpts, { redirectToLogin: true });
+
+  // Verify rAF search coalescing only fires the latest frame once
+  const queued = new Map();
+  let nextId = 1;
+  let renderCount = 0;
+  const trigger = createFrameCoalescer(
+    () => {
+      renderCount += 1;
+    },
+    {
+      raf: (cb) => {
+        const id = nextId++;
+        queued.set(id, cb);
+        return id;
+      },
+      caf: (id) => queued.delete(id),
+    }
+  );
+  trigger();
+  trigger();
+  trigger();
+  assert.equal(queued.size, 1);
+  for (const cb of queued.values()) cb();
+  assert.equal(renderCount, 1);
+
+  // Verify recordLog skips store.emit() when inspectorVisible=false and emits when inspectorVisible=true
+  store.resetSeed();
+  store.state.api.mode = "mock";
+  let emitCount = 0;
+  const unsub = store.subscribe(() => {
+    emitCount += 1;
+  });
+  try {
+    store.state.ui.inspectorVisible = false;
+    emitCount = 0;
+    await apiClient.checkHealth();
+    assert.equal(emitCount, 0);
+
+    store.state.ui.inspectorVisible = true;
+    emitCount = 0;
+    await apiClient.checkHealth();
+    assert.equal(emitCount, 1);
+  } finally {
+    unsub();
+  }
+});

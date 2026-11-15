@@ -431,7 +431,7 @@ export default function HomeFeedScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#F6F3EC" },
+  root: { flex: 1, backgroundColor: "transparent" },
   topHeader: {
     backgroundColor: "#FDFBF7",
     paddingHorizontal: 16,

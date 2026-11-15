@@ -301,6 +301,22 @@ export async function saveCachedWorkspace(data: Omit<CachedWorkspace, "updated_a
   });
 }
 
+export function getThemePageBg(mode: AppThemeMode): string {
+  if (mode === "dark") return "#1C1917";
+  if (mode === "white") return "#FFFFFF";
+  return "#F6F3EC";
+}
+
+type ThemeListener = (mode: AppThemeMode) => void;
+const _themeListeners = new Set<ThemeListener>();
+
+export function subscribeThemeMode(listener: ThemeListener): () => void {
+  _themeListeners.add(listener);
+  return () => {
+    _themeListeners.delete(listener);
+  };
+}
+
 export async function loadThemeMode(): Promise<AppThemeMode> {
   const backend = await getStorageBackend();
   const raw = await backend.getItem(KEYS.theme);
@@ -311,4 +327,72 @@ export async function loadThemeMode(): Promise<AppThemeMode> {
 export async function saveThemeMode(mode: AppThemeMode): Promise<void> {
   const backend = await getStorageBackend();
   await backend.setItem(KEYS.theme, mode);
+  for (const listener of _themeListeners) {
+    listener(mode);
+  }
+}
+
+export const DEFAULT_ANDROID_BINDER_MAX_CHARS = 250_000;
+
+export function buildBoundedExportPayloadJson(
+  exportData: Record<string, unknown>,
+  maxChars: number = DEFAULT_ANDROID_BINDER_MAX_CHARS,
+): { jsonString: string; truncated: boolean; totalItems: number; exportedItems: number } {
+  const fullJson = JSON.stringify(exportData, null, 2);
+  const rawItems = Array.isArray(exportData.items) ? exportData.items : [];
+  if (fullJson.length <= maxChars) {
+    return {
+      jsonString: fullJson,
+      truncated: false,
+      totalItems: rawItems.length,
+      exportedItems: rawItems.length,
+    };
+  }
+
+  const makeCandidate = (count: number): string =>
+    JSON.stringify(
+      {
+        ...exportData,
+        _truncated_for_android_share: true,
+        _total_items: rawItems.length,
+        _exported_items: count,
+        items: rawItems.slice(0, count),
+      },
+      null,
+      2,
+    );
+
+  let lo = 0;
+  let hi = rawItems.length;
+  let bestCount = 0;
+  let bestJson = makeCandidate(0);
+
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = makeCandidate(mid);
+    if (candidate.length <= maxChars) {
+      bestCount = mid;
+      bestJson = candidate;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  if (bestJson.length > maxChars) {
+    bestCount = 0;
+    bestJson = JSON.stringify({
+      _truncated_for_android_share: true,
+      _total_items: rawItems.length,
+      _exported_items: 0,
+      items: [],
+    });
+  }
+
+  return {
+    jsonString: bestJson,
+    truncated: true,
+    totalItems: rawItems.length,
+    exportedItems: bestCount,
+  };
 }

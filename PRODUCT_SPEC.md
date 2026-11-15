@@ -212,8 +212,8 @@ flowchart TD
 ```
 
 **หลักการ:**
-1. **CRUD ทั้งหมดผ่าน `supabase-js` ตรง + RLS** — ไม่เขียน REST endpoint ซ้ำซ้อน (ลดงานทีม ~40%)
-2. **FastAPI ทำเฉพาะงานที่ client ทำไม่ได้/ไม่ควรทำ:** Rich Unfurl (CORS + 5-image filter + WebP compress), AI (ซ่อน API key + BYOK relay), push, MCP
+1. **FastAPI REST API + Pydantic + Auth Dependency (`backend/`):** Endpoints อยู่ภายใต้ `/api/*` โดยมี `supabase-js` `service_role` ฝั่ง Backend และ Strict User/Tenant Filtering + Realtime Broadcast
+2. **Rich Unfurl, AI & Push/MCP บน FastAPI:** Rich Unfurl (`selectolax`, SSRF protection, 5-image filter + WebP compress), AI (ซ่อน API key + BYOK/Custom relay), VAPID Web Push/Expo Push, และ Streamable HTTP MCP
 3. **FastAPI ใช้ `service_role` เสมอ ต้อง filter `owner_id`/สิทธิ์เองทุก query** — ห้ามรับ `user_id` จาก AI/MCP parameter (ดู §8)
 4. **ประหยัด Storage & Bandwidth สูงสุด:** เก็บไฟล์จริงบน Storage **เฉพาะรูปปก #1 (WebP)** เท่านั้น; รูปที่ 2–5 ใช้ External URL; วิดีโอใช้ Official Embed โหลดตอนกด Play
 
@@ -764,12 +764,12 @@ Just-Save-It-/
 ### 14.3 สิ่งที่เปลี่ยนจาก `TECH_STACK.md` เดิม (ตั้งแต่ v1.0)
 | เดิม | ใหม่ | เหตุผล |
 |---|---|---|
-| Mobile = PWA / APK | **Expo native Android + iOS** | ต้องมี Share Sheet จริง (หัวใจของการเซฟไว) |
-| FastAPI ทำ CRUD ทั้งหมด (`/api/links/*`) | **Client → Supabase ตรง + RLS**, FastAPI เฉพาะ unfurl/AI/push/MCP | ทีม 4 คน 4 สัปดาห์ ลดงาน API |
+| Mobile = PWA / APK | **Expo SDK 53 Native Android + iOS** | ต้องมี Share Sheet จริง (`ACTION_SEND` + Deep Link) |
+| Legacy `/api/links/*` ชั่วคราว | **Unified FastAPI REST (`/api/*`) + Pydantic + Supabase Postgres/Realtime** | คุม Validation, SSRF Guard, Quota, และ Auth Revocation จุดเดียวพร้อม OpenAPI/Swagger |
 | `folders.members` เป็น column | ตาราง **`folder_members` + `folder_invites`** + roles | รองรับ shared folder จริงและ RLS ได้ |
 | `links.is_read` boolean | **`status` enum** (inbox/todo/done/archived) | ตรงกับ "ติดตามสถานะ / ติ๊กสถานะ" |
 | Gemini 1.5 Flash / text-embedding-004 | **ตั้งผ่าน env (`AI_MODEL`), ใช้รุ่น stable ล่าสุด + Groq Failover + BYOK/Custom** | รุ่นเดิมเลิกให้บริการ และรองรับผู้ใช้เอา Key/Local LLM มาใช้เอง |
-| Extension vanilla JS | **WXT + React** | แชร์โค้ด/type กับ web |
+| Extension โปรโตไทป์ | **Chrome Extension MV3 Vanilla JS (`extension/`)** | โหลด `Load unpacked` ได้ทันที มี `web_bridge.js`, Context Menu, DOM Assist, Calendar Picker, Offline Queue |
 | MCP stdio/SSE | **Remote MCP (Streamable HTTP) + PAT** | ใช้จาก Claude/Cursor ได้โดยไม่ต้องติดตั้งอะไร |
 
 ---

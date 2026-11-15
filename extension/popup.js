@@ -105,7 +105,9 @@
     authMode: "login",
     activeViewMode: "save", // "save" | "recent"
     domMeta: null,
+    domMetaUrl: "",
     previewMeta: null,
+    previewUrl: "",
     lastSavedItemId: null,
     activeTabId: null,
     allRecentItems: [],
@@ -575,15 +577,36 @@
     renderReminderPicker();
   }
 
+  function getTimezoneOffsetIso(timeZone, refDate = new Date()) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: timeZone || "Asia/Bangkok",
+        timeZoneName: "shortOffset",
+      }).formatToParts(refDate);
+      const tzToken = parts.find((p) => p.type === "timeZoneName")?.value || "";
+      if (tzToken === "GMT" || tzToken === "UTC") return "+00:00";
+      const match = /^GMT([+-])(\d{1,2})(?::?(\d{2}))?$/.exec(tzToken);
+      if (match) {
+        return `${match[1]}${match[2].padStart(2, "0")}:${(match[3] || "00").padStart(2, "0")}`;
+      }
+    } catch (_err) {
+      // Fall back to Asia/Bangkok offset below
+    }
+    return "+07:00";
+  }
+
   function buildReminderPayload() {
     const r = state.reminder;
     if (!r.enabled || !r.selectedDate) return undefined;
 
     const [hhRaw, mmRaw] = String(r.time || "18:00").split(":");
-    const hh = String(Math.max(0, Math.min(23, Number(hhRaw) || 18))).padStart(2, "0");
-    const mm = String(Math.max(0, Math.min(59, Number(mmRaw) || 0))).padStart(2, "0");
-    const isoLocalBangkok = `${r.selectedDate}T${hh}:${mm}:00+07:00`;
-    const remindAtDate = new Date(isoLocalBangkok);
+    const parsedHh = Number.parseInt(hhRaw, 10);
+    const parsedMm = Number.parseInt(mmRaw, 10);
+    const hh = String(Math.max(0, Math.min(23, Number.isFinite(parsedHh) ? parsedHh : 18))).padStart(2, "0");
+    const mm = String(Math.max(0, Math.min(59, Number.isFinite(parsedMm) ? parsedMm : 0))).padStart(2, "0");
+    const offsetIso = getTimezoneOffsetIso(state.userTimezone);
+    const isoWithOffset = `${r.selectedDate}T${hh}:${mm}:00${offsetIso}`;
+    const remindAtDate = new Date(isoWithOffset);
     if (Number.isNaN(remindAtDate.getTime())) {
       throw new Error("รูปแบบวันเวลาที่ต้องการแจ้งเตือนไม่ถูกต้อง");
     }
@@ -646,6 +669,17 @@
     });
   }
 
+  function resetPreviewMetadata() {
+    state.previewMeta = null;
+    state.previewUrl = "";
+    state.domMeta = null;
+    state.domMetaUrl = "";
+    els.platformBadge.textContent = "web";
+    els.contentTypeBadge.textContent = "link";
+    els.previewSourceBadge.textContent = "ยังไม่พรีวิว";
+    renderPreviewThumbnail("");
+  }
+
   async function fetchPreviewForUrl(targetUrl, forceRefresh = false) {
     if (!api.isSaveableHttpUrl(targetUrl)) return;
     els.previewSourceBadge.textContent = "กำลังพรีวิว...";
@@ -654,7 +688,9 @@
         method: "POST",
         body: { url: targetUrl, force_refresh: forceRefresh },
       });
+      if (els.urlInput.value.trim() !== targetUrl) return;
       state.previewMeta = preview;
+      state.previewUrl = targetUrl;
       els.platformBadge.textContent = preview.platform || "web";
       els.contentTypeBadge.textContent = preview.content_type || "link";
       els.previewSourceBadge.textContent = preview.cached ? "จากแคช" : "ดึงสดสำเร็จ";
@@ -675,7 +711,9 @@
         renderPreviewThumbnail(thumb);
       }
     } catch (_err) {
-      els.previewSourceBadge.textContent = "ใช้ข้อมูลแท็บ";
+      if (els.urlInput.value.trim() === targetUrl) {
+        els.previewSourceBadge.textContent = "ใช้ข้อมูลแท็บ";
+      }
     }
   }
 
@@ -714,7 +752,9 @@
     if (tab && tab.id && (await checkDomAssistPermissionPassive(rawUrl))) {
       try {
         const domMeta = await api.runDomAssist(tab.id);
+        if (els.urlInput.value.trim() !== rawUrl) return;
         state.domMeta = domMeta;
+        state.domMetaUrl = rawUrl;
         if (domMeta) {
           if (domMeta.title && (!els.titleInput.value || domMeta.title.length > els.titleInput.value.length)) {
             els.titleInput.value = domMeta.title;
@@ -998,10 +1038,12 @@
       return;
     }
 
+    const activePreviewMeta = state.previewMeta && state.previewUrl === url ? state.previewMeta : null;
+    const activeDomMeta = state.domMeta && state.domMetaUrl === url ? state.domMeta : null;
     const previewImage =
-      (state.previewMeta && (state.previewMeta.image_url || state.previewMeta.thumbnail_url)) || "";
-    const previewMedia = normalizeMediaUrlList(state.previewMeta && state.previewMeta.media_items, previewImage);
-    const domMedia = normalizeMediaUrlList(state.domMeta && state.domMeta.media_items);
+      (activePreviewMeta && (activePreviewMeta.image_url || activePreviewMeta.thumbnail_url)) || "";
+    const previewMedia = normalizeMediaUrlList(activePreviewMeta && activePreviewMeta.media_items, previewImage);
+    const domMedia = normalizeMediaUrlList(activeDomMeta && activeDomMeta.media_items);
     const mergedMedia = previewMedia.length ? previewMedia : domMedia;
     const coverImage = previewImage || mergedMedia[0] || undefined;
     const tags = parseTagList();
@@ -1010,18 +1052,18 @@
       url,
       title: els.titleInput.value.trim() || undefined,
       description:
-        (state.previewMeta && state.previewMeta.description) ||
-        (state.domMeta && state.domMeta.description) ||
+        (activePreviewMeta && activePreviewMeta.description) ||
+        (activeDomMeta && activeDomMeta.description) ||
         undefined,
       note: els.noteInput.value.trim() || undefined,
       folder_id: els.folderSelect.value || undefined,
       tags: tags.length ? tags : undefined,
       status: els.statusSelect.value || "inbox",
-      platform: (state.previewMeta && state.previewMeta.platform) || undefined,
-      content_type: (state.previewMeta && state.previewMeta.content_type) || undefined,
+      platform: (activePreviewMeta && activePreviewMeta.platform) || undefined,
+      content_type: (activePreviewMeta && activePreviewMeta.content_type) || undefined,
       image_url: coverImage,
-      embed_type: (state.previewMeta && state.previewMeta.embed_type) || undefined,
-      embed_url: (state.previewMeta && state.previewMeta.embed_url) || undefined,
+      embed_type: (activePreviewMeta && activePreviewMeta.embed_type) || undefined,
+      embed_url: (activePreviewMeta && activePreviewMeta.embed_url) || undefined,
       media_items: mergedMedia.length ? mergedMedia : undefined,
       reminder,
     };
@@ -1174,8 +1216,13 @@
     });
 
     els.urlInput.addEventListener("input", () => {
-      if (api.isSaveableHttpUrl(els.urlInput.value)) {
+      const nextUrl = els.urlInput.value.trim();
+      if (api.isSaveableHttpUrl(nextUrl)) {
         els.blockedTabCard.classList.add("hidden");
+        els.siteNameLabel.textContent = nextUrl;
+      }
+      if ((state.previewUrl && state.previewUrl !== nextUrl) || (state.domMetaUrl && state.domMetaUrl !== nextUrl)) {
+        resetPreviewMetadata();
       }
     });
 

@@ -5,7 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import { acceptFolderInvite, fetchWorkspace, flushOfflineQueue } from "../src/api";
 import { syncLocalRemindersWithOs } from "../src/notifications";
 import { extractInviteTokenFromUrl, extractSharedUrlFromIntent } from "../src/shareIntent";
-import { AppThemeMode, loadSession, loadThemeMode } from "../src/storage";
+import { AppThemeMode, getThemePageBg, loadSession, loadThemeMode, subscribeThemeMode } from "../src/storage";
 
 export default function RootLayout() {
   const router = useRouter();
@@ -19,6 +19,7 @@ export default function RootLayout() {
 
   useEffect(() => {
     void loadThemeMode().then((mode) => setThemeMode(mode)).catch(() => {});
+    return subscribeThemeMode((mode) => setThemeMode(mode));
   }, [segments]);
 
   useEffect(() => {
@@ -130,7 +131,7 @@ export default function RootLayout() {
     };
   }, [incomingUrl, navReady, router]);
 
-  const bgColor = themeMode === "dark" ? "#1C1917" : themeMode === "white" ? "#FFFFFF" : "#F6F3EC";
+  const bgColor = getThemePageBg(themeMode);
 
   return (
     <>

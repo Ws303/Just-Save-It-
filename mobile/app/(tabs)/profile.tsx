@@ -26,7 +26,13 @@ import {
   type McpTokenRecord,
 } from "../../src/api";
 import { registerMobilePushToken, syncLocalRemindersWithOs } from "../../src/notifications";
-import { loadThemeMode, saveThemeMode, type AppThemeMode } from "../../src/storage";
+import {
+  buildBoundedExportPayloadJson,
+  getThemePageBg,
+  loadThemeMode,
+  saveThemeMode,
+  type AppThemeMode,
+} from "../../src/storage";
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -145,29 +151,29 @@ export default function ProfileScreen() {
       Alert.alert("ส่งออกข้อมูลไม่สำเร็จ", res.error || "กรุณาลองใหม่");
       return;
     }
-    const rawItems = Array.isArray((res.data as { items?: unknown[] }).items)
-      ? ((res.data as { items: unknown[] }).items)
-      : [];
-    let jsonString = JSON.stringify(res.data, null, 2);
-    const MAX_BINDER_CHARS = 250_000;
-    if (jsonString.length > MAX_BINDER_CHARS) {
-      const ratio = Math.max(10, Math.floor((rawItems.length * MAX_BINDER_CHARS) / jsonString.length));
-      const truncatedPayload = {
-        ...res.data,
-        _truncated_for_android_share: true,
-        _total_items: rawItems.length,
-        _exported_items: ratio,
-        items: rawItems.slice(0, ratio),
-      };
-      jsonString = JSON.stringify(truncatedPayload, null, 2).slice(0, MAX_BINDER_CHARS);
+    const bounded = buildBoundedExportPayloadJson(res.data as Record<string, unknown>);
+    if (bounded.truncated) {
       Alert.alert(
         "ขนาดข้อมูลส่งออกเกินขีดจำกัดแชร์บนมือถือ",
-        `ตัดรายการเหลือ ${ratio} จาก ${rawItems.length} รายการ เพื่อหลีกเลี่ยงขีดจำกัด Android Binder (ดาวน์โหลดฉบับเต็มได้ที่ WebApp)`,
+        `ตัดรายการเหลือ ${bounded.exportedItems} จาก ${bounded.totalItems} รายการ เพื่อหลีกเลี่ยงขีดจำกัด Android Binder (ดาวน์โหลดฉบับเต็มได้ที่ WebApp)`,
+        [
+          { text: "ยกเลิก", style: "cancel" },
+          {
+            text: "แชร์ฉบับย่อ",
+            onPress: () => {
+              void Share.share({
+                title: "just-save-it-export.json",
+                message: bounded.jsonString,
+              });
+            },
+          },
+        ],
       );
+      return;
     }
     await Share.share({
       title: "just-save-it-export.json",
-      message: jsonString,
+      message: bounded.jsonString,
     });
   }
 
@@ -193,7 +199,7 @@ export default function ProfileScreen() {
   }
 
   const isDark = themeMode === "dark";
-  const pageBg = isDark ? "#1C1917" : themeMode === "white" ? "#FFFFFF" : "#F6F3EC";
+  const pageBg = getThemePageBg(themeMode);
   const cardBg = isDark ? "#292524" : "#FDFBF7";
   const textPrimary = isDark ? "#FAFAF9" : "#1C1917";
 

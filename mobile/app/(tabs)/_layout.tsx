@@ -10,6 +10,7 @@ export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
+        sceneStyle: { backgroundColor: "transparent" },
         headerStyle: { backgroundColor: "#880808" },
         headerTintColor: "#FDFBF7",
         headerTitleStyle: { fontWeight: "700" },
