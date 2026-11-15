@@ -69,8 +69,13 @@ export default function FavoritesScreen() {
   );
 
   async function removeFavorite(item: MobileLinkItem) {
+    const startGen = getAuthGeneration();
     setFavorites((prev) => prev.filter((it) => it.id !== item.id));
-    await patchLinkItem(item.id, { is_favorite: false });
+    const res = await patchLinkItem(item.id, { is_favorite: false });
+    if (getAuthGeneration() !== startGen) return;
+    if (!res.ok) {
+      setFavorites((prev) => (prev.some((it) => it.id === item.id) ? prev : [item, ...prev]));
+    }
   }
 
   const plannedNotifications = planIosLocalNotifications(reminders, Date.now(), 64);

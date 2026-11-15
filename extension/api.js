@@ -139,8 +139,19 @@
     };
   }
 
-  async function saveAuthSession(authPayload) {
+  async function saveAuthSession(authPayload, options = {}) {
+    let activeExpectedGen = options && options.expectedGen;
+    const expectedRefreshToken = options && options.expectedRefreshToken;
+    const isStaleExpectedGen = () =>
+      activeExpectedGen !== undefined && _sessionGeneration !== activeExpectedGen;
+    if (isStaleExpectedGen()) return false;
+
     const prev = await getStorage([STORAGE_KEYS.USER, STORAGE_KEYS.ACCESS_TOKEN, STORAGE_KEYS.REFRESH_TOKEN]);
+    if (isStaleExpectedGen()) return false;
+    if (expectedRefreshToken && prev[STORAGE_KEYS.REFRESH_TOKEN] !== expectedRefreshToken) {
+      return false;
+    }
+
     const prevUid = String(
       (prev[STORAGE_KEYS.USER] && prev[STORAGE_KEYS.USER].id) || parseJwtSub(prev[STORAGE_KEYS.ACCESS_TOKEN]) || ""
     ).trim();
@@ -149,26 +160,48 @@
       (authPayload && authPayload.user && authPayload.user.id) || parseJwtSub(authPayload && authPayload.access_token) || ""
     ).trim();
     const nextHasSession = Boolean(nextUid || (authPayload && authPayload.access_token));
+    if (expectedRefreshToken && prevUid && nextUid && prevUid !== nextUid) {
+      return false;
+    }
+
     const shouldClearStorage = Boolean(prevHadSession && (!nextUid || !prevUid || prevUid !== nextUid));
     const shouldBumpGen = shouldClearStorage || (!prevHadSession && nextHasSession);
     if (shouldClearStorage) {
       _sessionGeneration += 1;
+      if (activeExpectedGen !== undefined) activeExpectedGen = _sessionGeneration;
       await removeStorage([
         STORAGE_KEYS.WORKSPACE_CACHE,
         STORAGE_KEYS.OFFLINE_QUEUE,
         STORAGE_KEYS.NOTIFIED_REMINDERS,
       ]);
+      if (isStaleExpectedGen()) return false;
     } else if (shouldBumpGen) {
       _sessionGeneration += 1;
+      if (activeExpectedGen !== undefined) activeExpectedGen = _sessionGeneration;
     }
+    const nextAccessToken = (authPayload && authPayload.access_token) || "";
+    const nextRefreshToken = (authPayload && authPayload.refresh_token) || "";
+    const nextUser = (authPayload && authPayload.user) || null;
     await setStorage({
-      [STORAGE_KEYS.ACCESS_TOKEN]: (authPayload && authPayload.access_token) || "",
-      [STORAGE_KEYS.REFRESH_TOKEN]: (authPayload && authPayload.refresh_token) || "",
-      [STORAGE_KEYS.USER]: (authPayload && authPayload.user) || null,
+      [STORAGE_KEYS.ACCESS_TOKEN]: nextAccessToken,
+      [STORAGE_KEYS.REFRESH_TOKEN]: nextRefreshToken,
+      [STORAGE_KEYS.USER]: nextUser,
     });
+    if (isStaleExpectedGen()) {
+      const onDisk = await getStorage([STORAGE_KEYS.ACCESS_TOKEN]).catch(() => ({}));
+      if (onDisk[STORAGE_KEYS.ACCESS_TOKEN] === nextAccessToken) {
+        await removeStorage([
+          STORAGE_KEYS.ACCESS_TOKEN,
+          STORAGE_KEYS.REFRESH_TOKEN,
+          STORAGE_KEYS.USER,
+        ]);
+      }
+      return false;
+    }
     if (shouldBumpGen) {
       _sessionGeneration += 1;
     }
+    return true;
   }
 
   async function clearAuthSession() {
@@ -286,11 +319,14 @@
         if (curUid && nextUid && curUid !== nextUid) {
           return null;
         }
-        await saveAuthSession({
-          ...data,
-          user: data.user !== undefined ? data.user : current.user,
-        });
-        return data.access_token;
+        const saved = await saveAuthSession(
+          {
+            ...data,
+            user: data.user !== undefined ? data.user : current.user,
+          },
+          { expectedGen: startGen, expectedRefreshToken: refreshToken },
+        );
+        return saved ? data.access_token : null;
       } catch (_err) {
         return null;
       }

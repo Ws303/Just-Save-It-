@@ -2131,4 +2131,62 @@ test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quic
   await opaqueSwitchTask;
   assert.equal(storeMap.get("jsi_access_token"), "opaque-user-b", "Identified User A logout must preserve cross-context opaque User B token");
   assert.equal(hostOpaqueSwitch.getEl("authView").classList.contains("hidden"), true, "Popup must remain authenticated for User B");
+
+  // 9. Cycle 12: saveAuthSession({ expectedGen, expectedRefreshToken }) & tryRefreshAccessToken prevent logout resurrection and cross-context wipe
+  storeMap.clear();
+  const hostRefreshRace = createPopup401Host(async (url, init) => {
+    const u = String(url);
+    if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+    if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "u-ref-race", email: "r@t.com" } });
+    if (u.endsWith("/api/items") && init?.method === "POST") {
+      if (String(init?.headers?.Authorization || "").includes("tok-ref-a1")) {
+        return mkResp(401, { detail: "expired" });
+      }
+      return mkResp(201, { id: "it-r1", url: "https://r.test/1" });
+    }
+    if (u.endsWith("/api/auth/refresh")) {
+      // Simulate clearAuthSession firing concurrently while refresh token response lands
+      await hostRefreshRace.sb.JustSaveItApi.clearAuthSession();
+      return mkResp(200, {
+        access_token: "tok-ref-resurrected",
+        refresh_token: "ref-a2",
+        user: { id: "u-ref-race", email: "r@t.com" },
+      });
+    }
+    return mkResp(200, {});
+  });
+  await hostRefreshRace.initAuthed("u-ref-race");
+  storeMap.set("jsi_access_token", "tok-ref-a1");
+  storeMap.set("jsi_refresh_token", "ref-a1");
+  await assert.rejects(
+    hostRefreshRace.sb.JustSaveItApi.apiRequest("/api/items", {
+      method: "POST",
+      body: { url: "https://r.test/1" },
+    }),
+    (err) => err && err.aborted === true,
+  );
+  assert.equal(storeMap.get("jsi_access_token"), undefined, "tryRefreshAccessToken racing with clearAuthSession must never resurrect cleared tokens");
+
+  // Cross-context switch check: stale refresh payload with User A's expectedRefreshToken must not wipe User B's cache/queue
+  storeMap.clear();
+  await bgSb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-b-keep",
+    refresh_token: "ref-b-keep",
+    user: { id: "u-b-keep", email: "b@keep.test" },
+  });
+  await bgSb.JustSaveItApi.setWorkspaceCache({ folders: [{ id: "fb", name: "KeepB" }], tags: [], recentItems: [] }, "u-b-keep");
+  await bgSb.JustSaveItApi.enqueueOfflineSave({ url: "https://keepb.test/1" }, "offline");
+  const bgGen = bgSb.JustSaveItApi.getSessionGeneration();
+  const staleBgSaveOk = await bgSb.JustSaveItApi.saveAuthSession(
+    {
+      access_token: "tok-a-stale",
+      refresh_token: "ref-a-stale2",
+      user: { id: "u-a-stale", email: "a@stale.test" },
+    },
+    { expectedGen: bgGen, expectedRefreshToken: "ref-a-stale1" },
+  );
+  assert.equal(staleBgSaveOk, false, "Stale refresh save across User B switch must abort cleanly");
+  assert.equal((await bgSb.JustSaveItApi.getSessionState()).user.id, "u-b-keep");
+  assert.equal((await bgSb.JustSaveItApi.getWorkspaceCache("u-b-keep")).folders.length, 1, "User B cache must stay intact");
+  assert.equal((await bgSb.JustSaveItApi.getOfflineQueue("u-b-keep")).length, 1, "User B offline queue must stay intact");
 });

@@ -1321,6 +1321,7 @@ test("Cycle 9 [HIGH-1, MED-1, MED-2, MED-3, MED-4]: partial 401 fallback, cursor
       ["folder/[id].tsx", /async function handleShareInvite[\s\S]{0,250}runGuardedBusyAction/],
       ["(tabs)/index.tsx", /async function handleQuickSave[\s\S]{0,300}runGuardedBusyAction/],
       ["(tabs)/index.tsx", /async function toggleFavorite[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/favorites.tsx", /async function removeFavorite[\s\S]{0,400}getAuthGeneration\(\) !== startGen[\s\S]{0,200}if \(!res\.ok\)/],
     ];
     for (const [rel, pattern] of actionChecks) {
       const code = fs.readFileSync(path.join(appDir, rel), "utf8");
