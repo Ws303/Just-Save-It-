@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -452,7 +453,7 @@ async def send_web_push(
         return PushSendResult(channel="web_push", delivered=False, error="Missing Web Push endpoint.")
 
     try:
-        safe_endpoint = validate_web_push_endpoint(raw_endpoint)
+        safe_endpoint = await asyncio.to_thread(validate_web_push_endpoint, raw_endpoint)
     except Exception as exc:
         return PushSendResult(
             channel="web_push",

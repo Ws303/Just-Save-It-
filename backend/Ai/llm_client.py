@@ -6,6 +6,7 @@ Supports 3 Tiers:
 - Tier 3 (Custom Endpoint): call_byok_or_custom_llm with keyless or bearer token for Ollama, vLLM, private GPU.
 """
 
+import asyncio
 from contextvars import ContextVar
 import json
 import logging
@@ -318,7 +319,7 @@ async def call_byok_or_custom_llm(prompt: str, config: AIConfig) -> Tuple[AISumm
     """
     # ===== Tier 3: Custom / Local Endpoint (Keyless or Bearer) =====
     if config.provider == "custom":
-        base_url = validate_ai_base_url(config.base_url, allow_default_local=True) or "http://localhost:11434/v1"
+        base_url = (await asyncio.to_thread(validate_ai_base_url, config.base_url, allow_default_local=True)) or "http://localhost:11434/v1"
         model = resolve_upstream_model_id(config.model, default="llama3.2")
         output = await _call_openai_compatible_raw(
             prompt=prompt,
@@ -336,7 +337,7 @@ async def call_byok_or_custom_llm(prompt: str, config: AIConfig) -> Tuple[AISumm
     # Provider routing for BYOK
     # In BYOK, user can specify specific model or provider
     model = resolve_upstream_model_id(config.model, default="gpt-4o-mini")
-    validated_base = validate_ai_base_url(config.base_url, allow_default_local=False) if config.base_url else None
+    validated_base = (await asyncio.to_thread(validate_ai_base_url, config.base_url, allow_default_local=False)) if config.base_url else None
     parsed_base = urllib.parse.urlparse(validated_base) if validated_base else None
     base_host = (parsed_base.hostname or "").lower() if parsed_base else ""
     base_path = (parsed_base.path or "").lower() if parsed_base else ""

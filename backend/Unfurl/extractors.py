@@ -10,9 +10,11 @@ Reuses Part 1 SSRF & hygiene modules (`Ai.content_extractor` and `Database.text_
 - Strictly 0 LLM calls.
 """
 
+import asyncio
 from dataclasses import dataclass, field
 import html as html_lib
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -308,11 +310,27 @@ def _parse_html_metadata(html_text: str, final_url: str) -> Dict[str, Any]:
             if h1_node is not None:
                 title = clean_text_field(h1_node.text(strip=True), unescape_html=True)
 
+        parsed_final_host = (urllib.parse.urlparse(final_url).hostname or "").lower()
+        if title and title.strip() in ("YouTube", "- YouTube") and (
+            _host_matches(parsed_final_host, ("youtube.com", "youtu.be")) or _YOUTUBE_ID_RE.search(final_url)
+        ):
+            title = None
+
         description = (
             _extract_meta_content(tree, "property", "og:description")
             or _extract_meta_content(tree, "name", "twitter:description")
             or _extract_meta_content(tree, "name", "description")
         )
+        if not description and html_text and _YOUTUBE_ID_RE.search(final_url):
+            sd_match = re.search(r'"shortDescription"\s*:\s*"((?:\\.|[^"\\])+)"', html_text)
+            if sd_match:
+                try:
+                    decoded_sd = json.loads(f'"{sd_match.group(1)}"')
+                    cleaned_sd = clean_text_field(decoded_sd, unescape_html=True)
+                    if cleaned_sd:
+                        description = cleaned_sd[:500]
+                except Exception as exc:
+                    logger.debug("YouTube shortDescription JSON decode skipped: %s", exc)
 
         site_name = _extract_meta_content(tree, "property", "og:site_name")
         og_type = (_extract_meta_content(tree, "property", "og:type") or "").lower()
@@ -459,6 +477,8 @@ def _detect_platform(hostname: str) -> str:
 async def _extract_youtube(canon_url: str, url_hash: str) -> UnfurlResult:
     encoded = urllib.parse.quote(canon_url, safe="")
     oembed = await _fetch_json_safely(f"https://www.youtube.com/oembed?url={encoded}&format=json")
+    if not isinstance(oembed, dict):
+        oembed = await _fetch_json_safely(f"https://noembed.com/embed?url={encoded}")
     match = _YOUTUBE_ID_RE.search(canon_url)
     video_id = match.group(1) if match else None
 
@@ -499,6 +519,14 @@ async def _extract_youtube(canon_url: str, url_hash: str) -> UnfurlResult:
         except Exception:
             if not oembed and not video_id:
                 raise
+
+    if not description:
+        if author and title:
+            description = f"วิดีโอ YouTube จากช่อง {author} — {title}"
+        elif author:
+            description = f"วิดีโอ YouTube จากช่อง {author}"
+        elif title:
+            description = f"วิดีโอ YouTube — {title}"
 
     return UnfurlResult(
         url=canon_url,
@@ -922,7 +950,7 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
 async def extract_unfurl_metadata(raw_url: str) -> UnfurlResult:
     """Extract zero-token rich preview metadata from a public URL across supported platforms."""
     canon_url = canonicalize_url(raw_url)
-    validate_safe_url(canon_url)
+    await asyncio.to_thread(validate_safe_url, canon_url)
     url_hash = compute_url_hash(canon_url)
 
     hostname = (urllib.parse.urlparse(canon_url).hostname or "").lower()

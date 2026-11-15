@@ -618,3 +618,42 @@ def test_duplicate_bump_missing_preview_triggers_re_enrichment_and_safe_default_
     assert bumped["deduplicated"] is True
     assert bumped["enrich_status"] == "pending"
     assert bumped["embed_type"] == "youtube"
+
+
+@pytest.mark.asyncio
+async def test_fetch_url_safely_strips_content_encoding_on_stream_bytes():
+    """Streaming decompressed chunks must strip Content-Encoding/Length to prevent httpx.DecodingError."""
+    import httpx
+    from Ai.content_extractor import _fetch_url_safely
+
+    class _FakeStreamResp:
+        status_code = 200
+        headers = httpx.Headers(
+            {
+                "Content-Encoding": "gzip",
+                "Content-Length": "99",
+                "Content-Type": "application/json",
+            }
+        )
+        request = httpx.Request("GET", "https://www.youtube.com/oembed")
+
+        async def aiter_bytes(self):
+            yield b'{"title": "Me at the zoo", "author_name": "jawed"}'
+
+    class _FakeStreamCtx:
+        async def __aenter__(self):
+            return _FakeStreamResp()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeAsyncClient:
+        def stream(self, method, url, headers=None):
+            return _FakeStreamCtx()
+
+    with patch("Ai.content_extractor.validate_safe_url", side_effect=lambda u: u):
+        resp = await _fetch_url_safely(_FakeAsyncClient(), "https://www.youtube.com/oembed?url=https://youtu.be/jNQXAC9IVRw")
+
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "Me at the zoo"
+    assert "content-encoding" not in resp.headers

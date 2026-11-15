@@ -273,7 +273,14 @@ async def stream_fetch_limited(
 
     async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=False) as client:
         for _ in range(max_redirects + 1):
-            async with client.stream("GET", current_url, headers={"User-Agent": USER_AGENT}) as resp:
+            req_headers = {
+                "User-Agent": USER_AGENT,
+                "Accept-Language": "th,en-US;q=0.9,en;q=0.8",
+            }
+            cur_host = (urllib.parse.urlparse(current_url).hostname or "").lower()
+            if cur_host in ("youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be") or cur_host.endswith(".youtube.com"):
+                req_headers["Cookie"] = "CONSENT=YES+cb; SOCS=CAISHAgBEhJnd3NfMjAyMzA4MTAtMF9SQzIaAmVuIAEaBgiAo_CmBg"
+            async with client.stream("GET", current_url, headers=req_headers) as resp:
                 if resp.status_code in (301, 302, 303, 307, 308):
                     location = resp.headers.get("location") or resp.headers.get("Location")
                     if not location:

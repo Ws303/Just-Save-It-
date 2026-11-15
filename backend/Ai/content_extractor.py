@@ -168,9 +168,16 @@ async def _fetch_url_safely(
                     buf.extend(chunk[:remaining])
                     if len(buf) >= max_bytes:
                         break
+                raw_hdrs = stream_resp.headers
+                hdr_items = raw_hdrs.multi_items() if hasattr(raw_hdrs, "multi_items") else raw_hdrs.items()
+                clean_headers = [
+                    (k, v)
+                    for k, v in hdr_items
+                    if k.lower() not in ("content-encoding", "content-length")
+                ]
                 return httpx.Response(
                     status_code=stream_resp.status_code,
-                    headers=stream_resp.headers,
+                    headers=clean_headers,
                     content=bytes(buf),
                     request=getattr(stream_resp, "request", None),
                 )
