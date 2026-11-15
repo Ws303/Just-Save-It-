@@ -255,68 +255,78 @@ export function resolveSessionUserId(session: StoredSession | null | undefined):
   }
 }
 
+let _authStorageQueue: Promise<unknown> = Promise.resolve();
+
+function runSerializedAuthStorage<T>(fn: () => Promise<T>): Promise<T> {
+  const next = _authStorageQueue.then(fn, fn);
+  _authStorageQueue = next.catch(() => {});
+  return next;
+}
+
 export async function saveSession(
   session: StoredSession,
   options?: { expectedGen?: number },
 ): Promise<boolean> {
   let activeExpectedGen = options?.expectedGen;
-  const isStaleExpectedGen = () =>
-    activeExpectedGen !== undefined && _authGeneration !== activeExpectedGen;
-  if (isStaleExpectedGen()) return false;
-  const prev = await loadSession().catch(() => null);
-  if (isStaleExpectedGen()) return false;
-  const prevUid = resolveSessionUserId(prev) || _activeUserId;
-  const prevHadSession = Boolean(prev?.access_token || prev?.refresh_token || prevUid);
-  const nextUid = resolveSessionUserId(session);
-  const nextHasSession = Boolean(nextUid || session?.access_token);
-  const fallbackBackend = await getStorageBackend();
-  if (isStaleExpectedGen()) return false;
-
-  const shouldClearStorage =
-    (prevHadSession && (!nextUid || nextUid !== prevUid)) ||
-    (!prevUid && nextUid && _activeUserId !== nextUid);
-  const shouldBumpGen = shouldClearStorage || (!prevHadSession && nextHasSession);
-  if (shouldClearStorage) {
-    _authGeneration += 1;
-    if (activeExpectedGen !== undefined) activeExpectedGen = _authGeneration;
-    _memWorkspaceCache = null;
-    await fallbackBackend.removeItem(KEYS.cache);
-    await fallbackBackend.removeItem(KEYS.offlineQueue);
+  return runSerializedAuthStorage(async () => {
+    const isStaleExpectedGen = () =>
+      activeExpectedGen !== undefined && _authGeneration !== activeExpectedGen;
     if (isStaleExpectedGen()) return false;
-  } else if (shouldBumpGen) {
-    _authGeneration += 1;
-    if (activeExpectedGen !== undefined) activeExpectedGen = _authGeneration;
-  }
+    const prev = await loadSession().catch(() => null);
+    if (isStaleExpectedGen()) return false;
+    const prevUid = resolveSessionUserId(prev) || _activeUserId;
+    const prevHadSession = Boolean(prev?.access_token || prev?.refresh_token || prevUid);
+    const nextUid = resolveSessionUserId(session);
+    const nextHasSession = Boolean(nextUid || session?.access_token);
+    const fallbackBackend = await getStorageBackend();
+    if (isStaleExpectedGen()) return false;
 
-  const secureBackend = await getSecureSessionBackend();
-  if (isStaleExpectedGen()) return false;
-  _activeUserId = nextUid;
-  await secureBackend.setItem(KEYS.session, JSON.stringify(session));
-  if (secureBackend !== fallbackBackend) {
-    await fallbackBackend.removeItem(KEYS.session);
-  }
-  if (activeExpectedGen !== undefined && _authGeneration !== activeExpectedGen) {
-    if (_activeUserId === nextUid) {
-      _activeUserId = "";
+    const shouldClearStorage =
+      (prevHadSession && (!nextUid || nextUid !== prevUid)) ||
+      (!prevUid && nextUid && _activeUserId !== nextUid);
+    const shouldBumpGen = shouldClearStorage || (!prevHadSession && nextHasSession);
+    if (shouldClearStorage) {
+      _authGeneration += 1;
+      if (activeExpectedGen !== undefined) activeExpectedGen = _authGeneration;
+      _memWorkspaceCache = null;
+      await fallbackBackend.removeItem(KEYS.cache);
+      await fallbackBackend.removeItem(KEYS.offlineQueue);
+      if (isStaleExpectedGen()) return false;
+    } else if (shouldBumpGen) {
+      _authGeneration += 1;
+      if (activeExpectedGen !== undefined) activeExpectedGen = _authGeneration;
     }
-    const rawOnDisk = await secureBackend.getItem(KEYS.session).catch(() => null);
-    if (rawOnDisk) {
-      try {
-        const parsed = JSON.parse(rawOnDisk) as { access_token?: string };
-        if (parsed?.access_token === session.access_token) {
-          await secureBackend.removeItem(KEYS.session);
-        }
-      } catch {
-        // Ignore parse error on teardown
+
+    const secureBackend = await getSecureSessionBackend();
+    if (isStaleExpectedGen()) return false;
+    _activeUserId = nextUid;
+    await secureBackend.setItem(KEYS.session, JSON.stringify(session));
+    if (secureBackend !== fallbackBackend) {
+      await fallbackBackend.removeItem(KEYS.session);
+    }
+    if (activeExpectedGen !== undefined && _authGeneration !== activeExpectedGen) {
+      if (_activeUserId === nextUid) {
+        _activeUserId = "";
       }
+      const rawOnDisk = await secureBackend.getItem(KEYS.session).catch(() => null);
+      if (rawOnDisk) {
+        try {
+          const parsed = JSON.parse(rawOnDisk) as { access_token?: string };
+          if (parsed?.access_token === session.access_token) {
+            await secureBackend.removeItem(KEYS.session);
+          }
+        } catch {
+          // Ignore parse error on teardown
+        }
+      }
+      return false;
     }
-    return false;
-  }
-  if (shouldBumpGen) {
-    // Re-bump after storage commit so any concurrent read during IPC fails its generation check.
-    _authGeneration += 1;
-  }
-  return true;
+    if (shouldBumpGen) {
+      // Re-bump after storage commit so any concurrent read during IPC fails its generation check.
+      _authGeneration += 1;
+    }
+    return true;
+  });
 }
 
 export async function clearSession(): Promise<void> {
@@ -324,16 +334,21 @@ export async function clearSession(): Promise<void> {
   _activeUserId = "";
   _memWorkspaceCache = null;
   _memPkceVerifier = "";
-  const secureBackend = await getSecureSessionBackend();
-  await secureBackend.removeItem(KEYS.session);
-  const fallbackBackend = await getStorageBackend();
-  if (secureBackend !== fallbackBackend) {
-    await fallbackBackend.removeItem(KEYS.session);
-  }
-  await fallbackBackend.removeItem(KEYS.cache);
-  await fallbackBackend.removeItem(KEYS.offlineQueue);
-  await fallbackBackend.removeItem(KEYS.pkceVerifier);
-  _authGeneration += 1;
+  await runSerializedAuthStorage(async () => {
+    _activeUserId = "";
+    _memWorkspaceCache = null;
+    _memPkceVerifier = "";
+    const secureBackend = await getSecureSessionBackend();
+    await secureBackend.removeItem(KEYS.session);
+    const fallbackBackend = await getStorageBackend();
+    if (secureBackend !== fallbackBackend) {
+      await fallbackBackend.removeItem(KEYS.session);
+    }
+    await fallbackBackend.removeItem(KEYS.cache);
+    await fallbackBackend.removeItem(KEYS.offlineQueue);
+    await fallbackBackend.removeItem(KEYS.pkceVerifier);
+    _authGeneration += 1;
+  });
 }
 
 export async function savePkceVerifier(verifier: string): Promise<void> {

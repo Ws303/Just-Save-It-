@@ -1332,3 +1332,92 @@ test("Cycle 9 [HIGH-1, MED-1, MED-2, MED-3, MED-4]: partial 401 fallback, cursor
     await clearSession();
   }
 });
+
+test("Cycle 13: FIFO auth storage serialization prevents saveSession/clearSession interleaving", async () => {
+  const { loadSession } = await import("../storage.ts");
+  const makeFakeJwtC13 = (sub) => {
+    const body = btoa(JSON.stringify({ sub })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return `eyJhbGciOiJIUzI1NiJ9.${body}.sig`;
+  };
+
+  try {
+    await clearSession();
+
+    // 1. Concurrent saveSession(B) + stale saveSession(A, { expectedGen }) -> User B and cache/queue stay intact
+    await saveSession({
+      access_token: makeFakeJwtC13("mob-c13-a"),
+      refresh_token: "ref-c13-a1",
+      user: { id: "mob-c13-a", email: "c13a@mob.test" },
+    });
+    const genA = getAuthGeneration();
+    const [okB, okStaleA] = await Promise.all([
+      saveSession({
+        access_token: makeFakeJwtC13("mob-c13-b"),
+        refresh_token: "ref-c13-b1",
+        user: { id: "mob-c13-b", email: "c13b@mob.test" },
+      }),
+      saveSession(
+        {
+          access_token: makeFakeJwtC13("mob-c13-a"),
+          refresh_token: "ref-c13-a2",
+          user: { id: "mob-c13-a", email: "c13a@mob.test" },
+        },
+        { expectedGen: genA },
+      ),
+    ]);
+    assert.equal(okB, true);
+    assert.equal(okStaleA, false, "Serialized stale saveSession(A) behind User B must abort cleanly");
+    assert.equal((await loadSession())?.user?.id, "mob-c13-b");
+
+    // 2. Concurrent saveSession(B) followed by clearSession() -> ends null cleanly
+    await Promise.all([
+      saveSession({
+        access_token: makeFakeJwtC13("mob-c13-b"),
+        refresh_token: "ref-c13-b2",
+        user: { id: "mob-c13-b", email: "c13b@mob.test" },
+      }),
+      clearSession(),
+    ]);
+    assert.equal(await loadSession(), null, "Concurrent saveSession + clearSession must end cleared");
+
+    // 3. Concurrent clearSession() followed by saveSession(B) -> User B survives
+    await Promise.all([
+      clearSession(),
+      saveSession({
+        access_token: makeFakeJwtC13("mob-c13-b"),
+        refresh_token: "ref-c13-b3",
+        user: { id: "mob-c13-b", email: "c13b@mob.test" },
+      }),
+    ]);
+    assert.equal((await loadSession())?.user?.id, "mob-c13-b", "Concurrent clearSession + saveSession(B) must keep User B");
+
+    // 4. Stale User A submitted first under Promise.all followed immediately by User B -> User B finishes intact
+    await clearSession();
+    await saveSession({
+      access_token: makeFakeJwtC13("mob-c13-a"),
+      refresh_token: "ref-c13-a3",
+      user: { id: "mob-c13-a", email: "c13a@mob.test" },
+    });
+    const genA2 = getAuthGeneration();
+    const [okA2, okB2] = await Promise.all([
+      saveSession(
+        {
+          access_token: makeFakeJwtC13("mob-c13-a"),
+          refresh_token: "ref-c13-a4",
+          user: { id: "mob-c13-a", email: "c13a@mob.test" },
+        },
+        { expectedGen: genA2 },
+      ),
+      saveSession({
+        access_token: makeFakeJwtC13("mob-c13-b"),
+        refresh_token: "ref-c13-b4",
+        user: { id: "mob-c13-b", email: "c13b@mob.test" },
+      }),
+    ]);
+    assert.equal(okA2, true);
+    assert.equal(okB2, true);
+    assert.equal((await loadSession())?.user?.id, "mob-c13-b");
+  } finally {
+    await clearSession();
+  }
+});

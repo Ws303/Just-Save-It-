@@ -139,84 +139,96 @@
     };
   }
 
+  let _authMutationQueue = Promise.resolve();
+
+  function runSerializedAuthMutation(fn) {
+    const next = _authMutationQueue.then(fn, fn);
+    _authMutationQueue = next.catch(() => {});
+    return next;
+  }
+
   async function saveAuthSession(authPayload, options = {}) {
     let activeExpectedGen = options && options.expectedGen;
     const expectedRefreshToken = options && options.expectedRefreshToken;
-    const isStaleExpectedGen = () =>
-      activeExpectedGen !== undefined && _sessionGeneration !== activeExpectedGen;
-    if (isStaleExpectedGen()) return false;
-
-    const prev = await getStorage([STORAGE_KEYS.USER, STORAGE_KEYS.ACCESS_TOKEN, STORAGE_KEYS.REFRESH_TOKEN]);
-    if (isStaleExpectedGen()) return false;
-    if (expectedRefreshToken && prev[STORAGE_KEYS.REFRESH_TOKEN] !== expectedRefreshToken) {
-      return false;
-    }
-
-    const prevUid = String(
-      (prev[STORAGE_KEYS.USER] && prev[STORAGE_KEYS.USER].id) || parseJwtSub(prev[STORAGE_KEYS.ACCESS_TOKEN]) || ""
-    ).trim();
-    const prevHadSession = Boolean(prevUid || prev[STORAGE_KEYS.ACCESS_TOKEN] || prev[STORAGE_KEYS.REFRESH_TOKEN]);
-    const nextUid = String(
-      (authPayload && authPayload.user && authPayload.user.id) || parseJwtSub(authPayload && authPayload.access_token) || ""
-    ).trim();
-    const nextHasSession = Boolean(nextUid || (authPayload && authPayload.access_token));
-    if (expectedRefreshToken && prevUid && nextUid && prevUid !== nextUid) {
-      return false;
-    }
-
-    const shouldClearStorage = Boolean(prevHadSession && (!nextUid || !prevUid || prevUid !== nextUid));
-    const shouldBumpGen = shouldClearStorage || (!prevHadSession && nextHasSession);
-    if (shouldClearStorage) {
-      _sessionGeneration += 1;
-      if (activeExpectedGen !== undefined) activeExpectedGen = _sessionGeneration;
-      await removeStorage([
-        STORAGE_KEYS.WORKSPACE_CACHE,
-        STORAGE_KEYS.OFFLINE_QUEUE,
-        STORAGE_KEYS.NOTIFIED_REMINDERS,
-      ]);
+    return runSerializedAuthMutation(async () => {
+      const isStaleExpectedGen = () =>
+        activeExpectedGen !== undefined && _sessionGeneration !== activeExpectedGen;
       if (isStaleExpectedGen()) return false;
-    } else if (shouldBumpGen) {
-      _sessionGeneration += 1;
-      if (activeExpectedGen !== undefined) activeExpectedGen = _sessionGeneration;
-    }
-    const nextAccessToken = (authPayload && authPayload.access_token) || "";
-    const nextRefreshToken = (authPayload && authPayload.refresh_token) || "";
-    const nextUser = (authPayload && authPayload.user) || null;
-    await setStorage({
-      [STORAGE_KEYS.ACCESS_TOKEN]: nextAccessToken,
-      [STORAGE_KEYS.REFRESH_TOKEN]: nextRefreshToken,
-      [STORAGE_KEYS.USER]: nextUser,
-    });
-    if (isStaleExpectedGen()) {
-      const onDisk = await getStorage([STORAGE_KEYS.ACCESS_TOKEN]).catch(() => ({}));
-      if (onDisk[STORAGE_KEYS.ACCESS_TOKEN] === nextAccessToken) {
-        await removeStorage([
-          STORAGE_KEYS.ACCESS_TOKEN,
-          STORAGE_KEYS.REFRESH_TOKEN,
-          STORAGE_KEYS.USER,
-        ]);
+
+      const prev = await getStorage([STORAGE_KEYS.USER, STORAGE_KEYS.ACCESS_TOKEN, STORAGE_KEYS.REFRESH_TOKEN]);
+      if (isStaleExpectedGen()) return false;
+      if (expectedRefreshToken && prev[STORAGE_KEYS.REFRESH_TOKEN] !== expectedRefreshToken) {
+        return false;
       }
-      return false;
-    }
-    if (shouldBumpGen) {
-      _sessionGeneration += 1;
-    }
-    return true;
+
+      const prevUid = String(
+        (prev[STORAGE_KEYS.USER] && prev[STORAGE_KEYS.USER].id) || parseJwtSub(prev[STORAGE_KEYS.ACCESS_TOKEN]) || ""
+      ).trim();
+      const prevHadSession = Boolean(prevUid || prev[STORAGE_KEYS.ACCESS_TOKEN] || prev[STORAGE_KEYS.REFRESH_TOKEN]);
+      const nextUid = String(
+        (authPayload && authPayload.user && authPayload.user.id) || parseJwtSub(authPayload && authPayload.access_token) || ""
+      ).trim();
+      const nextHasSession = Boolean(nextUid || (authPayload && authPayload.access_token));
+      if (expectedRefreshToken && prevUid && nextUid && prevUid !== nextUid) {
+        return false;
+      }
+
+      const shouldClearStorage = Boolean(prevHadSession && (!nextUid || !prevUid || prevUid !== nextUid));
+      const shouldBumpGen = shouldClearStorage || (!prevHadSession && nextHasSession);
+      if (shouldClearStorage) {
+        _sessionGeneration += 1;
+        if (activeExpectedGen !== undefined) activeExpectedGen = _sessionGeneration;
+        await removeStorage([
+          STORAGE_KEYS.WORKSPACE_CACHE,
+          STORAGE_KEYS.OFFLINE_QUEUE,
+          STORAGE_KEYS.NOTIFIED_REMINDERS,
+        ]);
+        if (isStaleExpectedGen()) return false;
+      } else if (shouldBumpGen) {
+        _sessionGeneration += 1;
+        if (activeExpectedGen !== undefined) activeExpectedGen = _sessionGeneration;
+      }
+      const nextAccessToken = (authPayload && authPayload.access_token) || "";
+      const nextRefreshToken = (authPayload && authPayload.refresh_token) || "";
+      const nextUser = (authPayload && authPayload.user) || null;
+      await setStorage({
+        [STORAGE_KEYS.ACCESS_TOKEN]: nextAccessToken,
+        [STORAGE_KEYS.REFRESH_TOKEN]: nextRefreshToken,
+        [STORAGE_KEYS.USER]: nextUser,
+      });
+      if (isStaleExpectedGen()) {
+        const onDisk = await getStorage([STORAGE_KEYS.ACCESS_TOKEN]).catch(() => ({}));
+        if (onDisk[STORAGE_KEYS.ACCESS_TOKEN] === nextAccessToken) {
+          await removeStorage([
+            STORAGE_KEYS.ACCESS_TOKEN,
+            STORAGE_KEYS.REFRESH_TOKEN,
+            STORAGE_KEYS.USER,
+          ]);
+        }
+        return false;
+      }
+      if (shouldBumpGen) {
+        _sessionGeneration += 1;
+      }
+      return true;
+    });
   }
 
   async function clearAuthSession() {
     _sessionGeneration += 1;
     _refreshInFlightPromise = null;
     _refreshInFlightToken = "";
-    await removeStorage([
-      STORAGE_KEYS.ACCESS_TOKEN,
-      STORAGE_KEYS.REFRESH_TOKEN,
-      STORAGE_KEYS.USER,
-      STORAGE_KEYS.WORKSPACE_CACHE,
-      STORAGE_KEYS.OFFLINE_QUEUE,
-      STORAGE_KEYS.NOTIFIED_REMINDERS,
-    ]);
-    _sessionGeneration += 1;
+    await runSerializedAuthMutation(async () => {
+      await removeStorage([
+        STORAGE_KEYS.ACCESS_TOKEN,
+        STORAGE_KEYS.REFRESH_TOKEN,
+        STORAGE_KEYS.USER,
+        STORAGE_KEYS.WORKSPACE_CACHE,
+        STORAGE_KEYS.OFFLINE_QUEUE,
+        STORAGE_KEYS.NOTIFIED_REMINDERS,
+      ]);
+      _sessionGeneration += 1;
+    });
   }
 
   async function getWorkspaceCache(expectedUserId = "") {

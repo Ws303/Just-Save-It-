@@ -2189,4 +2189,101 @@ test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quic
   assert.equal((await bgSb.JustSaveItApi.getSessionState()).user.id, "u-b-keep");
   assert.equal((await bgSb.JustSaveItApi.getWorkspaceCache("u-b-keep")).folders.length, 1, "User B cache must stay intact");
   assert.equal((await bgSb.JustSaveItApi.getOfflineQueue("u-b-keep")).length, 1, "User B offline queue must stay intact");
+
+  // 10. Cycle 13: FIFO serialization prevents saveAuthSession/clearAuthSession async storage interleaving
+  const delayMap = new Map();
+  let delayTick = 0;
+  const jitter = () => new Promise((r) => setTimeout(r, ((delayTick++ % 3) + 1) * 4));
+  const delayedChromeStorage = {
+    local: {
+      async get(keys) {
+        await jitter();
+        if (keys == null) return Object.fromEntries(delayMap.entries());
+        const out = {};
+        for (const k of Array.isArray(keys) ? keys : [keys]) {
+          if (delayMap.has(k)) out[k] = delayMap.get(k);
+        }
+        return out;
+      },
+      async set(obj) {
+        await jitter();
+        for (const [k, v] of Object.entries(obj)) delayMap.set(k, v);
+      },
+      async remove(keys) {
+        await jitter();
+        for (const k of Array.isArray(keys) ? keys : [keys]) delayMap.delete(k);
+      },
+    },
+  };
+  const delaySb = {
+    globalThis: null,
+    window: null,
+    self: null,
+    chrome: { runtime: { lastError: null }, storage: delayedChromeStorage },
+    URL,
+    Date,
+    Math,
+    console,
+    setTimeout,
+    clearTimeout,
+    btoa,
+    atob,
+    fetch: async () => mkResp(200, {}),
+  };
+  delaySb.globalThis = delaySb;
+  delaySb.window = delaySb;
+  delaySb.self = delaySb;
+  vm.runInNewContext(apiCode, delaySb, { filename: "extension/api.js" });
+
+  // Case A: User B save races stale User A save under delayed async storage -> User B & its state survive
+  await delaySb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-c13-a1",
+    refresh_token: "ref-c13-a1",
+    user: { id: "u-c13-a", email: "c13a@t.com" },
+  });
+  const genC13A = delaySb.JustSaveItApi.getSessionGeneration();
+  const [okBFirst, okStaleA] = await Promise.all([
+    delaySb.JustSaveItApi.saveAuthSession({
+      access_token: "tok-c13-b1",
+      refresh_token: "ref-c13-b1",
+      user: { id: "u-c13-b", email: "c13b@t.com" },
+    }),
+    delaySb.JustSaveItApi.saveAuthSession(
+      {
+        access_token: "tok-c13-a2",
+        refresh_token: "ref-c13-a2",
+        user: { id: "u-c13-a", email: "c13a@t.com" },
+      },
+      { expectedGen: genC13A, expectedRefreshToken: "ref-c13-a1" },
+    ),
+  ]);
+  assert.equal(okBFirst, true);
+  assert.equal(okStaleA, false, "Serialized stale User A save behind User B must abort cleanly");
+  assert.equal((await delaySb.JustSaveItApi.getSessionState()).user?.id, "u-c13-b");
+  assert.equal(delayMap.get("jsi_access_token"), "tok-c13-b1");
+
+  // Case B: User B save followed concurrently by clearAuthSession -> cleanly cleared with zero leftover keys
+  await delaySb.JustSaveItApi.saveWorkspaceCache("u-c13-b", { folders: [{ id: "fc13", name: "F" }], tags: [], items: [] });
+  await Promise.all([
+    delaySb.JustSaveItApi.saveAuthSession({
+      access_token: "tok-c13-b2",
+      refresh_token: "ref-c13-b2",
+      user: { id: "u-c13-b", email: "c13b@t.com" },
+    }),
+    delaySb.JustSaveItApi.clearAuthSession(),
+  ]);
+  assert.equal(delayMap.get("jsi_access_token"), undefined, "Concurrent saveAuthSession + clearAuthSession must end cleared");
+  assert.equal((await delaySb.JustSaveItApi.getSessionState()).accessToken, "");
+
+  // Case C: clearAuthSession followed concurrently by User B login -> User B survives delayed clear
+  await Promise.all([
+    delaySb.JustSaveItApi.clearAuthSession(),
+    delaySb.JustSaveItApi.saveAuthSession({
+      access_token: "tok-c13-b3",
+      refresh_token: "ref-c13-b3",
+      user: { id: "u-c13-b", email: "c13b@t.com" },
+    }),
+  ]);
+  assert.equal((await delaySb.JustSaveItApi.getSessionState()).user?.id, "u-c13-b");
+  assert.equal(delayMap.get("jsi_access_token"), "tok-c13-b3", "Concurrent clearAuthSession + saveAuthSession(B) must keep User B");
 });
