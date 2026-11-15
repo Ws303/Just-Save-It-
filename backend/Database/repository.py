@@ -411,11 +411,13 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
         merged_after_bump = {**existing_item, **bump_updates}
         merged_desc = str(merged_after_bump.get("description") or "").strip()
         merged_plat = str(merged_after_bump.get("platform") or "").lower()
+        canon_lower = canon_url.lower()
+        is_yt = merged_plat == "youtube" or "youtube.com" in canon_lower or "youtu.be" in canon_lower
         needs_re_enrich = (
             not merged_after_bump.get("image_url")
             or not merged_desc
-            or (merged_plat == "youtube" and merged_desc.startswith("By "))
-            or (merged_plat in ("youtube", "tiktok", "vimeo") and not merged_after_bump.get("embed_url"))
+            or (is_yt and merged_desc.startswith("By "))
+            or ((is_yt or merged_plat in ("tiktok", "vimeo")) and not merged_after_bump.get("embed_url"))
         )
         if needs_re_enrich:
             bump_updates["enrich_status"] = "pending"

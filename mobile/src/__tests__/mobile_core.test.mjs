@@ -19,11 +19,13 @@ import {
   enqueueOfflineItem,
   flushOfflineQueueWithSender,
   getAuthDebugEvents,
+  getAuthGeneration,
   getMemoryCachedWorkspace,
   getThemePageBg,
   loadCachedWorkspace,
   loadOfflineQueue,
   recordAuthDebugEvent,
+  removeCachedLinkItem,
   resolveSessionUserId,
   saveCachedWorkspace,
   saveSession,
@@ -790,6 +792,77 @@ test("Cycle 4 [F-3]: signed-out enqueueOfflineItem preserves foreign rows & mid-
     const queueA = await loadOfflineQueue("mob-a-f3");
     assert.equal(queueA.length, 0, "Switched-out User A queue must stay cleared");
   } finally {
+    await clearSession();
+  }
+});
+
+test("Cycle 5 [M-3, L-1]: deleteLinkItem/removeCachedLinkItem guards account switch & saveSession bumps gen on opaque token", async () => {
+  const makeFakeJwt = (sub) => {
+    const h = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+    const p = Buffer.from(JSON.stringify({ sub })).toString("base64url");
+    return `${h}.${p}.sig`;
+  };
+  await clearSession();
+  const origFetch = globalThis.fetch;
+
+  try {
+    // 1. LOW-1: guest -> opaque token (non-JWT, user: null) still bumps authGeneration
+    const genBeforeOpaque = getAuthGeneration();
+    await saveSession({ access_token: "opaque-token-without-dots", refresh_token: "r-op", user: null });
+    assert.ok(getAuthGeneration() > genBeforeOpaque, "Opaque session save must bump authGeneration");
+
+    // 2. MEDIUM-3: mid-flight deleteLinkItem settling after account switch does NOT overwrite User B cache
+    await clearSession();
+    await saveSession({
+      access_token: makeFakeJwt("mob-a-m3"),
+      refresh_token: "ref-a-m3",
+      user: { id: "mob-a-m3", email: "am3@mob.test" },
+    });
+    await saveCachedWorkspace({
+      user_id: "mob-a-m3",
+      items: [{ id: "m-a-del", url: "https://a.test/del", title: "A Del" }],
+      folders: [],
+      reminders: [],
+    });
+
+    let resolveDel;
+    globalThis.fetch = async (url, init = {}) => {
+      if (String(url).includes("/api/items/") && init.method === "DELETE") {
+        return new Promise((r) => {
+          resolveDel = r;
+        });
+      }
+      return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+    };
+
+    const pDel = deleteLinkItem("m-a-del");
+    await new Promise((r) => setTimeout(r, 15));
+
+    // User switches to User B and caches User B items while User A's DELETE is still in flight
+    await saveSession({
+      access_token: makeFakeJwt("mob-b-m3"),
+      refresh_token: "ref-b-m3",
+      user: { id: "mob-b-m3", email: "bm3@mob.test" },
+    });
+    await saveCachedWorkspace({
+      user_id: "mob-b-m3",
+      items: [{ id: "m-b-keep", url: "https://b.test/keep", title: "B Keep" }],
+      folders: [],
+      reminders: [],
+    });
+
+    resolveDel({ ok: true, status: 200, text: async () => '{"deleted":true}', json: async () => ({ deleted: true }) });
+    await pDel;
+
+    const cachedB = await loadCachedWorkspace();
+    assert.deepEqual(cachedB.items.map((it) => it.id), ["m-b-keep"], "User B cache must stay intact after User A delete settles");
+
+    // Signed-out removeCachedLinkItem is a safe no-op
+    await clearSession();
+    await removeCachedLinkItem("m-b-keep");
+    assert.equal((await loadCachedWorkspace()).items.length, 0);
+  } finally {
+    globalThis.fetch = origFetch;
     await clearSession();
   }
 });

@@ -1259,3 +1259,25 @@ async def test_cycle4_yt_upgrade_when_initial_platform_web(isolated_db):
     assert res_live["cached"] is False
     assert res_live["item"]["description"] == "Full live YT video breakdown"
     assert res_live["item"]["platform"] == "youtube"
+
+    # 3. CHRIS Cycle 4 LOW-2 parity: create_or_bump_item marks enrich_status='pending' for YouTube URLs even when platform='web'
+    bump_seed = create_or_bump_item(
+        isolated_db,
+        uid,
+        ItemCreateRequest(url="https://www.youtube.com/watch?v=c5bump123456", title="Bump Seed"),
+    )
+    isolated_db.table("items").update(
+        {
+            "platform": "web",
+            "image_url": "https://i.ytimg.com/vi/c5bump123456/hqdefault.jpg",
+            "description": "By BumpChannel",
+            "enrich_status": "unfurled",
+        }
+    ).eq("id", bump_seed["id"]).execute()
+
+    bumped = create_or_bump_item(
+        isolated_db,
+        uid,
+        ItemCreateRequest(url="https://www.youtube.com/watch?v=c5bump123456", title="Bump Again"),
+    )
+    assert bumped["enrich_status"] == "pending"

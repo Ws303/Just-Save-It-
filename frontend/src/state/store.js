@@ -658,8 +658,15 @@ export const store = {
     const prevUserId = this.state.data.user?.id || "";
     const nextUserId = user?.id || prevUserId;
     const isAccountSwitch = Boolean(prevUserId && nextUserId && prevUserId !== nextUserId);
+    const isIdentityChange = isAccountSwitch || Boolean(!prevUserId && nextUserId);
     if (isAccountSwitch) {
       this.state.api.authGeneration = (this.state.api.authGeneration || 0) + 1;
+    }
+    if (isIdentityChange) {
+      this.state.api.isSummarizing = false;
+      this.state.ui.aiConfirmModalOpen = false;
+      this.state.ui.aiSummaryStatus = "idle";
+      this.state.ui.aiRequestId = (this.state.ui.aiRequestId || 0) + 1;
     }
     if (isAccountSwitch && typeof window !== "undefined") {
       this.state.data.folders = [];
@@ -702,6 +709,10 @@ export const store = {
     const clearedUserId = String(this.state.data.user?.id || this.state.api?.jwtClaims?.sub || "").trim();
     this.state.data.user.isAuthenticated = false;
     this.state.api.authGeneration = (this.state.api.authGeneration || 0) + 1;
+    this.state.api.isSummarizing = false;
+    this.state.ui.aiConfirmModalOpen = false;
+    this.state.ui.aiSummaryStatus = "idle";
+    this.state.ui.aiRequestId = (this.state.ui.aiRequestId || 0) + 1;
     this.state.api.bearerToken = "";
     this.state.api.refreshToken = "";
     this.state.api.jwtClaims = null;

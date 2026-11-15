@@ -973,7 +973,7 @@ appEl.addEventListener("click", async (e) => {
         forceRefresh: Boolean(d.forceRefresh),
         saveToNote: false,
       });
-      if (ui.aiRequestId !== reqId || ui.activeLinkId !== targetId) return;
+      if (!res || res.aborted || ui.aiRequestId !== reqId || ui.activeLinkId !== targetId) return;
       ui.aiSummaryStatus = res.ok ? "success" : "error";
       store.showToast(res.ok ? "สรุปเนื้อหาด้วย AI สำเร็จ" : `สรุปไม่สำเร็จ: ${res.error || "ลองใหม่"}`);
       return;
@@ -1347,7 +1347,15 @@ appEl.addEventListener("click", async (e) => {
       store.showToast("กรุณาเข้าสู่ระบบก่อนเพื่อเข้าร่วมโฟลเดอร์");
       return;
     }
+    const startAuthGen = store.state.api.authGeneration || 0;
+    const startUid = String(store.state.data.user?.id || "");
     const joined = await apiClient.acceptInvite(tokenOrFolder);
+    if (
+      (store.state.api.authGeneration || 0) !== startAuthGen ||
+      String(store.state.data.user?.id || "") !== startUid
+    ) {
+      return;
+    }
     if (!joined) {
       store.showToast("ไม่สามารถเข้าร่วมโฟลเดอร์ได้ กรุณาตรวจสอบสิทธิ์หรือลิงก์คำเชิญ");
       return;
@@ -1581,6 +1589,7 @@ appEl.addEventListener("click", async (e) => {
   }
   if (d.runAiSummarize) {
     const res = await apiClient.summarizeLink(d.runAiSummarize);
+    if (!res || res.aborted) return;
     if (res.ok) store.showToast("สรุปเนื้อหาด้วย AI สำเร็จ");
     else store.showToast(`AI Error: ${res.error || "ไม่สำเร็จ"}`);
     return;
@@ -1605,7 +1614,8 @@ appEl.addEventListener("click", async (e) => {
   }
   if (d.clearReminder) {
     const res = await apiClient.deleteReminder(d.clearReminder);
-    if (res && !res.ok && store.state.api.mode === "live") {
+    if (!res || res.aborted) return;
+    if (!res.ok && store.state.api.mode === "live") {
       store.showToast(res.error || "ลบการตั้งเตือนไม่สำเร็จ กรุณาลองอีกครั้ง");
       return;
     }
@@ -1624,7 +1634,8 @@ appEl.addEventListener("click", async (e) => {
       reminderTime: ui.activeSheet.time || "18:00",
       repeatEveryDays,
     });
-    if (res && !res.ok && store.state.api.mode === "live") {
+    if (!res || res.aborted) return;
+    if (!res.ok && store.state.api.mode === "live") {
       store.showToast(res.error || "ตั้งเตือนไม่สำเร็จ กรุณาลองอีกครั้ง");
       return;
     }

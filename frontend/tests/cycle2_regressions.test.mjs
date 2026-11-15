@@ -1016,3 +1016,119 @@ test("Frontend Cycle 4 [F-4]: summarizeLink, saveReminder, deleteReminder, and a
     globalThis.localStorage = origLocalStorage;
   }
 });
+
+test("Cycle 5 [H-1, M-1, M-2]: post-refresh 401 clears extension session, store resets isSummarizing, and main.js guards aborted/stale calls", async () => {
+  // 1. HIGH-1: extension apiRequest retry 401 after successful refresh clears session via attemptedToken
+  const storeMap = new Map();
+  const chromeMock = {
+    runtime: { lastError: null },
+    storage: {
+      local: {
+        get(keys, cb) {
+          const out = {};
+          const keyList = Array.isArray(keys) ? keys : typeof keys === "string" ? [keys] : Object.keys(keys || {});
+          for (const k of keyList) if (storeMap.has(k)) out[k] = structuredClone(storeMap.get(k));
+          cb(out);
+        },
+        set(values, cb) {
+          for (const [k, v] of Object.entries(values || {})) storeMap.set(k, structuredClone(v));
+          if (cb) cb();
+        },
+        remove(keys, cb) {
+          const keyList = Array.isArray(keys) ? keys : [keys];
+          for (const k of keyList) storeMap.delete(k);
+          if (cb) cb();
+        },
+      },
+    },
+  };
+  const apiCode = fs.readFileSync(path.join(repoRoot, "extension", "api.js"), "utf8");
+  const sandbox = {
+    globalThis: {},
+    chrome: chromeMock,
+    URL,
+    Date,
+    Math,
+    console,
+    setTimeout,
+    clearTimeout,
+    fetch: async (url) => {
+      if (String(url).includes("/api/auth/refresh")) {
+        return mockResp(200, {
+          access_token: "tok-refreshed-revoked",
+          refresh_token: "ref-new",
+          user: { id: "u-revoked", email: "revoked@example.com" },
+        });
+      }
+      return mockResp(401, { detail: "User deleted or revoked" });
+    },
+  };
+  sandbox.globalThis = sandbox;
+  sandbox.self = sandbox;
+  vm.runInNewContext(apiCode, sandbox, { filename: "extension/api.js" });
+
+  await sandbox.JustSaveItApi.saveAuthSession({
+    access_token: "tok-initial-expired",
+    refresh_token: "ref-initial",
+    user: { id: "u-revoked", email: "revoked@example.com" },
+  });
+  await sandbox.JustSaveItApi.setWorkspaceCache({
+    user: { id: "u-revoked" },
+    folders: [],
+    tags: [],
+    recentItems: [{ id: "stale-item", url: "https://stale.test" }],
+  });
+
+  const postRefreshErr = await sandbox.JustSaveItApi.apiRequest("/api/items").catch((e) => e);
+  assert.equal(postRefreshErr?.status, 401);
+  assert.match(String(postRefreshErr?.message || postRefreshErr), /User deleted|revoked|401/);
+  const afterPostRefresh = await sandbox.JustSaveItApi.getSessionState();
+  assert.equal(afterPostRefresh.accessToken, "", "Post-refresh 401 must clear session");
+  assert.equal(afterPostRefresh.user, null, "Post-refresh 401 must clear stored user");
+  assert.equal(storeMap.has(sandbox.JustSaveItApi.STORAGE_KEYS.WORKSPACE_CACHE), false);
+
+  // 2. MEDIUM-1: store resets isSummarizing & AI sheet/modal flags on account switch and clearSession
+  const origLocalStorage = globalThis.localStorage;
+  const { api: ls } = createMemoryLocalStorage();
+  globalThis.localStorage = ls;
+  try {
+    store.resetSeed();
+    store.applyAuthenticatedSession({
+      mode: "live",
+      accessToken: "jwt-m1-a",
+      refreshToken: "ref-m1-a",
+      user: { id: "user-m1-a", email: "a@m1.test", name: "M1 A" },
+    });
+    store.state.api.isSummarizing = true;
+    store.state.ui.aiConfirmModalOpen = true;
+    store.state.ui.aiSummaryStatus = "loading";
+    const reqIdBeforeSwitch = store.state.ui.aiRequestId;
+
+    store.applyAuthenticatedSession({
+      mode: "live",
+      accessToken: "jwt-m1-b",
+      refreshToken: "ref-m1-b",
+      user: { id: "user-m1-b", email: "b@m1.test", name: "M1 B" },
+    });
+    assert.equal(store.state.api.isSummarizing, false, "Account switch must clear stuck isSummarizing");
+    assert.equal(store.state.ui.aiConfirmModalOpen, false);
+    assert.equal(store.state.ui.aiSummaryStatus, "idle");
+    assert.ok(store.state.ui.aiRequestId > reqIdBeforeSwitch);
+
+    store.state.api.isSummarizing = true;
+    store.state.ui.aiSummaryStatus = "loading";
+    store.clearSession({ clearWorkspace: true });
+    assert.equal(store.state.api.isSummarizing, false, "clearSession must reset isSummarizing");
+    assert.equal(store.state.ui.aiSummaryStatus, "idle");
+  } finally {
+    globalThis.localStorage = origLocalStorage;
+  }
+
+  // 3. MEDIUM-2: main.js handlers bail out cleanly on aborted responses & auth-generation switch
+  const mainCode = fs.readFileSync(path.join(repoRoot, "frontend", "src", "main.js"), "utf8");
+  assert.match(mainCode, /confirm-ai-summarize[\s\S]{0,400}if \(!res \|\| res\.aborted/);
+  assert.match(mainCode, /d\.runAiSummarize[\s\S]{0,200}if \(!res \|\| res\.aborted\) return;/);
+  assert.match(mainCode, /d\.clearReminder[\s\S]{0,200}if \(!res \|\| res\.aborted\) return;/);
+  assert.match(mainCode, /d\.saveReminder[\s\S]{0,500}if \(!res \|\| res\.aborted\) return;/);
+  assert.match(mainCode, /const joined = await apiClient\.acceptInvite\(tokenOrFolder\);[\s\S]{0,200}startAuthGen/);
+});

@@ -149,14 +149,16 @@
       (authPayload && authPayload.user && authPayload.user.id) || parseJwtSub(authPayload && authPayload.access_token) || ""
     ).trim();
     const nextHasSession = Boolean(nextUid || (authPayload && authPayload.access_token));
-    if (prevHadSession && (!nextUid || !prevUid || prevUid !== nextUid)) {
+    const shouldClearStorage = Boolean(prevHadSession && (!nextUid || !prevUid || prevUid !== nextUid));
+    const shouldBumpGen = shouldClearStorage || (!prevHadSession && nextHasSession);
+    if (shouldClearStorage) {
       _sessionGeneration += 1;
       await removeStorage([
         STORAGE_KEYS.WORKSPACE_CACHE,
         STORAGE_KEYS.OFFLINE_QUEUE,
         STORAGE_KEYS.NOTIFIED_REMINDERS,
       ]);
-    } else if (!prevHadSession && nextHasSession) {
+    } else if (shouldBumpGen) {
       _sessionGeneration += 1;
     }
     await setStorage({
@@ -164,6 +166,9 @@
       [STORAGE_KEYS.REFRESH_TOKEN]: (authPayload && authPayload.refresh_token) || "",
       [STORAGE_KEYS.USER]: (authPayload && authPayload.user) || null,
     });
+    if (shouldBumpGen) {
+      _sessionGeneration += 1;
+    }
   }
 
   async function clearAuthSession() {
@@ -209,14 +214,13 @@
     const res = await getStorage([STORAGE_KEYS.USER, STORAGE_KEYS.ACCESS_TOKEN]);
     if (_sessionGeneration !== startGen) return;
     const currentUser = res[STORAGE_KEYS.USER];
-    const resolvedUser = (cache && cache.user) || currentUser || null;
-    const uid = String(
-      (resolvedUser && resolvedUser.id) ||
-        (currentUser && currentUser.id) ||
-        parseJwtSub(res[STORAGE_KEYS.ACCESS_TOKEN]) ||
-        ""
+    const liveUid = String(
+      (currentUser && currentUser.id) || parseJwtSub(res[STORAGE_KEYS.ACCESS_TOKEN]) || ""
     ).trim();
-    if (!uid) return;
+    const resolvedUser = (cache && cache.user) || currentUser || null;
+    const cacheUid = String((resolvedUser && resolvedUser.id) || "").trim();
+    const uid = cacheUid || liveUid;
+    if (!uid || (liveUid && cacheUid && cacheUid !== liveUid)) return;
     await setStorage({
       [STORAGE_KEYS.WORKSPACE_CACHE]: {
         userId: uid,
@@ -298,6 +302,7 @@
   async function apiRequest(path, options = {}) {
     const startGen = _sessionGeneration;
     const session = await getSessionState();
+    let attemptedToken = session.accessToken;
     const backendUrl = normalizeBackendUrl(options.backendUrl || session.backendUrl);
     const headers = {
       ...(options.body ? { "Content-Type": "application/json" } : {}),
@@ -324,6 +329,7 @@
         if (nextToken && _sessionGeneration === startGen) {
           const currentAfterRefresh = await getSessionState();
           if (currentAfterRefresh.accessToken === nextToken) {
+            attemptedToken = nextToken;
             fetchOpts.headers = { ...headers, Authorization: `Bearer ${nextToken}` };
             response = await fetch(`${backendUrl}${path}`, fetchOpts);
           }
@@ -335,7 +341,7 @@
     if (!response.ok) {
       if (response.status === 401 && requireAuth && _sessionGeneration === startGen) {
         const latestSession = await getSessionState();
-        if (session.accessToken && latestSession.accessToken === session.accessToken && _sessionGeneration === startGen) {
+        if (attemptedToken && latestSession.accessToken === attemptedToken && _sessionGeneration === startGen) {
           await clearAuthSession();
         }
       }

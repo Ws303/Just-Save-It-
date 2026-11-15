@@ -827,8 +827,9 @@ export async function patchLinkItem(itemId: string, patch: Record<string, unknow
 }
 
 export async function deleteLinkItem(itemId: string): Promise<ApiResult<JsonRecord>> {
+  const startGen = getAuthGeneration();
   const res = await apiFetch<JsonRecord>(`/api/items/${encodeURIComponent(itemId)}`, { method: "DELETE" });
-  if (res.ok) {
+  if (res.ok && getAuthGeneration() === startGen) {
     await removeCachedLinkItem(itemId).catch(() => {});
   }
   return res;

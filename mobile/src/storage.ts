@@ -260,16 +260,20 @@ export async function saveSession(session: StoredSession): Promise<void> {
   const prevUid = resolveSessionUserId(prev) || _activeUserId;
   const prevHadSession = Boolean(prev?.access_token || prev?.refresh_token || prevUid);
   const nextUid = resolveSessionUserId(session);
+  const nextHasSession = Boolean(nextUid || session?.access_token);
   const fallbackBackend = await getStorageBackend();
 
-  if (
+  const shouldClearStorage =
     (prevHadSession && (!nextUid || nextUid !== prevUid)) ||
-    (!prevUid && nextUid && _activeUserId !== nextUid)
-  ) {
+    (!prevUid && nextUid && _activeUserId !== nextUid);
+  const shouldBumpGen = shouldClearStorage || (!prevHadSession && nextHasSession);
+  if (shouldClearStorage) {
     _authGeneration += 1;
     _memWorkspaceCache = null;
     await fallbackBackend.removeItem(KEYS.cache);
     await fallbackBackend.removeItem(KEYS.offlineQueue);
+  } else if (shouldBumpGen) {
+    _authGeneration += 1;
   }
   _activeUserId = nextUid;
 
@@ -277,6 +281,10 @@ export async function saveSession(session: StoredSession): Promise<void> {
   await secureBackend.setItem(KEYS.session, JSON.stringify(session));
   if (secureBackend !== fallbackBackend) {
     await fallbackBackend.removeItem(KEYS.session);
+  }
+  if (shouldBumpGen) {
+    // Re-bump after storage commit so any concurrent read during IPC fails its generation check.
+    _authGeneration += 1;
   }
 }
 
@@ -517,7 +525,12 @@ export async function saveCachedWorkspace(data: Omit<CachedWorkspace, "updated_a
   if (_authGeneration !== startGen) {
     return;
   }
-  const currentUid = String(data.user_id ?? (resolveSessionUserId(session) || _activeUserId)).trim();
+  const liveUid = String(resolveSessionUserId(session) || _activeUserId).trim();
+  const requestedUid = String(data.user_id ?? "").trim();
+  if (liveUid && requestedUid && requestedUid !== liveUid) {
+    return;
+  }
+  const currentUid = requestedUid || liveUid;
   const stamped: CachedWorkspace = {
     ...data,
     user_id: currentUid || undefined,
@@ -528,16 +541,31 @@ export async function saveCachedWorkspace(data: Omit<CachedWorkspace, "updated_a
 }
 
 export async function removeCachedLinkItem(itemId: string): Promise<void> {
+  const startGen = _authGeneration;
   const targetId = String(itemId || "").trim();
   if (!targetId) return;
+  const session = await loadSession().catch(() => null);
+  const currentUid = resolveSessionUserId(session) || _activeUserId;
+  if (_authGeneration !== startGen || !currentUid) {
+    return;
+  }
   if (_memWorkspaceCache && Array.isArray(_memWorkspaceCache.items)) {
-    _memWorkspaceCache = {
-      ..._memWorkspaceCache,
-      items: _memWorkspaceCache.items.filter((it) => it.id !== targetId),
-    };
+    const memUid = String(_memWorkspaceCache.user_id || "").trim();
+    if (memUid && memUid === currentUid) {
+      _memWorkspaceCache = {
+        ..._memWorkspaceCache,
+        items: _memWorkspaceCache.items.filter((it) => it.id !== targetId),
+      };
+    } else if (memUid && memUid !== currentUid) {
+      _memWorkspaceCache = null;
+    }
   }
   const existing = await readJson<CachedWorkspace | null>(KEYS.cache, null);
-  if (existing && Array.isArray(existing.items)) {
+  if (_authGeneration !== startGen) {
+    return;
+  }
+  const existingUid = String(existing?.user_id || "").trim();
+  if (existing && Array.isArray(existing.items) && existingUid === currentUid) {
     const next: CachedWorkspace = {
       ...existing,
       items: existing.items.filter((it) => it.id !== targetId),
