@@ -183,8 +183,15 @@ returns trigger
 language plpgsql
 set search_path = ''
 as $$
+declare
+  v_jwt_role text := coalesce(
+    nullif(current_setting('request.jwt.claim.role', true), ''),
+    nullif((nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role'), ''),
+    (select auth.role())
+  );
 begin
-  if current_setting('request.jwt.claim.role', true) is distinct from 'service_role' then
+  if current_user not in ('service_role', 'postgres', 'supabase_admin')
+     and coalesce(v_jwt_role, '') is distinct from 'service_role' then
     if tg_op = 'INSERT' then
       new.tier := 'free';
     elsif tg_op = 'UPDATE' and new.tier is distinct from old.tier then
@@ -205,8 +212,15 @@ returns trigger
 language plpgsql
 set search_path = ''
 as $$
+declare
+  v_jwt_role text := coalesce(
+    nullif(current_setting('request.jwt.claim.role', true), ''),
+    nullif((nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role'), ''),
+    (select auth.role())
+  );
 begin
-  if current_setting('request.jwt.claim.role', true) is distinct from 'service_role' then
+  if current_user not in ('service_role', 'postgres', 'supabase_admin')
+     and coalesce(v_jwt_role, '') is distinct from 'service_role' then
     if new.owner_id is distinct from old.owner_id then
       raise exception 'Item owner_id is immutable';
     end if;
