@@ -503,7 +503,7 @@ export async function refreshSession(): Promise<boolean> {
       const rawUser = data?.user as JsonRecord | undefined;
       const rawMeta = rawUser?.user_metadata as JsonRecord | undefined;
       if (getAuthGeneration() !== startGen) return false;
-      await saveSession(
+      const saved = await saveSession(
         {
           access_token: accessToken,
           refresh_token: typeof data?.refresh_token === "string" ? data.refresh_token : current.refresh_token,
@@ -518,7 +518,7 @@ export async function refreshSession(): Promise<boolean> {
         },
         { expectedGen: startGen },
       );
-      return true;
+      return saved;
     } catch {
       return false;
     }

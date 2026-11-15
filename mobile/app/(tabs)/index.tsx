@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -14,6 +14,7 @@ import {
   View,
 } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { runGuardedBusyAction } from "../../src/actionGuards";
 import {
   fetchWorkspace,
   flushOfflineQueue,
@@ -82,6 +83,7 @@ export default function HomeFeedScreen() {
   const [saveFolderId, setSaveFolderId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<WorkflowStatus>("inbox");
   const [saving, setSaving] = useState(false);
+  const saveSeqRef = useRef(0);
 
   const loadAll = useCallback(async () => {
     const startGen = getAuthGeneration();
@@ -174,38 +176,37 @@ export default function HomeFeedScreen() {
       Alert.alert("URL ไม่ถูกต้อง", "กรุณาระบุลิงก์ที่ขึ้นต้นด้วย http:// หรือ https://");
       return;
     }
-    const startGen = getAuthGeneration();
-    setSaving(true);
-    const parsedTags = saveTags
-      .split(/[\s,]+/)
-      .map((t) => t.replace(/^#/, "").trim())
-      .filter(Boolean);
+    await runGuardedBusyAction(saveSeqRef, setSaving, async (isStale) => {
+      const parsedTags = saveTags
+        .split(/[\s,]+/)
+        .map((t) => t.replace(/^#/, "").trim())
+        .filter(Boolean);
 
-    const res = await saveLinkItem({
-      url: cleanUrl,
-      title: saveTitle.trim() || undefined,
-      note: saveNote.trim() || undefined,
-      tags: parsedTags.length ? parsedTags : undefined,
-      folder_id: saveFolderId,
-      status: saveStatus,
+      const res = await saveLinkItem({
+        url: cleanUrl,
+        title: saveTitle.trim() || undefined,
+        note: saveNote.trim() || undefined,
+        tags: parsedTags.length ? parsedTags : undefined,
+        folder_id: saveFolderId,
+        status: saveStatus,
+      });
+      if (isStale()) return;
+      if (!res.ok) {
+        Alert.alert("บันทึกไม่สำเร็จ", res.error || "กรุณาลองใหม่อีกครั้ง");
+        return;
+      }
+      setModalOpen(false);
+      setSaveUrl("");
+      setSaveTitle("");
+      setSaveNote("");
+      setSaveTags("");
+      setSaveFolderId(null);
+      setSaveStatus("inbox");
+      if (res.queued) {
+        Alert.alert("บันทึกเข้า Offline Queue แล้ว", "ระบบจะอัปโหลดขึ้น Cloud อัตโนมัติเมื่อออนไลน์");
+      }
+      void loadAll();
     });
-    if (getAuthGeneration() !== startGen) return;
-    setSaving(false);
-    if (!res.ok) {
-      Alert.alert("บันทึกไม่สำเร็จ", res.error || "กรุณาลองใหม่อีกครั้ง");
-      return;
-    }
-    setModalOpen(false);
-    setSaveUrl("");
-    setSaveTitle("");
-    setSaveNote("");
-    setSaveTags("");
-    setSaveFolderId(null);
-    setSaveStatus("inbox");
-    if (res.queued) {
-      Alert.alert("บันทึกเข้า Offline Queue แล้ว", "ระบบจะอัปโหลดขึ้น Cloud อัตโนมัติเมื่อออนไลน์");
-    }
-    void loadAll();
   }
 
   async function toggleFavorite(item: MobileLinkItem) {

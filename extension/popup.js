@@ -1532,14 +1532,25 @@
       const startGen = getSessionGen();
       const startSess = await api.getSessionState();
       if (isSessionStale(startGen) || !startSess.accessToken) return;
+      const startUid = String(
+        (startSess.user && startSess.user.id) || api.parseJwtSub(startSess.accessToken) || "",
+      ).trim();
       try {
-        await api.apiRequest("/api/auth/logout", { method: "POST" });
+        await api.apiRequest("/api/auth/logout", { method: "POST", skipRefresh: true });
       } catch (_err) {
         // Always clear local session unless replaced mid-flight
       }
       if (isSessionStale(startGen)) return;
       const latestSess = await api.getSessionState();
-      if (latestSess.accessToken && latestSess.accessToken !== startSess.accessToken) return;
+      const latestUid = String(
+        (latestSess.user && latestSess.user.id) || api.parseJwtSub(latestSess.accessToken) || "",
+      ).trim();
+      const switchedUser = Boolean(
+        (startUid && latestUid && latestUid !== startUid) ||
+          (!startUid && latestUid) ||
+          (!startUid && !latestUid && latestSess.accessToken && latestSess.accessToken !== startSess.accessToken),
+      );
+      if (switchedUser) return;
       await api.clearAuthSession();
       const postClearSess = await api.getSessionState();
       if (postClearSess.accessToken) return;

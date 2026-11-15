@@ -2068,4 +2068,33 @@ test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quic
   assert.equal(storeMap.get("jsi_access_token"), "tok-user-b9", "logoutBtn must not wipe cross-context User B session");
   assert.equal(hostLogout.getEl("authView").classList.contains("hidden"), true);
   assert.equal(hostLogout.getEl("previewSourceBadge").textContent, "กำลังพรีวิว...", "Stale preview error must not clear badge across session change");
+
+  // 6. Cycle 10 [HIGH-1]: logoutBtn on 401/expired token uses skipRefresh and still logs out even on same-user token rotation
+  storeMap.clear();
+  let refreshCalledOnLogout = false;
+  let resolveRotatedLogout = null;
+  const hostLogoutSameUser = createPopup401Host(async (url) => {
+    const u = String(url);
+    if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+    if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "u-rot", email: "rot@t.com" } });
+    if (u.endsWith("/api/auth/refresh")) {
+      refreshCalledOnLogout = true;
+      return mkResp(200, { access_token: "tok-refreshed-same-user", refresh_token: "ref-rot-2", user: { id: "u-rot", email: "rot@t.com" } });
+    }
+    if (u.endsWith("/api/auth/logout")) {
+      return new Promise((r) => { resolveRotatedLogout = r; });
+    }
+    return mkResp(200, {});
+  });
+  await hostLogoutSameUser.initAuthed("u-rot");
+  storeMap.set("jsi_refresh_token", "ref-rot-1");
+  const sameUserLogoutTask = hostLogoutSameUser.getEl("logoutBtn").dispatch("click");
+  await new Promise((r) => setTimeout(r, 15));
+  // Concurrent same-user token rotation (e.g., background sync alarm) must NOT block User A's own logout
+  storeMap.set("jsi_access_token", "tok-rotated-same-user-bg");
+  resolveRotatedLogout(mkResp(401, { detail: "expired" }));
+  await sameUserLogoutTask;
+  assert.equal(refreshCalledOnLogout, false, "logoutBtn must pass skipRefresh so /api/auth/logout 401 does not trigger refresh");
+  assert.equal(storeMap.get("jsi_access_token"), undefined, "Same-user token rotation or 401 must still clear session on logout");
+  assert.equal(hostLogoutSameUser.getEl("authView").classList.contains("hidden"), false, "authView must open after logout");
 });

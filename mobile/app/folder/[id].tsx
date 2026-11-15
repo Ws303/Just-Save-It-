@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -11,6 +11,7 @@ import {
   View,
 } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { runGuardedBusyAction } from "../../src/actionGuards";
 import { createFolderInvite, fetchWorkspace } from "../../src/api";
 import {
   getAuthGeneration,
@@ -40,6 +41,7 @@ export default function FolderDetailScreen() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState<boolean>(() => !initialCache);
   const [inviting, setInviting] = useState(false);
+  const actionSeqRef = useRef(0);
 
   const loadFolder = useCallback(async () => {
     const startGen = getAuthGeneration();
@@ -92,19 +94,18 @@ export default function FolderDetailScreen() {
 
   async function handleShareInvite() {
     if (!id || isVirtualInbox) return;
-    const startGen = getAuthGeneration();
-    setInviting(true);
-    const res = await createFolderInvite(id, "editor");
-    if (getAuthGeneration() !== startGen) return;
-    setInviting(false);
-    const inviteUrl = typeof res.data?.invite_url === "string" ? res.data.invite_url : "";
-    if (!res.ok || !inviteUrl) {
-      Alert.alert("สร้างลิงก์เชิญไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-      return;
-    }
-    await Share.share({
-      title: `เชิญเข้าร่วมโฟลเดอร์ ${folder?.name || ""}`,
-      message: `เข้าร่วมโฟลเดอร์ "${folder?.name || ""}" บน Sharely ได้ที่: ${inviteUrl}`,
+    await runGuardedBusyAction(actionSeqRef, setInviting, async (isStale) => {
+      const res = await createFolderInvite(id, "editor");
+      if (isStale()) return;
+      const inviteUrl = typeof res.data?.invite_url === "string" ? res.data.invite_url : "";
+      if (!res.ok || !inviteUrl) {
+        Alert.alert("สร้างลิงก์เชิญไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+        return;
+      }
+      await Share.share({
+        title: `เชิญเข้าร่วมโฟลเดอร์ ${folder?.name || ""}`,
+        message: `เข้าร่วมโฟลเดอร์ "${folder?.name || ""}" บน Sharely ได้ที่: ${inviteUrl}`,
+      });
     });
   }
 

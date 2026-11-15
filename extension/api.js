@@ -368,7 +368,13 @@
       throw networkErr;
     }
 
-    if (response.status === 401 && requireAuth && session.refreshToken && _sessionGeneration === startGen) {
+    if (
+      response.status === 401 &&
+      requireAuth &&
+      !options.skipRefresh &&
+      session.refreshToken &&
+      _sessionGeneration === startGen
+    ) {
       const currentBeforeRefresh = await getSessionState();
       if (
         !hasCrossContextSessionChange(startGen, startUid, startHadAuth, currentBeforeRefresh) &&
@@ -727,6 +733,7 @@
     isLocalBackendUrl,
     normalizeBackendUrl,
     getSessionState,
+    parseJwtSub,
     saveAuthSession,
     clearAuthSession,
     getSessionGeneration: () => _sessionGeneration,

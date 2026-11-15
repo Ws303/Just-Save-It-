@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -12,6 +12,11 @@ import {
   View,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
+import {
+  isPostClearSafeToNavigate,
+  runGuardedBusyAction,
+  shouldNavigateAfterLogout,
+} from "../../src/actionGuards";
 import {
   createMcpToken,
   deleteMyAccount,
@@ -61,6 +66,7 @@ export default function ProfileScreen() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deletePhrase, setDeletePhrase] = useState("");
   const [busyAction, setBusyAction] = useState("");
+  const actionSeqRef = useRef(0);
 
   const loadProfile = useCallback(async () => {
     const startGen = getAuthGeneration();
@@ -112,64 +118,72 @@ export default function ProfileScreen() {
   }
 
   async function handleEnablePush() {
-    const startGen = getAuthGeneration();
-    setBusyAction("push");
-    const reg = await registerMobilePushToken();
-    if (getAuthGeneration() !== startGen) return;
-    if (!reg.granted) {
-      setBusyAction("");
-      setPushStatus("ไม่ได้รับสิทธิ์แจ้งเตือนจากระบบ");
-      Alert.alert("แจ้งเตือนถูกปิดไว้", "กรุณาอนุญาตการแจ้งเตือนในการตั้งค่าโทรศัพท์");
-      return;
-    }
-    const apiRes = await registerPushDevice({
-      platform: reg.platform,
-      delivery_mode: reg.delivery_mode,
-      push_token: reg.push_token,
-    });
-    if (getAuthGeneration() !== startGen) return;
-    const ws = await fetchWorkspace();
-    if (getAuthGeneration() !== startGen) return;
-    const synced = await syncLocalRemindersWithOs(ws.reminders);
-    if (getAuthGeneration() !== startGen) return;
-    setBusyAction("");
-    if (apiRes.ok) {
-      setPushStatus(
-        reg.delivery_mode === "remote"
-          ? `เชื่อมต่อ Remote Push (${reg.platform}) แล้ว`
-          : `เชื่อมต่อ Local Sync (iOS/Fallback • ซิงก์ ${synced} รายการ)`,
-      );
-    } else {
-      setPushStatus(`ซิงก์ออฟไลน์แล้ว (${synced} รายการ)`);
-    }
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (busy) => setBusyAction(busy ? "push" : ""),
+      async (isStale) => {
+        const reg = await registerMobilePushToken();
+        if (isStale()) return;
+        if (!reg.granted) {
+          setPushStatus("ไม่ได้รับสิทธิ์แจ้งเตือนจากระบบ");
+          Alert.alert("แจ้งเตือนถูกปิดไว้", "กรุณาอนุญาตการแจ้งเตือนในการตั้งค่าโทรศัพท์");
+          return;
+        }
+        const apiRes = await registerPushDevice({
+          platform: reg.platform,
+          delivery_mode: reg.delivery_mode,
+          push_token: reg.push_token,
+        });
+        if (isStale()) return;
+        const ws = await fetchWorkspace();
+        if (isStale()) return;
+        const synced = await syncLocalRemindersWithOs(ws.reminders);
+        if (isStale()) return;
+        if (apiRes.ok) {
+          setPushStatus(
+            reg.delivery_mode === "remote"
+              ? `เชื่อมต่อ Remote Push (${reg.platform}) แล้ว`
+              : `เชื่อมต่อ Local Sync (iOS/Fallback • ซิงก์ ${synced} รายการ)`,
+          );
+        } else {
+          setPushStatus(`ซิงก์ออฟไลน์แล้ว (${synced} รายการ)`);
+        }
+      },
+    );
   }
 
   async function handleFlushQueue() {
-    const startGen = getAuthGeneration();
-    setBusyAction("queue");
-    const res = await flushOfflineQueue();
-    if (getAuthGeneration() !== startGen) return;
-    setQueueCount(res.remaining);
-    setBusyAction("");
-    Alert.alert("ซิงก์คิวออฟไลน์", `อัปโหลดสำเร็จ ${res.flushed} รายการ (เหลือ ${res.remaining})`);
-    void loadProfile();
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (busy) => setBusyAction(busy ? "queue" : ""),
+      async (isStale) => {
+        const res = await flushOfflineQueue();
+        if (isStale()) return;
+        setQueueCount(res.remaining);
+        Alert.alert("ซิงก์คิวออฟไลน์", `อัปโหลดสำเร็จ ${res.flushed} รายการ (เหลือ ${res.remaining})`);
+        void loadProfile();
+      },
+    );
   }
 
   async function handleCreateToken() {
-    const startGen = getAuthGeneration();
-    setBusyAction("token");
-    const res = await createMcpToken(newTokenName || "Expo Mobile Token");
-    if (getAuthGeneration() !== startGen) return;
-    setBusyAction("");
-    if (!res.ok || !res.data) {
-      Alert.alert("สร้าง Token ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-      return;
-    }
-    setNewTokenName("");
-    if (res.data.token) {
-      setLatestRawToken(res.data.token);
-    }
-    void loadProfile();
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (busy) => setBusyAction(busy ? "token" : ""),
+      async (isStale) => {
+        const res = await createMcpToken(newTokenName || "Expo Mobile Token");
+        if (isStale()) return;
+        if (!res.ok || !res.data) {
+          Alert.alert("สร้าง Token ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+          return;
+        }
+        setNewTokenName("");
+        if (res.data.token) {
+          setLatestRawToken(res.data.token);
+        }
+        void loadProfile();
+      },
+    );
   }
 
   async function handleRevokeToken(id: string) {
@@ -182,11 +196,17 @@ export default function ProfileScreen() {
   }
 
   async function handleExportJson() {
-    const startGen = getAuthGeneration();
-    setBusyAction("export");
-    const res = await exportWorkspaceJson();
-    if (getAuthGeneration() !== startGen) return;
-    setBusyAction("");
+    let savedStartGen = getAuthGeneration();
+    const guarded = await runGuardedBusyAction(
+      actionSeqRef,
+      (busy) => setBusyAction(busy ? "export" : ""),
+      async (_isStale, startGen) => {
+        savedStartGen = startGen;
+        return exportWorkspaceJson();
+      },
+    );
+    if (guarded.aborted || !guarded.result) return;
+    const res = guarded.result;
     if (!res.ok || !res.data) {
       Alert.alert("ส่งออกข้อมูลไม่สำเร็จ", res.error || "กรุณาลองใหม่");
       return;
@@ -201,7 +221,7 @@ export default function ProfileScreen() {
           {
             text: "แชร์ฉบับย่อ",
             onPress: () => {
-              if (getAuthGeneration() !== startGen) return;
+              if (getAuthGeneration() !== savedStartGen) return;
               void Share.share({
                 title: "just-save-it-export.json",
                 message: bounded.jsonString,
@@ -212,7 +232,7 @@ export default function ProfileScreen() {
       );
       return;
     }
-    if (getAuthGeneration() !== startGen) return;
+    if (getAuthGeneration() !== savedStartGen) return;
     await Share.share({
       title: "just-save-it-export.json",
       message: bounded.jsonString,
@@ -225,25 +245,27 @@ export default function ProfileScreen() {
       return;
     }
     const startGen = getAuthGeneration();
+    const seq = (actionSeqRef.current += 1);
     setBusyAction("delete");
-    const res = await deleteMyAccount();
-    if (!res.ok) {
-      if (getAuthGeneration() !== startGen) return;
-      setBusyAction("");
-      Alert.alert("ลบบัญชีไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-      return;
+    try {
+      const res = await deleteMyAccount();
+      if (!res.ok) {
+        if (getAuthGeneration() !== startGen) return;
+        Alert.alert("ลบบัญชีไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+        return;
+      }
+      if (!(await isPostClearSafeToNavigate())) return;
+      setDeleteOpen(false);
+      router.replace("/login");
+    } finally {
+      if (actionSeqRef.current === seq) {
+        setBusyAction("");
+      }
     }
-    const latestSess = await loadSession();
-    if (latestSess?.access_token) return;
-    setBusyAction("");
-    setDeleteOpen(false);
-    router.replace("/login");
   }
 
   async function handleLogout() {
-    await logoutAccount();
-    const latestSess = await loadSession();
-    if (latestSess?.access_token) return;
+    if (!(await shouldNavigateAfterLogout(logoutAccount))) return;
     router.replace("/login");
   }
 

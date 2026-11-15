@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -12,6 +12,7 @@ import {
   View,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
+import { runGuardedBusyAction } from "../../src/actionGuards";
 import { createFolder, fetchWorkspace } from "../../src/api";
 import {
   getAuthGeneration,
@@ -36,6 +37,7 @@ export default function FoldersScreen() {
   const [newName, setNewName] = useState("");
   const [newIcon, setNewIcon] = useState("📁");
   const [creating, setCreating] = useState(false);
+  const actionSeqRef = useRef(0);
 
   const loadData = useCallback(async () => {
     const startGen = getAuthGeneration();
@@ -79,19 +81,18 @@ export default function FoldersScreen() {
       Alert.alert("กรุณาระบุชื่อโฟลเดอร์");
       return;
     }
-    const startGen = getAuthGeneration();
-    setCreating(true);
-    const res = await createFolder(newName, newIcon);
-    if (getAuthGeneration() !== startGen) return;
-    setCreating(false);
-    if (!res.ok) {
-      Alert.alert("สร้างโฟลเดอร์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-      return;
-    }
-    setNewName("");
-    setNewIcon("📁");
-    setModalOpen(false);
-    void loadData();
+    await runGuardedBusyAction(actionSeqRef, setCreating, async (isStale) => {
+      const res = await createFolder(newName, newIcon);
+      if (isStale()) return;
+      if (!res.ok) {
+        Alert.alert("สร้างโฟลเดอร์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+        return;
+      }
+      setNewName("");
+      setNewIcon("📁");
+      setModalOpen(false);
+      void loadData();
+    });
   }
 
   const unfolderedCount = items.filter((it) => !it.folder_id).length;

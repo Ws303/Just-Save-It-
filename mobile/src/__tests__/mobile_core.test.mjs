@@ -55,8 +55,15 @@ const {
   exchangeOAuthCode,
   fetchWorkspace,
   prepareGoogleOAuthUrl,
+  refreshSession,
   sha256Base64Url,
 } = await import("../api.ts");
+
+const {
+  isPostClearSafeToNavigate,
+  runGuardedBusyAction,
+  shouldNavigateAfterLogout,
+} = await import("../actionGuards.ts");
 
 test("planIosLocalNotifications enforces <= 64 cap and ascending sort", () => {
   const baseNow = Date.parse("2026-11-15T12:00:00Z");
@@ -1148,7 +1155,7 @@ test("Cycle 9 [HIGH-1, MED-1, MED-2, MED-3, MED-4]: partial 401 fallback, cursor
     await logoutTask;
     assert.equal((await loadSession())?.user?.id, "mob-c9-log-b", "logoutAccount must preserve User B signed in mid-flight");
 
-    // 4. MED-3: saveSession({ expectedGen }) concurrent with clearSession() never resurrects cleared session
+    // 4. MED-3 / Cycle 10 [MED-1]: saveSession({ expectedGen }) handles !shouldBumpGen AND shouldBumpGen paths cleanly without self-aborting, while failing closed on clearSession()
     await saveSession({
       access_token: makeFakeJwtC9("mob-c9-res"),
       refresh_token: "r-res",
@@ -1164,32 +1171,155 @@ test("Cycle 9 [HIGH-1, MED-1, MED-2, MED-3, MED-4]: partial 401 fallback, cursor
       { expectedGen: refreshGen },
     );
     await clearSession();
-    await pendingRefreshSave;
+    const abortedSave = await pendingRefreshSave;
+    assert.equal(abortedSave, false, "saveSession aborted by clearSession must return false");
     assert.equal(await loadSession(), null, "saveSession with stale expectedGen must never resurrect cleared session");
 
-    // 5. HIGH-1: All action handlers across the 5 mobile screens enforce authGeneration/session guards
+    // 4b. shouldBumpGen=true (opaque session upgrading to decoded UID) succeeds when expectedGen matches
+    await saveSession({ access_token: "opaque-old", refresh_token: "r-opq", user: null });
+    const opqGen = getAuthGeneration();
+    const upgradedOk = await saveSession(
+      {
+        access_token: makeFakeJwtC9("mob-c10-upg"),
+        refresh_token: "r-upg",
+        user: { id: "mob-c10-upg", email: "upg@mob.test" },
+      },
+      { expectedGen: opqGen },
+    );
+    assert.equal(upgradedOk, true, "saveSession({ expectedGen }) with shouldBumpGen must commit cleanly instead of self-aborting");
+    assert.equal((await loadSession())?.user?.id, "mob-c10-upg");
+
+    // 4c. refreshSession returns false when saveSession aborts due to concurrent clearSession()
+    await clearSession();
+    await saveSession({
+      access_token: makeFakeJwtC9("mob-c10-ref"),
+      refresh_token: "r-ref-live",
+      user: { id: "mob-c10-ref", email: "ref@mob.test" },
+    });
+    let resolveSlowRefresh = null;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("/auth/v1/token?grant_type=refresh_token")) {
+        return new Promise((r) => { resolveSlowRefresh = r; });
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    };
+    const refreshTask = refreshSession();
+    await new Promise((r) => setTimeout(r, 10));
+    await clearSession();
+    resolveSlowRefresh({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        access_token: makeFakeJwtC9("mob-c10-ref"),
+        refresh_token: "r-ref-next",
+        user: { id: "mob-c10-ref", email: "ref@mob.test" },
+      }),
+    });
+    assert.equal(await refreshTask, false, "refreshSession invalidated by concurrent clearSession must return false");
+
+    // 5. Cycle 10 [MED-2, MED-3, LOW-1]: Real runtime tests for runGuardedBusyAction & shouldNavigateAfterLogout
+    await saveSession({
+      access_token: makeFakeJwtC9("mob-guard-a"),
+      refresh_token: "r-ga",
+      user: { id: "mob-guard-a", email: "ga@mob.test" },
+    });
+    const seqRef = { current: 0 };
+    let busyState = false;
+    let mutatedStale = false;
+    let resolveActionA = null;
+    const actionATask = runGuardedBusyAction(
+      seqRef,
+      (b) => { busyState = b; },
+      async (isStale) => {
+        await new Promise((r) => { resolveActionA = r; });
+        if (isStale()) return "ignored";
+        mutatedStale = true;
+        return "done";
+      },
+    );
+    assert.equal(busyState, true);
+    await saveSession({
+      access_token: makeFakeJwtC9("mob-guard-b"),
+      refresh_token: "r-gb",
+      user: { id: "mob-guard-b", email: "gb@mob.test" },
+    });
+    resolveActionA();
+    const actionARes = await actionATask;
+    assert.equal(actionARes.aborted, true, "Auth switch mid-action must mark guarded action aborted");
+    assert.equal(mutatedStale, false, "Stale guarded action must not mutate post-await state");
+    assert.equal(busyState, false, "Stale guarded action must still release UI busy state in finally");
+
+    // Overlapping action B keeps busy=true even when older stale action settles first
+    let resolveOld = null;
+    let resolveNew = null;
+    const oldTask = runGuardedBusyAction(seqRef, (b) => { busyState = b; }, () => new Promise((r) => { resolveOld = r; }));
+    const newTask = runGuardedBusyAction(seqRef, (b) => { busyState = b; }, () => new Promise((r) => { resolveNew = r; }));
+    resolveOld();
+    await oldTask;
+    assert.equal(busyState, true, "Older settling action must not reset newer action's busy state");
+    resolveNew();
+    await newTask;
+    assert.equal(busyState, false, "Latest action completion resets busy state cleanly");
+
+    // Stale thrown error is suppressed cleanly and unlocks busy; active error rethrows and unlocks busy
+    let rejectStale = null;
+    const staleErrTask = runGuardedBusyAction(seqRef, (b) => { busyState = b; }, () => new Promise((_, rej) => { rejectStale = rej; }));
+    await clearSession();
+    rejectStale(new Error("stale err"));
+    const staleErrRes = await staleErrTask;
+    assert.equal(staleErrRes.aborted, true);
+    assert.equal(busyState, false);
+    await assert.rejects(
+      runGuardedBusyAction(seqRef, (b) => { busyState = b; }, async () => { throw new Error("live err"); }),
+      /live err/,
+    );
+    assert.equal(busyState, false);
+
+    // shouldNavigateAfterLogout blocks /login navigation if new user signs in during async loadSession (LOW-1)
+    let resolveDelayedRead = null;
+    const blockedNav = shouldNavigateAfterLogout(
+      async () => { await clearSession(); },
+      getAuthGeneration,
+      () => new Promise((r) => { resolveDelayedRead = r; }),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    await saveSession({
+      access_token: makeFakeJwtC9("mob-c10-late"),
+      refresh_token: "r-late",
+      user: { id: "mob-c10-late", email: "late@mob.test" },
+    });
+    resolveDelayedRead(null);
+    assert.equal(await blockedNav, false, "Late sign-in during async loadSession must suppress /login navigation");
+    assert.equal(
+      await shouldNavigateAfterLogout(async () => { await clearSession(); }, getAuthGeneration, loadSession),
+      true,
+      "Normal logout with no concurrent login must allow /login navigation",
+    );
+
+    // 6. HIGH-1 wiring checks: all 5 mobile screens bind actionGuards / gen guards cleanly
     const fs = await import("node:fs");
     const path = await import("node:path");
     const { fileURLToPath } = await import("node:url");
     const here = path.dirname(fileURLToPath(import.meta.url));
     const appDir = path.resolve(here, "../../app");
     const actionChecks = [
-      ["(tabs)/profile.tsx", /async function handleEnablePush[\s\S]{0,900}getAuthGeneration\(\) !== startGen/],
-      ["(tabs)/profile.tsx", /async function handleFlushQueue[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
-      ["(tabs)/profile.tsx", /async function handleCreateToken[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/profile.tsx", /async function handleEnablePush[\s\S]{0,200}runGuardedBusyAction/],
+      ["(tabs)/profile.tsx", /async function handleFlushQueue[\s\S]{0,200}runGuardedBusyAction/],
+      ["(tabs)/profile.tsx", /async function handleCreateToken[\s\S]{0,200}runGuardedBusyAction/],
       ["(tabs)/profile.tsx", /async function handleRevokeToken[\s\S]{0,300}getAuthGeneration\(\) !== startGen/],
-      ["(tabs)/profile.tsx", /async function handleExportJson[\s\S]{0,900}getAuthGeneration\(\) !== startGen/],
-      ["(tabs)/profile.tsx", /async function handleDeleteAccount[\s\S]{0,700}loadSession\(\)/],
-      ["(tabs)/profile.tsx", /async function handleLogout[\s\S]{0,300}loadSession\(\)/],
-      ["item/[id].tsx", /async function handleRefreshPreview[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
-      ["item/[id].tsx", /async function handleAiSummarize[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
-      ["item/[id].tsx", /async function handleSaveEdits[\s\S]{0,600}getAuthGeneration\(\) !== startGen/],
-      ["item/[id].tsx", /async function handleQuickReminder[\s\S]{0,900}getAuthGeneration\(\) !== startGen/],
-      ["item/[id].tsx", /async function handleClearReminder[\s\S]{0,350}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/profile.tsx", /async function handleExportJson[\s\S]{0,250}runGuardedBusyAction/],
+      ["(tabs)/profile.tsx", /async function handleDeleteAccount[\s\S]{0,700}isPostClearSafeToNavigate/],
+      ["(tabs)/profile.tsx", /async function handleLogout[\s\S]{0,250}shouldNavigateAfterLogout/],
+      ["item/[id].tsx", /async function handleStatusChange[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
+      ["item/[id].tsx", /async function handleRefreshPreview[\s\S]{0,200}runGuardedBusyAction/],
+      ["item/[id].tsx", /async function handleAiSummarize[\s\S]{0,200}runGuardedBusyAction/],
+      ["item/[id].tsx", /async function handleSaveEdits[\s\S]{0,200}runGuardedBusyAction/],
+      ["item/[id].tsx", /async function handleQuickReminder[\s\S]{0,200}runGuardedBusyAction/],
+      ["item/[id].tsx", /async function handleClearReminder[\s\S]{0,200}runGuardedBusyAction/],
       ["item/[id].tsx", /function confirmDelete[\s\S]{0,500}getAuthGeneration\(\) !== modalGen/],
-      ["(tabs)/folders.tsx", /async function handleCreate[\s\S]{0,500}getAuthGeneration\(\) !== startGen/],
-      ["folder/[id].tsx", /async function handleShareInvite[\s\S]{0,500}getAuthGeneration\(\) !== startGen/],
-      ["(tabs)/index.tsx", /async function handleQuickSave[\s\S]{0,800}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/folders.tsx", /async function handleCreate[\s\S]{0,250}runGuardedBusyAction/],
+      ["folder/[id].tsx", /async function handleShareInvite[\s\S]{0,250}runGuardedBusyAction/],
+      ["(tabs)/index.tsx", /async function handleQuickSave[\s\S]{0,300}runGuardedBusyAction/],
       ["(tabs)/index.tsx", /async function toggleFavorite[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
     ];
     for (const [rel, pattern] of actionChecks) {

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -12,6 +12,7 @@ import {
   View,
 } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { runGuardedBusyAction } from "../../src/actionGuards";
 import {
   apiFetch,
   deleteLinkItem,
@@ -46,6 +47,7 @@ export default function ItemDetailScreen() {
   const [aiSummary, setAiSummary] = useState(cachedMatch?.ai_summary || "");
   const [loading, setLoading] = useState(!cachedMatch);
   const [busy, setBusy] = useState("");
+  const actionSeqRef = useRef(0);
 
   const loadItem = useCallback(async () => {
     if (!id) return;
@@ -72,95 +74,123 @@ export default function ItemDetailScreen() {
 
   async function handleStatusChange(nextStatus: WorkflowStatus) {
     if (!item) return;
+    const prevItem = item;
+    const startGen = getAuthGeneration();
     setItem({ ...item, status: nextStatus });
-    await patchLinkItem(item.id, { status: nextStatus });
+    const res = await patchLinkItem(item.id, { status: nextStatus });
+    if (getAuthGeneration() !== startGen) return;
+    if (!res.ok) {
+      setItem(prevItem);
+    }
   }
 
   async function handleRefreshPreview() {
     if (!item) return;
-    const startGen = getAuthGeneration();
-    setBusy("preview");
-    const res = await refreshLinkPreview(item.id);
-    if (getAuthGeneration() !== startGen) return;
-    setBusy("");
-    if (res.ok && res.data) {
-      const nextItem = (res.data as { item?: MobileLinkItem })?.item ?? res.data;
-      setItem(nextItem);
-      Alert.alert("รีเฟรชพรีวิวสำเร็จ");
-    } else {
-      Alert.alert("รีเฟรชพรีวิวไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-    }
+    const targetId = item.id;
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (isBusy) => setBusy(isBusy ? "preview" : ""),
+      async (isStale) => {
+        const res = await refreshLinkPreview(targetId);
+        if (isStale()) return;
+        if (res.ok && res.data) {
+          const nextItem = (res.data as { item?: MobileLinkItem })?.item ?? res.data;
+          setItem(nextItem);
+          Alert.alert("รีเฟรชพรีวิวสำเร็จ");
+        } else {
+          Alert.alert("รีเฟรชพรีวิวไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+        }
+      },
+    );
   }
 
   async function handleAiSummarize() {
     if (!item) return;
-    const startGen = getAuthGeneration();
-    setBusy("ai");
-    const res = await summarizeLinkItem(item.id, false);
-    if (getAuthGeneration() !== startGen) return;
-    setBusy("");
-    if (res.ok && res.data) {
-      const summary = typeof res.data.summary_th === "string" ? res.data.summary_th : "";
-      if (summary) setAiSummary(summary);
-    } else {
-      Alert.alert("สรุปด้วย AI ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-    }
+    const targetId = item.id;
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (isBusy) => setBusy(isBusy ? "ai" : ""),
+      async (isStale) => {
+        const res = await summarizeLinkItem(targetId, false);
+        if (isStale()) return;
+        if (res.ok && res.data) {
+          const summary = typeof res.data.summary_th === "string" ? res.data.summary_th : "";
+          if (summary) setAiSummary(summary);
+        } else {
+          Alert.alert("สรุปด้วย AI ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+        }
+      },
+    );
   }
 
   async function handleSaveEdits() {
     if (!item) return;
-    const startGen = getAuthGeneration();
-    setBusy("save");
-    const parsedTags = tagsText
-      .split(/[\s,]+/)
-      .map((t) => t.replace(/^#/, "").trim())
-      .filter(Boolean);
-    const res = await patchLinkItem(item.id, {
-      note: note.trim(),
-      tags: parsedTags,
-    });
-    if (getAuthGeneration() !== startGen) return;
-    setBusy("");
-    if (res.ok) {
-      Alert.alert("บันทึกการแก้ไขแล้ว");
-      void loadItem();
-    } else {
-      Alert.alert("บันทึกไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-    }
+    const targetId = item.id;
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (isBusy) => setBusy(isBusy ? "save" : ""),
+      async (isStale) => {
+        const parsedTags = tagsText
+          .split(/[\s,]+/)
+          .map((t) => t.replace(/^#/, "").trim())
+          .filter(Boolean);
+        const res = await patchLinkItem(targetId, {
+          note: note.trim(),
+          tags: parsedTags,
+        });
+        if (isStale()) return;
+        if (res.ok) {
+          Alert.alert("บันทึกการแก้ไขแล้ว");
+          void loadItem();
+        } else {
+          Alert.alert("บันทึกไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+        }
+      },
+    );
   }
 
   async function handleQuickReminder(hoursAhead: number, repeatDays: number | null) {
     if (!item) return;
-    const startGen = getAuthGeneration();
-    setBusy("rem");
-    const dt = new Date(Date.now() + hoursAhead * 3600 * 1000);
-    const iso = dt.toISOString();
-    const res = await saveReminder(item.id, {
-      schedule_type: repeatDays ? "every_n_days" : "once",
-      remind_at: iso,
-      repeat_every_days: repeatDays,
-    });
-    if (getAuthGeneration() !== startGen) return;
-    const remRes = await apiFetch<{ reminders?: MobileLinkItem[] }>("/api/reminders");
-    if (getAuthGeneration() !== startGen) return;
-    if (Array.isArray(remRes.data?.reminders)) {
-      await syncLocalRemindersWithOs(remRes.data.reminders);
-    }
-    if (getAuthGeneration() !== startGen) return;
-    setBusy("");
-    if (res.ok) {
-      Alert.alert("ตั้งเวลาเตือนความจำแล้ว", `แจ้งเตือนเมื่อ ${dt.toLocaleString("th-TH")}`);
-    } else {
-      Alert.alert("ตั้งเตือนไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-    }
+    const targetId = item.id;
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (isBusy) => setBusy(isBusy ? "rem" : ""),
+      async (isStale) => {
+        const dt = new Date(Date.now() + hoursAhead * 3600 * 1000);
+        const iso = dt.toISOString();
+        const res = await saveReminder(targetId, {
+          schedule_type: repeatDays ? "every_n_days" : "once",
+          remind_at: iso,
+          repeat_every_days: repeatDays,
+        });
+        if (isStale()) return;
+        const remRes = await apiFetch<{ reminders?: MobileLinkItem[] }>("/api/reminders");
+        if (isStale()) return;
+        if (Array.isArray(remRes.data?.reminders)) {
+          await syncLocalRemindersWithOs(remRes.data.reminders);
+        }
+        if (isStale()) return;
+        if (res.ok) {
+          Alert.alert("ตั้งเวลาเตือนความจำแล้ว", `แจ้งเตือนเมื่อ ${dt.toLocaleString("th-TH")}`);
+        } else {
+          Alert.alert("ตั้งเตือนไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+        }
+      },
+    );
   }
 
   async function handleClearReminder() {
     if (!item) return;
-    const startGen = getAuthGeneration();
-    await deleteReminder(item.id);
-    if (getAuthGeneration() !== startGen) return;
-    Alert.alert("ลบการแจ้งเตือนแล้ว");
+    const targetId = item.id;
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (isBusy) => setBusy(isBusy ? "rem" : ""),
+      async (isStale) => {
+        await deleteReminder(targetId);
+        if (isStale()) return;
+        Alert.alert("ลบการแจ้งเตือนแล้ว");
+      },
+    );
   }
 
   function confirmDelete() {
