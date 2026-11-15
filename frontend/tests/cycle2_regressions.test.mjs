@@ -1236,7 +1236,8 @@ test("Cycle 6 [H-1, L-3]: extension setWorkspaceCache rejects signed-out writes,
 
   // 4. extension/popup.js async fetchers guard against session generation change & aborted flag
   const popupCode = fs.readFileSync(path.join(repoRoot, "extension", "popup.js"), "utf8");
-  assert.match(popupCode, /async function refreshRecentList[\s\S]{0,450}getSessionGeneration\(\) !== startGen/);
+  assert.match(popupCode, /function isSessionStale[\s\S]{0,120}getSessionGen\(\) !== startGen/);
+  assert.match(popupCode, /async function refreshRecentList[\s\S]{0,450}isSessionStale\(startGen\)/);
   assert.match(popupCode, /async function syncWorkspaceBackground[\s\S]{0,550}isSessionStale\(startGen\)/);
   assert.match(popupCode, /isSessionStale[\s\S]{0,120}err\.aborted/);
 });
@@ -1475,6 +1476,7 @@ test("Cycle 7 [C-1, H-1, M-1, M-2, M-3, L-2]: real VM runtime tests for extensio
       },
       Intl,
       URL,
+      URLSearchParams,
       Date,
       Math,
       console,
@@ -1634,4 +1636,362 @@ test("Cycle 7 [C-1, H-1, M-1, M-2, M-3, L-2]: real VM runtime tests for extensio
   resolveFlushPost(mkResp(201, { id: "fl-stale-item", url: "https://queued-a.test/1" }));
   await flushTask;
   assert.equal(hostFlush.getEl("feedbackBanner").textContent, "", "Stale flushQueueBtn completion after switch must not show User A flush banner");
+});
+
+test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quickSaveUrl genuine 401 AUTH badge, and all 6 popup handlers 401 expiry recovery", async () => {
+  const storeMap = new Map();
+  const sharedChromeStorage = {
+    local: {
+      get(keys, cb) {
+        const out = {};
+        const keyList = Array.isArray(keys) ? keys : typeof keys === "string" ? [keys] : Object.keys(keys || {});
+        for (const k of keyList) if (storeMap.has(k)) out[k] = structuredClone(storeMap.get(k));
+        cb(out);
+      },
+      set(values, cb) {
+        for (const [k, v] of Object.entries(values || {})) storeMap.set(k, structuredClone(v));
+        if (cb) cb();
+      },
+      remove(keys, cb) {
+        const keyList = Array.isArray(keys) ? keys : [keys];
+        for (const k of keyList) storeMap.delete(k);
+        if (cb) cb();
+      },
+    },
+  };
+
+  const apiCode = fs.readFileSync(path.join(repoRoot, "extension", "api.js"), "utf8");
+  const bgCode = fs.readFileSync(path.join(repoRoot, "extension", "background.js"), "utf8");
+  const popupCode = fs.readFileSync(path.join(repoRoot, "extension", "popup.js"), "utf8");
+
+  const mkResp = (status, body) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 401 ? "Unauthorized" : "OK",
+    headers: { get: () => "application/json" },
+    text: async () => (body == null ? "" : JSON.stringify(body)),
+  });
+
+  // 1. MEDIUM-1 & MEDIUM-2: background.js handleConnectMessage rollback + quickSaveUrl genuine 401 AUTH badge
+  const badges = [];
+  let onMessageHandler = null;
+  let onCommandHandler = null;
+  let bgFetchImpl = async () => mkResp(200, {});
+  const bgSb = {
+    globalThis: null,
+    chrome: {
+      runtime: {
+        lastError: null,
+        onInstalled: { addListener() {} },
+        onStartup: { addListener() {} },
+        onMessage: { addListener(fn) { onMessageHandler = fn; } },
+      },
+      storage: sharedChromeStorage,
+      action: {
+        setBadgeBackgroundColor() {},
+        setBadgeText({ text }) { badges.push(text); },
+        async openPopup() {},
+      },
+      alarms: { create() {}, get(_n, cb) { cb(null); }, onAlarm: { addListener() {} } },
+      contextMenus: { removeAll(cb) { if (cb) cb(); }, create() {}, onClicked: { addListener() {} } },
+      commands: { onCommand: { addListener(fn) { onCommandHandler = fn; } } },
+      notifications: { onClicked: { addListener() {} }, clear() {} },
+      tabs: { async query() { return [{ id: 21, url: "https://bg401.example/post", title: "Post 401" }]; } },
+    },
+    importScripts: () => {},
+    URL,
+    Date,
+    Math,
+    console,
+    setTimeout,
+    clearTimeout,
+    btoa,
+    atob,
+    fetch: (url, init) => bgFetchImpl(url, init),
+  };
+  bgSb.globalThis = bgSb;
+  bgSb.self = bgSb;
+  vm.runInNewContext(apiCode, bgSb, { filename: "extension/api.js" });
+  vm.runInNewContext(bgCode, bgSb, { filename: "extension/background.js" });
+
+  await bgSb.JustSaveItApi.setBackendUrl("https://just-save-it-api.onrender.com");
+  bgFetchImpl = async (url) => {
+    if (String(url).endsWith("/api/auth/me")) return mkResp(401, { detail: "invalid token" });
+    return mkResp(200, {});
+  };
+  const badConnectResp = await new Promise((resolve) => {
+    onMessageHandler(
+      { type: "SHARELY_EXTENSION_CONNECT", accessToken: "bad-tok", apiBaseUrl: "http://127.0.0.1:8000" },
+      {},
+      resolve,
+    );
+  });
+  assert.equal(badConnectResp.ok, false);
+  assert.equal(
+    (await bgSb.JustSaveItApi.getSessionState()).backendUrl,
+    "https://just-save-it-api.onrender.com",
+    "handleConnectMessage must not mutate backendUrl when /api/auth/me fails",
+  );
+
+  bgFetchImpl = async (url) => {
+    if (String(url).endsWith("/api/auth/me")) return mkResp(200, { id: "bg-ok-8", email: "bg8@test.com" });
+    return mkResp(200, {});
+  };
+  const okConnectResp = await new Promise((resolve) => {
+    onMessageHandler(
+      { type: "SHARELY_EXTENSION_CONNECT", accessToken: "ok-tok", refreshToken: "ok-ref", apiBaseUrl: "http://127.0.0.1:8000" },
+      {},
+      resolve,
+    );
+  });
+  assert.equal(okConnectResp.ok, true);
+  assert.equal((await bgSb.JustSaveItApi.getSessionState()).backendUrl, "http://127.0.0.1:8000");
+
+  // quickSaveUrl genuine 401 sets AUTH badge even after apiRequest calls clearAuthSession()
+  badges.length = 0;
+  bgFetchImpl = async () => mkResp(401, { detail: "token expired" });
+  await onCommandHandler("quick-save-tab");
+  assert.equal(badges.includes("AUTH"), true, `Expected AUTH badge on genuine 401, got: ${JSON.stringify(badges)}`);
+  assert.equal(badges.includes("QUE"), false);
+  assert.equal((await bgSb.JustSaveItApi.getSessionState()).accessToken, "");
+
+  // 2. HIGH-1: All 6 popup.js handlers transition to authView with expired banner on genuine HTTP 401
+  const createPopup401Host = (fetchImpl) => {
+    const elMap = new Map();
+    const docListeners = new Map();
+    const createdElements = [];
+    const makeEl = (id = "") => {
+      const classes = new Set();
+      const listeners = new Map();
+      const attrs = new Map();
+      const el = {
+        id,
+        value: "",
+        textContent: "",
+        innerHTML: "",
+        className: "",
+        disabled: false,
+        checked: false,
+        src: "",
+        title: "",
+        dataset: {},
+        style: {},
+        children: [],
+        classList: {
+          add: (...cs) => cs.forEach((c) => classes.add(c)),
+          remove: (...cs) => cs.forEach((c) => classes.delete(c)),
+          toggle: (c, force) => {
+            if (force === true) { classes.add(c); return true; }
+            if (force === false) { classes.delete(c); return false; }
+            if (classes.has(c)) { classes.delete(c); return false; }
+            classes.add(c); return true;
+          },
+          contains: (c) => classes.has(c),
+        },
+        addEventListener: (evt, fn) => {
+          if (!listeners.has(evt)) listeners.set(evt, []);
+          listeners.get(evt).push(fn);
+        },
+        dispatch: async (type) => {
+          const ev = { type, key: "Enter", preventDefault() {} };
+          for (const fn of listeners.get(type) || []) await fn(ev);
+        },
+        appendChild: (c) => { el.children.push(c); return c; },
+        replaceChildren: (...nodes) => { el.children = nodes; },
+        focus() {},
+        setAttribute: (k, v) => attrs.set(k, String(v)),
+        getAttribute: (k) => attrs.get(k) ?? null,
+        removeAttribute: (k) => attrs.delete(k),
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        closest: () => null,
+      };
+      return el;
+    };
+    const getEl = (id) => {
+      if (!elMap.has(id)) elMap.set(id, makeEl(id));
+      return elMap.get(id);
+    };
+    const sb = {
+      globalThis: null,
+      window: null,
+      chrome: {
+        runtime: { lastError: null },
+        storage: sharedChromeStorage,
+        tabs: { async query() { return [{ id: 1, url: "https://popup401.test/doc", title: "Doc" }]; }, async create() {} },
+      },
+      document: {
+        getElementById: getEl,
+        createElement: (tag) => {
+          const el = makeEl(tag);
+          createdElements.push(el);
+          return el;
+        },
+        createDocumentFragment: () => makeEl("#frag"),
+        querySelectorAll: () => [],
+        querySelector: () => null,
+        addEventListener: (evt, fn) => {
+          if (!docListeners.has(evt)) docListeners.set(evt, []);
+          docListeners.get(evt).push(fn);
+        },
+      },
+      Intl,
+      URL,
+      URLSearchParams,
+      Date,
+      Math,
+      console,
+      setTimeout,
+      clearTimeout,
+      btoa,
+      atob,
+      navigator: {},
+      fetch: fetchImpl,
+    };
+    sb.globalThis = sb;
+    sb.self = sb;
+    sb.window = sb;
+    vm.runInNewContext(apiCode, sb, { filename: "extension/api.js" });
+    vm.runInNewContext(popupCode, sb, { filename: "extension/popup.js" });
+    return {
+      sb,
+      getEl,
+      createdElements,
+      async initAuthed(uid = "p401") {
+        await sb.JustSaveItApi.saveAuthSession({
+          access_token: `tok-${uid}`,
+          refresh_token: "",
+          user: { id: uid, email: `${uid}@test.com` },
+        });
+        for (const fn of docListeners.get("DOMContentLoaded") || []) await fn();
+        await new Promise((r) => setTimeout(r, 25));
+      },
+    };
+  };
+
+  // Helper assertion for all 6 popup handlers on 401
+  const run401Scenario = async (label, handler, triggerFn, postAssert) => {
+    storeMap.clear();
+    const host = createPopup401Host(handler);
+    await host.initAuthed(`u-${label}`);
+    assert.equal(host.getEl("saverView").classList.contains("hidden"), false, `${label}: expected saverView active initially`);
+    await triggerFn(host);
+    await new Promise((r) => setTimeout(r, 25));
+    assert.equal(host.getEl("authView").classList.contains("hidden"), false, `${label}: must reveal authView on genuine 401`);
+    assert.match(host.getEl("feedbackBanner").textContent, /หมดอายุ/, `${label}: must show expired session banner`);
+    if (postAssert) await postAssert(host);
+  };
+
+  // (a) statusBtn 401
+  await run401Scenario(
+    "statusBtn",
+    async (url, init) => {
+      const u = String(url);
+      if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+      if (u.includes("/api/workspace")) {
+        return mkResp(200, {
+          folders: [],
+          tags: [],
+          items: [{ id: "st-item-1", url: "https://st.test/1", title: "ST 1", status: "inbox" }],
+          user: { id: "u-statusBtn", email: "st@t.com" },
+        });
+      }
+      if (u.includes("/api/items/st-item-1") && init?.method === "PATCH") return mkResp(401, { detail: "expired" });
+      return mkResp(200, {});
+    },
+    async (host) => {
+      const btn = host.createdElements.find((el) => el.textContent === "กล่องเข้า" && el.className.includes("status"));
+      assert.ok(btn, "statusBtn must be rendered");
+      await btn.dispatch("click");
+    },
+  );
+
+  // (b) refreshRecentList 401
+  await run401Scenario(
+    "refreshRecentList",
+    async (url) => {
+      const u = String(url);
+      if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+      if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "u-refreshRecentList", email: "r@t.com" } });
+      if (u.includes("/api/items?")) return mkResp(401, { detail: "expired" });
+      return mkResp(200, {});
+    },
+    async (host) => host.getEl("refreshRecentBtn").dispatch("click"),
+  );
+
+  // (c) fetchPreviewForUrl 401 (also clears previewSourceBadge!)
+  await run401Scenario(
+    "fetchPreviewForUrl",
+    async (url, init) => {
+      const u = String(url);
+      if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+      if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "u-fetchPreviewForUrl", email: "p@t.com" } });
+      if (u.endsWith("/api/preview") && String(init?.body || "").includes('"force_refresh":true')) {
+        return mkResp(401, { detail: "expired" });
+      }
+      if (u.endsWith("/api/preview")) return mkResp(200, { title: "Initial Doc", platform: "web" });
+      return mkResp(200, {});
+    },
+    async (host) => {
+      host.getEl("urlInput").value = "https://preview-401.example/a";
+      await host.getEl("refreshPreviewBtn").dispatch("click");
+    },
+    (host) => {
+      assert.equal(host.getEl("previewSourceBadge").textContent, "", "fetchPreviewForUrl 401 must clear 'กำลังพรีวิว...' badge");
+    },
+  );
+
+  // (d) handleCreateFolder 401
+  await run401Scenario(
+    "handleCreateFolder",
+    async (url, init) => {
+      const u = String(url);
+      if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+      if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "u-fld", email: "f@t.com" } });
+      if (u.endsWith("/api/folders") && init?.method === "POST") return mkResp(401, { detail: "expired" });
+      return mkResp(200, {});
+    },
+    async (host) => {
+      host.getEl("newFolderName").value = "Folder401";
+      await host.getEl("createFolderBtn").dispatch("click");
+    },
+  );
+
+  // (e) handleAiSummarize 401
+  await run401Scenario(
+    "handleAiSummarize",
+    async (url, init) => {
+      const u = String(url);
+      if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+      if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "u-ai", email: "ai@t.com" } });
+      if (u.endsWith("/api/items") && init?.method === "POST") return mkResp(201, { id: "ai-itm-1", url: "https://ai.test/1", platform: "web" });
+      if (u.endsWith("/api/ai/summarize")) return mkResp(401, { detail: "expired" });
+      return mkResp(200, {});
+    },
+    async (host) => {
+      host.getEl("urlInput").value = "https://ai.test/1";
+      await host.getEl("saveForm").dispatch("submit");
+      await host.getEl("aiSummarizeBtn").dispatch("click");
+    },
+  );
+
+  // (f) flushQueueBtn 401 (also clears offlineQueueBar so phantom count is gone)
+  await run401Scenario(
+    "flushQueueBtn",
+    async (url, init) => {
+      const u = String(url);
+      if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+      if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "u-flush", email: "fl@t.com" } });
+      if (u.endsWith("/api/items") && init?.method === "POST") return mkResp(401, { detail: "expired" });
+      return mkResp(200, {});
+    },
+    async (host) => {
+      await host.sb.JustSaveItApi.enqueueOfflineSave({ url: "https://q401.example/1" }, "offline");
+      await host.getEl("flushQueueBtn").dispatch("click");
+    },
+    (host) => {
+      assert.equal(host.getEl("offlineQueueBar").classList.contains("hidden"), true, "flushQueueBtn 401 must hide offlineQueueBar");
+      assert.equal(host.getEl("offlineQueueCount").textContent, "0");
+    },
+  );
 });

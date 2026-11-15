@@ -12,6 +12,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { fetchWorkspace, patchLinkItem } from "../../src/api";
 import { planIosLocalNotifications } from "../../src/notifications";
 import {
+  getAuthGeneration,
   getMemoryCachedWorkspace,
   loadCachedWorkspace,
   loadSession,
@@ -31,19 +32,30 @@ export default function FavoritesScreen() {
   const [tab, setTab] = useState<"fav" | "rem">("fav");
 
   const loadData = useCallback(async () => {
+    const startGen = getAuthGeneration();
     const sess = await loadSession();
-    if (!sess?.access_token) {
+    if (getAuthGeneration() !== startGen || !sess?.access_token) {
       setLoading(false);
       setRefreshing(false);
       return;
     }
     const cached = await loadCachedWorkspace();
+    if (getAuthGeneration() !== startGen) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     if (cached.items.length > 0 || cached.reminders.length > 0) {
       setFavorites((prev) => (prev.length ? prev : cached.items.filter((it) => Boolean(it.is_favorite))));
       setReminders((prev) => (prev.length ? prev : cached.reminders));
       setLoading(false);
     }
     const ws = await fetchWorkspace();
+    if (getAuthGeneration() !== startGen) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     setFavorites(ws.items.filter((it) => Boolean(it.is_favorite)));
     setReminders(ws.reminders);
     setLoading(false);

@@ -59,9 +59,21 @@
     if (postClear.accessToken) {
       return false;
     }
+    renderOfflineQueueCount([]);
     enterAuthView();
     showBanner("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่อีกครั้ง", "error");
     return true;
+  }
+
+  async function shouldIgnoreErrorAfterExpiryCheck(err, startGen, startAccessToken) {
+    if (err && err.aborted) {
+      return true;
+    }
+    if (err && err.status === 401) {
+      await handleExpiredSessionAfter401(startAccessToken);
+      return true;
+    }
+    return isSessionStale(startGen, err);
   }
 
   function getBangkokTodayIso(now = new Date()) {
@@ -568,6 +580,8 @@
       statusBtn.textContent = STATUS_LABEL[curStatus] || curStatus;
       statusBtn.addEventListener("click", async () => {
         const startGen = getSessionGen();
+        const startSess = await api.getSessionState();
+        if (isSessionStale(startGen) || !startSess.accessToken) return;
         const next = nextWorkflowStatus(item.status || "inbox");
         statusBtn.disabled = true;
         try {
@@ -576,7 +590,7 @@
           item.status = next;
           statusBtn.textContent = STATUS_LABEL[next] || next;
         } catch (err) {
-          if (isSessionStale(startGen, err)) return;
+          if (await shouldIgnoreErrorAfterExpiryCheck(err, startGen, startSess.accessToken)) return;
           showBanner(`เปลี่ยนสถานะไม่สำเร็จ: ${err.message}`, "error");
         } finally {
           statusBtn.disabled = false;
@@ -791,10 +805,14 @@
   }
 
   async function refreshRecentList(search = "") {
-    const startGen = typeof api.getSessionGeneration === "function" ? api.getSessionGeneration() : 0;
+    const startGen = getSessionGen();
+    const startSess = await api.getSessionState();
+    if (isSessionStale(startGen) || !startSess.accessToken) {
+      return;
+    }
     try {
       const itemsRes = await api.fetchRecentItems({ search, limit: 30 });
-      if (typeof api.getSessionGeneration === "function" && api.getSessionGeneration() !== startGen) {
+      if (isSessionStale(startGen)) {
         return;
       }
       const items = itemsRes.items || [];
@@ -808,10 +826,7 @@
         }).catch(() => {});
       }
     } catch (err) {
-      if (
-        (err && err.aborted) ||
-        (typeof api.getSessionGeneration === "function" && api.getSessionGeneration() !== startGen)
-      ) {
+      if (await shouldIgnoreErrorAfterExpiryCheck(err, startGen, startSess.accessToken)) {
         return;
       }
       showBanner(`โหลดรายการล่าสุดไม่สำเร็จ: ${err.message}`, "error");
@@ -856,6 +871,8 @@
   async function fetchPreviewForUrl(targetUrl, forceRefresh = false) {
     if (!api.isSaveableHttpUrl(targetUrl)) return;
     const startGen = getSessionGen();
+    const startSess = await api.getSessionState();
+    if (isSessionStale(startGen) || !startSess.accessToken) return;
     if (els.previewSourceBadge) els.previewSourceBadge.textContent = "กำลังพรีวิว...";
     try {
       const preview = await api.apiRequest("/api/preview", {
@@ -884,10 +901,10 @@
         renderPreviewThumbnail(thumb, preview.site_name || targetUrl);
       }
     } catch (err) {
-      if (isSessionStale(startGen, err)) return;
       if (els.urlInput.value.trim() === targetUrl && els.previewSourceBadge) {
         els.previewSourceBadge.textContent = "";
       }
+      await shouldIgnoreErrorAfterExpiryCheck(err, startGen, startSess.accessToken);
     }
   }
 
@@ -1233,6 +1250,8 @@
     const name = els.newFolderName.value.trim();
     const emoji = els.newFolderEmoji.value.trim() || "📁";
     if (!name) return;
+    const startSess = await api.getSessionState();
+    if (isSessionStale(startGen) || !startSess.accessToken) return;
 
     els.createFolderBtn.disabled = true;
     try {
@@ -1253,7 +1272,7 @@
         user: state.cachedUser,
       });
     } catch (err) {
-      if (isSessionStale(startGen, err)) return;
+      if (await shouldIgnoreErrorAfterExpiryCheck(err, startGen, startSess.accessToken)) return;
       showBanner(`สร้างโฟลเดอร์ไม่สำเร็จ: ${err.message}`, "error");
     } finally {
       els.createFolderBtn.disabled = false;
@@ -1381,6 +1400,8 @@
   async function handleAiSummarize() {
     if (!state.lastSavedItemId) return;
     const startGen = getSessionGen();
+    const startSess = await api.getSessionState();
+    if (isSessionStale(startGen) || !startSess.accessToken) return;
     els.aiSummarizeBtn.disabled = true;
     els.aiSummarizeBtn.textContent = "กำลังสรุป...";
     try {
@@ -1398,7 +1419,7 @@
       els.aiResultBox.textContent = `${summary}${tagsText}`.trim();
       els.aiResultBox.classList.remove("hidden");
     } catch (err) {
-      if (isSessionStale(startGen, err)) return;
+      if (await shouldIgnoreErrorAfterExpiryCheck(err, startGen, startSess.accessToken)) return;
       els.aiResultBox.textContent = `ไม่สามารถสรุป AI ได้ในตอนนี้: ${err.message}`;
       els.aiResultBox.classList.remove("hidden");
     } finally {
@@ -1465,16 +1486,23 @@
 
     els.flushQueueBtn.addEventListener("click", async () => {
       const startGen = getSessionGen();
+      const startSess = await api.getSessionState();
+      if (isSessionStale(startGen) || !startSess.accessToken) return;
       els.flushQueueBtn.disabled = true;
       try {
         const res = await api.flushOfflineQueue();
+        if (res && res.aborted) return;
+        if (res && res.unauthorized) {
+          await handleExpiredSessionAfter401(startSess.accessToken);
+          return;
+        }
         if (isSessionStale(startGen)) return;
         await refreshOfflineQueueBanner();
         if (isSessionStale(startGen)) return;
         void refreshRecentList(els.recentSearchInput ? els.recentSearchInput.value : "");
         showBanner(`ซิงก์คิวออฟไลน์สำเร็จ ${res.flushed} รายการ (คงเหลือ ${res.remaining})`, "success");
       } catch (err) {
-        if (isSessionStale(startGen, err)) return;
+        if (await shouldIgnoreErrorAfterExpiryCheck(err, startGen, startSess.accessToken)) return;
         showBanner(`ซิงก์คิวไม่สำเร็จ: ${err.message}`, "error");
       } finally {
         els.flushQueueBtn.disabled = false;

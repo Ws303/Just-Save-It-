@@ -548,13 +548,20 @@
   async function flushOfflineQueue(saveFn) {
     const startGen = _sessionGeneration;
     const session = await getSessionState();
+    if (_sessionGeneration !== startGen) {
+      return { flushed: 0, remaining: 0, failed: 0, aborted: true, unauthorized: false };
+    }
+    const startAccessToken = session.accessToken || "";
     const currentUid = String(
       (session && session.user && session.user.id) || parseJwtSub(session && session.accessToken) || ""
     ).trim();
     const res = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE]);
+    if (_sessionGeneration !== startGen) {
+      return { flushed: 0, remaining: 0, failed: 0, aborted: true, unauthorized: false };
+    }
     const allQueue = Array.isArray(res[STORAGE_KEYS.OFFLINE_QUEUE]) ? res[STORAGE_KEYS.OFFLINE_QUEUE] : [];
     if (!currentUid && typeof saveFn !== "function") {
-      return { flushed: 0, remaining: allQueue.length, failed: 0 };
+      return { flushed: 0, remaining: allQueue.length, failed: 0, aborted: false, unauthorized: false };
     }
     const foreignRemaining = [];
     const queue = [];
@@ -577,7 +584,7 @@
       if (foreignRemaining.length !== allQueue.length && _sessionGeneration === startGen) {
         const latestRes = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE]);
         if (_sessionGeneration !== startGen) {
-          return { flushed: 0, remaining: 0, failed: 0 };
+          return { flushed: 0, remaining: 0, failed: 0, aborted: true, unauthorized: false };
         }
         const latestAll = Array.isArray(latestRes[STORAGE_KEYS.OFFLINE_QUEUE])
           ? latestRes[STORAGE_KEYS.OFFLINE_QUEUE]
@@ -589,7 +596,7 @@
         });
         await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: pruned });
       }
-      return { flushed: 0, remaining: 0, failed: 0 };
+      return { flushed: 0, remaining: 0, failed: 0, aborted: false, unauthorized: false };
     }
     const sender =
       typeof saveFn === "function"
@@ -598,10 +605,13 @@
 
     let flushed = 0;
     let failed = 0;
+    let saw401 = false;
+    let sawAborted = false;
     const remaining = [];
     for (let i = 0; i < queue.length; i += 1) {
       const entry = queue[i];
       if (_sessionGeneration !== startGen) {
+        sawAborted = true;
         remaining.push(...queue.slice(i));
         break;
       }
@@ -610,6 +620,16 @@
         flushed += 1;
         if (entry && entry.id) removedIds.add(String(entry.id));
       } catch (err) {
+        if (err && err.aborted) {
+          sawAborted = true;
+          remaining.push(...queue.slice(i));
+          break;
+        }
+        if (err && err.status === 401) {
+          saw401 = true;
+          remaining.push(...queue.slice(i));
+          break;
+        }
         if (err && typeof err.status === "number" && err.status >= 400 && err.status < 500 && err.status !== 401 && err.status !== 429) {
           failed += 1; // Permanent client validation error: drop instead of infinite retry
           if (entry && entry.id) removedIds.add(String(entry.id));
@@ -625,16 +645,24 @@
         parseJwtSub(latestSession && latestSession.accessToken) ||
         ""
     ).trim();
+    const crossUserActive =
+      (Boolean(currentUid) && Boolean(latestUid) && latestUid !== currentUid) ||
+      (!currentUid && Boolean(latestUid)) ||
+      (Boolean(latestSession.accessToken) &&
+        Boolean(startAccessToken) &&
+        latestSession.accessToken !== startAccessToken);
     const authLostOrChanged =
       _sessionGeneration !== startGen ||
       latestUid !== currentUid ||
       (typeof saveFn !== "function" && currentUid && !latestSession.accessToken);
+    const unauthorized = Boolean(saw401 && !sawAborted && !crossUserActive);
+    const aborted = Boolean(sawAborted || (authLostOrChanged && !unauthorized));
     if (authLostOrChanged) {
-      return { flushed, remaining: remaining.length, failed };
+      return { flushed, remaining: remaining.length, failed, aborted, unauthorized };
     }
     const latestStorage = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE]);
     if (_sessionGeneration !== startGen) {
-      return { flushed, remaining: remaining.length, failed };
+      return { flushed, remaining: remaining.length, failed, aborted: true, unauthorized: false };
     }
     const latestQueue = Array.isArray(latestStorage[STORAGE_KEYS.OFFLINE_QUEUE])
       ? latestStorage[STORAGE_KEYS.OFFLINE_QUEUE]
@@ -645,7 +673,7 @@
       return !entry?.id || !removedIds.has(String(entry.id));
     });
     await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: nextQueue });
-    return { flushed, remaining: remaining.length, failed };
+    return { flushed, remaining: remaining.length, failed, aborted: false, unauthorized: false };
   }
 
   async function fetchRecentItems({ search = "", limit = 20 } = {}) {

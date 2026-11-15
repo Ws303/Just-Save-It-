@@ -28,6 +28,7 @@ import {
 import { registerMobilePushToken, syncLocalRemindersWithOs } from "../../src/notifications";
 import {
   buildBoundedExportPayloadJson,
+  getAuthGeneration,
   getDebugBannerEnabled,
   getMemoryCachedWorkspace,
   getThemePageBg,
@@ -62,13 +63,15 @@ export default function ProfileScreen() {
   const [busyAction, setBusyAction] = useState("");
 
   const loadProfile = useCallback(async () => {
+    const startGen = getAuthGeneration();
     setDebugBannerOn(getDebugBannerEnabled());
     const sess = await loadSession();
-    if (!sess?.access_token) return;
+    if (getAuthGeneration() !== startGen || !sess?.access_token) return;
     if (sess.user?.email) setEmail(sess.user.email);
     if (sess.user?.display_name) setName(sess.user.display_name);
 
     const cached = await loadCachedWorkspace();
+    if (getAuthGeneration() !== startGen) return;
     if (cached.items.length > 0 || cached.folders.length > 0) {
       setItemCount((prev) => (prev > 0 ? prev : cached.items.length));
       setFolderCount((prev) => (prev > 0 ? prev : cached.folders.length));
@@ -80,6 +83,7 @@ export default function ProfileScreen() {
       loadThemeMode(),
       listMcpTokens(),
     ]);
+    if (getAuthGeneration() !== startGen) return;
     setThemeMode(savedTheme);
     setQueueCount(qCount);
     setItemCount(ws.items.length);

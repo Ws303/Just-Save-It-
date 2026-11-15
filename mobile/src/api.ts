@@ -571,6 +571,9 @@ export async function apiFetch<T = JsonRecord>(
     }
 
     const data = await parseJsonSafe(resp);
+    if (getAuthGeneration() !== startGen) {
+      return { ok: false, status: 401, data: null, error: "Session changed" };
+    }
     if (!resp.ok) {
       const errDetail =
         (typeof data?.detail === "string" && data.detail) ||
@@ -697,7 +700,13 @@ export async function fetchWorkspace(): Promise<WorkspacePayload> {
     }
 
     if (wsRes.status !== 404) {
+      if (wsRes.status === 401 || getAuthGeneration() !== startGen) {
+        return emptyPayload;
+      }
       const cached = await loadCachedWorkspace();
+      if (getAuthGeneration() !== startGen) {
+        return emptyPayload;
+      }
       return {
         me: session.user ? { ...session.user } : null,
         items: cached.items,
@@ -720,7 +729,13 @@ export async function fetchWorkspace(): Promise<WorkspacePayload> {
     }
 
     if (!itemsRes.ok) {
+      if (itemsRes.status === 401 || getAuthGeneration() !== startGen) {
+        return emptyPayload;
+      }
       const cached = await loadCachedWorkspace();
+      if (getAuthGeneration() !== startGen) {
+        return emptyPayload;
+      }
       return {
         me: meRes.ok ? meRes.data : session.user ? { ...session.user } : null,
         items: cached.items,

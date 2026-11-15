@@ -23,6 +23,7 @@ import {
 } from "../../src/api";
 import { syncLocalRemindersWithOs } from "../../src/notifications";
 import {
+  getAuthGeneration,
   getMemoryCachedWorkspace,
   type MobileLinkItem,
   type WorkflowStatus,
@@ -48,7 +49,12 @@ export default function ItemDetailScreen() {
 
   const loadItem = useCallback(async () => {
     if (!id) return;
+    const startGen = getAuthGeneration();
     const res = await apiFetch<MobileLinkItem>(`/api/items/${encodeURIComponent(id)}`);
+    if (getAuthGeneration() !== startGen) {
+      setLoading(false);
+      return;
+    }
     if (res.ok && res.data) {
       setItem(res.data);
       setNote(res.data.note || res.data.user_note || "");

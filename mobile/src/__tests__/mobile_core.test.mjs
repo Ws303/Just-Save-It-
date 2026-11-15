@@ -967,13 +967,105 @@ test("Cycle 7 [H-2, M-4]: apiFetch network-drop & saveLinkItem abort across swit
     // Verify storage identity still points cleanly to active user via exported getActiveUserScope or queue isolation
     assert.equal((await storageMod.loadOfflineQueue("mob-c7-c0")).length, 0);
 
-    // 4. Verify (tabs)/index.tsx loadAll guards stale auth generation before mutating UI state
+    // 4. Verify (tabs)/index.tsx & all 5 sibling mobile screens guard async state setters on authGeneration
     const fs = await import("node:fs");
     const path = await import("node:path");
     const { fileURLToPath } = await import("node:url");
     const here = path.dirname(fileURLToPath(import.meta.url));
-    const indexTsx = fs.readFileSync(path.resolve(here, "../../app/(tabs)/index.tsx"), "utf8");
-    assert.match(indexTsx, /const loadAll = useCallback[\s\S]{0,1200}getAuthGeneration\(\) !== startGen/);
+    const appDir = path.resolve(here, "../../app");
+    const screenChecks = [
+      ["(tabs)/index.tsx", /const loadAll = useCallback[\s\S]{0,1400}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/folders.tsx", /const loadData = useCallback[\s\S]{0,900}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/favorites.tsx", /const loadData = useCallback[\s\S]{0,900}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/profile.tsx", /const loadProfile = useCallback[\s\S]{0,1200}getAuthGeneration\(\) !== startGen/],
+      ["folder/[id].tsx", /const loadFolder = useCallback[\s\S]{0,1200}getAuthGeneration\(\) !== startGen/],
+      ["item/[id].tsx", /const loadItem = useCallback[\s\S]{0,600}getAuthGeneration\(\) !== startGen/],
+    ];
+    for (const [rel, pattern] of screenChecks) {
+      const code = fs.readFileSync(path.join(appDir, rel), "utf8");
+      assert.match(code, pattern, `Expected authGeneration guard in mobile/app/${rel}`);
+    }
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+  }
+});
+
+test("Cycle 8 [MED-3, MED-4]: apiFetch mid-parseJsonSafe abort and fetchWorkspace 401 fail-closed without cached leak", async () => {
+  const makeFakeJwtC8 = (sub) => {
+    const body = btoa(JSON.stringify({ sub })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return `eyJhbGciOiJIUzI1NiJ9.${body}.sig`;
+  };
+  const { fetchWorkspace } = await import("../api.ts");
+  const origFetch = globalThis.fetch;
+
+  try {
+    // 1. Account switch while resp.text() (parseJsonSafe) is resolving must NOT return User A HTTP 200 payload
+    await saveSession({
+      access_token: makeFakeJwtC8("mob-c8-json-a"),
+      refresh_token: "",
+      user: { id: "mob-c8-json-a", email: "ja@mob.test" },
+    });
+    let resolveBodyText = null;
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      text: () => new Promise((r) => { resolveBodyText = r; }),
+    });
+    const pendingParse = apiFetch("/api/items");
+    await new Promise((r) => setTimeout(r, 10));
+    await saveSession({
+      access_token: makeFakeJwtC8("mob-c8-json-b"),
+      refresh_token: "",
+      user: { id: "mob-c8-json-b", email: "jb@mob.test" },
+    });
+    resolveBodyText('{"items":[{"id":"stale-a"}]}');
+    const parsedRes = await pendingParse;
+    assert.equal(parsedRes.ok, false);
+    assert.equal(parsedRes.status, 401, "apiFetch switching accounts during resp.text() must abort with status 401");
+    assert.equal(parsedRes.data, null);
+
+    // 2. fetchWorkspace HTTP 401 on /api/workspace must fail closed (never leak cached items)
+    await saveSession({
+      access_token: makeFakeJwtC8("mob-c8-401"),
+      refresh_token: "",
+      user: { id: "mob-c8-401", email: "w401@mob.test" },
+    });
+    await saveCachedWorkspace({
+      user_id: "mob-c8-401",
+      items: [{ id: "cached-secret", url: "https://cached.test", title: "Cached" }],
+      folders: [{ id: "f-secret", name: "Secret Folder" }],
+      reminders: [],
+    });
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 401,
+      text: async () => '{"detail":"expired"}',
+    });
+    const ws401 = await fetchWorkspace();
+    assert.equal(ws401.items.length, 0, "fetchWorkspace 401 on /api/workspace must not return cached items");
+    assert.equal(ws401.folders.length, 0);
+
+    // 3. fetchWorkspace HTTP 401 on 404 legacy fallback itemsRes must also fail closed
+    await saveSession({
+      access_token: makeFakeJwtC8("mob-c8-fb401"),
+      refresh_token: "",
+      user: { id: "mob-c8-fb401", email: "fb401@mob.test" },
+    });
+    await saveCachedWorkspace({
+      user_id: "mob-c8-fb401",
+      items: [{ id: "fb-cached", url: "https://fb.test", title: "Fallback Cached" }],
+      folders: [],
+      reminders: [],
+    });
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("/api/workspace")) {
+        return { ok: false, status: 404, text: async () => '{"detail":"not found"}' };
+      }
+      return { ok: false, status: 401, text: async () => '{"detail":"expired"}' };
+    };
+    const wsFallback401 = await fetchWorkspace();
+    assert.equal(wsFallback401.items.length, 0, "fetchWorkspace legacy 401 fallback must fail closed");
   } finally {
     globalThis.fetch = origFetch;
     await clearSession();

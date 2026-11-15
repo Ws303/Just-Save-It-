@@ -13,6 +13,7 @@ import {
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { createFolderInvite, fetchWorkspace } from "../../src/api";
 import {
+  getAuthGeneration,
   getMemoryCachedWorkspace,
   loadCachedWorkspace,
   type MobileFolderItem,
@@ -41,7 +42,12 @@ export default function FolderDetailScreen() {
   const [inviting, setInviting] = useState(false);
 
   const loadFolder = useCallback(async () => {
+    const startGen = getAuthGeneration();
     const cached = await loadCachedWorkspace();
+    if (getAuthGeneration() !== startGen) {
+      setLoading(false);
+      return;
+    }
     if (cached.items.length > 0 || cached.folders.length > 0) {
       if (isVirtualInbox) {
         setFolder({ id: "virtual-inbox", name: "รวมไว้ดูทีหลัง", icon: "🔖" });
@@ -55,6 +61,10 @@ export default function FolderDetailScreen() {
     }
 
     const ws = await fetchWorkspace();
+    if (getAuthGeneration() !== startGen) {
+      setLoading(false);
+      return;
+    }
     if (isVirtualInbox) {
       setFolder({ id: "virtual-inbox", name: "รวมไว้ดูทีหลัง", icon: "🔖" });
       setItems(ws.items.filter((it) => !it.folder_id));

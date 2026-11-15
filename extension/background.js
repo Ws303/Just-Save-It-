@@ -139,10 +139,11 @@ async function handleConnectMessage(message) {
   if (!message || message.type !== "SHARELY_EXTENSION_CONNECT" || !message.accessToken) {
     return { ok: false, error: "Invalid message" };
   }
-  if (message.apiBaseUrl) {
-    await JustSaveItApi.setBackendUrl(message.apiBaseUrl);
-  }
-  const user = await JustSaveItApi.loginWithAccessToken(message.accessToken, message.refreshToken || "");
+  const user = await JustSaveItApi.loginWithAccessToken(
+    message.accessToken,
+    message.refreshToken || "",
+    message.apiBaseUrl || ""
+  );
   setActionBadge("SYNC", "#16756a");
   return { ok: true, user };
 }
@@ -233,18 +234,27 @@ async function quickSaveUrl({ url, tabId = null, fallbackTitle = "", selectionTe
     });
     setActionBadge("OK", "#16756a");
   } catch (err) {
-    if (
-      (err && err.aborted) ||
-      (typeof JustSaveItApi.getSessionGeneration === "function" && JustSaveItApi.getSessionGeneration() !== startGen)
-    ) {
+    if (err && err.aborted) {
+      return;
+    }
+    if (err && err.status === 401) {
+      const latestOn401 = await JustSaveItApi.getSessionState();
+      const latestUidOn401 = String((latestOn401.user && latestOn401.user.id) || "").trim();
+      if (
+        !latestOn401.accessToken ||
+        (startUid && latestUidOn401 === startUid) ||
+        latestOn401.accessToken === session.accessToken
+      ) {
+        setActionBadge("AUTH", "#ba0e1a");
+      }
       return;
     }
     const latestAfterErr = await JustSaveItApi.getSessionState();
     const latestUidAfterErr = String((latestAfterErr.user && latestAfterErr.user.id) || "").trim();
     if (
+      (typeof JustSaveItApi.getSessionGeneration === "function" && JustSaveItApi.getSessionGeneration() !== startGen) ||
       !latestAfterErr.accessToken ||
-      (startUid && latestUidAfterErr !== startUid) ||
-      (typeof JustSaveItApi.getSessionGeneration === "function" && JustSaveItApi.getSessionGeneration() !== startGen)
+      (startUid && latestUidAfterErr !== startUid)
     ) {
       return;
     }
@@ -252,7 +262,7 @@ async function quickSaveUrl({ url, tabId = null, fallbackTitle = "", selectionTe
       await JustSaveItApi.enqueueOfflineSave(payload, err.message || "network");
       setActionBadge("QUE", "#6f42c1");
     } else {
-      setActionBadge(err.status === 401 ? "AUTH" : "ERR", "#ba0e1a");
+      setActionBadge("ERR", "#ba0e1a");
     }
   }
 }

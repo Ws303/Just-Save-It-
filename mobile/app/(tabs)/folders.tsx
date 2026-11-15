@@ -14,6 +14,7 @@ import {
 import { useFocusEffect, useRouter } from "expo-router";
 import { createFolder, fetchWorkspace } from "../../src/api";
 import {
+  getAuthGeneration,
   getMemoryCachedWorkspace,
   loadCachedWorkspace,
   loadSession,
@@ -37,19 +38,30 @@ export default function FoldersScreen() {
   const [creating, setCreating] = useState(false);
 
   const loadData = useCallback(async () => {
+    const startGen = getAuthGeneration();
     const sess = await loadSession();
-    if (!sess?.access_token) {
+    if (getAuthGeneration() !== startGen || !sess?.access_token) {
       setLoading(false);
       setRefreshing(false);
       return;
     }
     const cached = await loadCachedWorkspace();
+    if (getAuthGeneration() !== startGen) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     if (cached.folders.length > 0 || cached.items.length > 0) {
       setFolders((prev) => (prev.length ? prev : cached.folders));
       setItems((prev) => (prev.length ? prev : cached.items));
       setLoading(false);
     }
     const ws = await fetchWorkspace();
+    if (getAuthGeneration() !== startGen) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     setFolders(ws.folders);
     setItems(ws.items);
     setLoading(false);
