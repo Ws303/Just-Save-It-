@@ -2196,22 +2196,29 @@ test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quic
   const jitter = () => new Promise((r) => setTimeout(r, ((delayTick++ % 3) + 1) * 4));
   const delayedChromeStorage = {
     local: {
-      async get(keys) {
+      async get(keys, cb) {
         await jitter();
-        if (keys == null) return Object.fromEntries(delayMap.entries());
-        const out = {};
-        for (const k of Array.isArray(keys) ? keys : [keys]) {
-          if (delayMap.has(k)) out[k] = delayMap.get(k);
+        let out;
+        if (keys == null) {
+          out = Object.fromEntries(delayMap.entries());
+        } else {
+          out = {};
+          for (const k of Array.isArray(keys) ? keys : [keys]) {
+            if (delayMap.has(k)) out[k] = delayMap.get(k);
+          }
         }
+        if (typeof cb === "function") cb(out);
         return out;
       },
-      async set(obj) {
+      async set(obj, cb) {
         await jitter();
         for (const [k, v] of Object.entries(obj)) delayMap.set(k, v);
+        if (typeof cb === "function") cb();
       },
-      async remove(keys) {
+      async remove(keys, cb) {
         await jitter();
         for (const k of Array.isArray(keys) ? keys : [keys]) delayMap.delete(k);
+        if (typeof cb === "function") cb();
       },
     },
   };
@@ -2263,7 +2270,12 @@ test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quic
   assert.equal(delayMap.get("jsi_access_token"), "tok-c13-b1");
 
   // Case B: User B save followed concurrently by clearAuthSession -> cleanly cleared with zero leftover keys
-  await delaySb.JustSaveItApi.saveWorkspaceCache("u-c13-b", { folders: [{ id: "fc13", name: "F" }], tags: [], items: [] });
+  await delaySb.JustSaveItApi.setWorkspaceCache({
+    user: { id: "u-c13-b", email: "c13b@t.com" },
+    folders: [{ id: "fc13", name: "F" }],
+    tags: [],
+    recentItems: [],
+  });
   await Promise.all([
     delaySb.JustSaveItApi.saveAuthSession({
       access_token: "tok-c13-b2",
