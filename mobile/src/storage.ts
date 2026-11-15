@@ -255,13 +255,21 @@ export function resolveSessionUserId(session: StoredSession | null | undefined):
   }
 }
 
-export async function saveSession(session: StoredSession): Promise<void> {
+export async function saveSession(
+  session: StoredSession,
+  options?: { expectedGen?: number },
+): Promise<void> {
+  const expectedGen = options?.expectedGen;
+  const isStaleExpectedGen = () => expectedGen !== undefined && _authGeneration !== expectedGen;
+  if (isStaleExpectedGen()) return;
   const prev = await loadSession().catch(() => null);
+  if (isStaleExpectedGen()) return;
   const prevUid = resolveSessionUserId(prev) || _activeUserId;
   const prevHadSession = Boolean(prev?.access_token || prev?.refresh_token || prevUid);
   const nextUid = resolveSessionUserId(session);
   const nextHasSession = Boolean(nextUid || session?.access_token);
   const fallbackBackend = await getStorageBackend();
+  if (isStaleExpectedGen()) return;
 
   const shouldClearStorage =
     (prevHadSession && (!nextUid || nextUid !== prevUid)) ||
@@ -272,15 +280,31 @@ export async function saveSession(session: StoredSession): Promise<void> {
     _memWorkspaceCache = null;
     await fallbackBackend.removeItem(KEYS.cache);
     await fallbackBackend.removeItem(KEYS.offlineQueue);
+    if (isStaleExpectedGen()) return;
   } else if (shouldBumpGen) {
     _authGeneration += 1;
   }
-  _activeUserId = nextUid;
 
   const secureBackend = await getSecureSessionBackend();
+  if (isStaleExpectedGen()) return;
+  _activeUserId = nextUid;
   await secureBackend.setItem(KEYS.session, JSON.stringify(session));
   if (secureBackend !== fallbackBackend) {
     await fallbackBackend.removeItem(KEYS.session);
+  }
+  if (expectedGen !== undefined && !shouldBumpGen && _authGeneration !== expectedGen) {
+    const rawOnDisk = await secureBackend.getItem(KEYS.session).catch(() => null);
+    if (rawOnDisk) {
+      try {
+        const parsed = JSON.parse(rawOnDisk) as { access_token?: string };
+        if (parsed?.access_token === session.access_token) {
+          await secureBackend.removeItem(KEYS.session);
+        }
+      } catch {
+        // Ignore parse error on teardown
+      }
+    }
+    return;
   }
   if (shouldBumpGen) {
     // Re-bump after storage commit so any concurrent read during IPC fails its generation check.

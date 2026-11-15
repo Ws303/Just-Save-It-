@@ -79,8 +79,10 @@ export default function FoldersScreen() {
       Alert.alert("กรุณาระบุชื่อโฟลเดอร์");
       return;
     }
+    const startGen = getAuthGeneration();
     setCreating(true);
     const res = await createFolder(newName, newIcon);
+    if (getAuthGeneration() !== startGen) return;
     setCreating(false);
     if (!res.ok) {
       Alert.alert("สร้างโฟลเดอร์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");

@@ -503,18 +503,21 @@ export async function refreshSession(): Promise<boolean> {
       const rawUser = data?.user as JsonRecord | undefined;
       const rawMeta = rawUser?.user_metadata as JsonRecord | undefined;
       if (getAuthGeneration() !== startGen) return false;
-      await saveSession({
-        access_token: accessToken,
-        refresh_token: typeof data?.refresh_token === "string" ? data.refresh_token : current.refresh_token,
-        expires_at: typeof data?.expires_at === "number" ? data.expires_at : current.expires_at,
-        user: rawUser
-          ? {
-              id: String(rawUser.id || current.user?.id || ""),
-              email: String(rawUser.email || current.user?.email || ""),
-              display_name: String(rawMeta?.display_name || current.user?.display_name || ""),
-            }
-          : current.user,
-      });
+      await saveSession(
+        {
+          access_token: accessToken,
+          refresh_token: typeof data?.refresh_token === "string" ? data.refresh_token : current.refresh_token,
+          expires_at: typeof data?.expires_at === "number" ? data.expires_at : current.expires_at,
+          user: rawUser
+            ? {
+                id: String(rawUser.id || current.user?.id || ""),
+                email: String(rawUser.email || current.user?.email || ""),
+                display_name: String(rawMeta?.display_name || current.user?.display_name || ""),
+              }
+            : current.user,
+        },
+        { expectedGen: startGen },
+      );
       return true;
     } catch {
       return false;
@@ -626,7 +629,7 @@ async function fetchCursorPaginatedItems(
     const nextRes = await apiFetch<{ items?: MobileLinkItem[]; next_cursor?: string | null }>(
       `/api/items?limit=100&cursor=${encodeURIComponent(nextCursor)}`,
     );
-    if (getAuthGeneration() !== startGen) {
+    if (nextRes.status === 401 || getAuthGeneration() !== startGen) {
       return { aborted: true, items: [] };
     }
     const batch = nextRes.ok && Array.isArray(nextRes.data?.items) ? nextRes.data.items : [];
@@ -725,6 +728,15 @@ export async function fetchWorkspace(): Promise<WorkspacePayload> {
     ]);
 
     if (getAuthGeneration() !== startGen) {
+      return emptyPayload;
+    }
+
+    if (
+      meRes.status === 401 ||
+      itemsRes.status === 401 ||
+      foldersRes.status === 401 ||
+      remRes.status === 401
+    ) {
       return emptyPayload;
     }
 
@@ -961,12 +973,17 @@ export async function exportWorkspaceJson(): Promise<ApiResult<JsonRecord>> {
 }
 
 export async function deleteMyAccount(): Promise<ApiResult<JsonRecord>> {
+  const startGen = getAuthGeneration();
   const res = await apiFetch<JsonRecord>("/api/auth/me", { method: "DELETE" });
-  if (res.ok) await clearSession();
+  if (res.ok && getAuthGeneration() === startGen) await clearSession();
   return res;
 }
 
 export async function logoutAccount(): Promise<void> {
+  const startGen = getAuthGeneration();
   await apiFetch("/api/auth/logout", { method: "POST", body: {} });
+  if (getAuthGeneration() !== startGen) {
+    return;
+  }
   await clearSession();
 }

@@ -1994,4 +1994,78 @@ test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quic
       assert.equal(host.getEl("offlineQueueCount").textContent, "0");
     },
   );
+
+  // 3. Cycle 9 [LOW-1]: flushOfflineQueue(saveFn) throwing 401 reports unauthorized: true on tail path
+  storeMap.clear();
+  await bgSb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-c9-fn",
+    refresh_token: "",
+    user: { id: "u-c9-fn", email: "c9@t.com" },
+  });
+  await bgSb.JustSaveItApi.enqueueOfflineSave({ url: "https://c9.test/1" }, "offline");
+  const custom401Res = await bgSb.JustSaveItApi.flushOfflineQueue(async () => {
+    const e = new Error("custom 401");
+    e.status = 401;
+    throw e;
+  });
+  assert.equal(custom401Res.unauthorized, true, "flushOfflineQueue(saveFn) throwing 401 must return unauthorized: true");
+
+  // 4. Cycle 9 [MED-4]: quickSaveUrl cross-context connect to User B before User A's 401 resolves -> no AUTH badge, keeps User B
+  storeMap.clear();
+  badges.length = 0;
+  let resolveSlowBgSave = null;
+  bgFetchImpl = async (url, init) => {
+    if (String(url).endsWith("/api/auth/me")) return mkResp(200, { id: "bg-user-b9", email: "b9@t.com" });
+    if (String(url).endsWith("/api/items") && init?.method === "POST") {
+      return new Promise((r) => { resolveSlowBgSave = r; });
+    }
+    return mkResp(200, {});
+  };
+  await bgSb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-bg-a9",
+    refresh_token: "",
+    user: { id: "bg-user-a9", email: "a9@t.com" },
+  });
+  const bgSaveTask = onCommandHandler("quick-save-tab");
+  await new Promise((r) => setTimeout(r, 15));
+  await new Promise((resolve) => {
+    onMessageHandler(
+      { type: "SHARELY_EXTENSION_CONNECT", accessToken: "tok-bg-b9", refreshToken: "" },
+      {},
+      resolve,
+    );
+  });
+  badges.length = 0;
+  resolveSlowBgSave(mkResp(401, { detail: "a9 expired" }));
+  await bgSaveTask;
+  assert.equal(badges.includes("AUTH"), false, "Cross-context User A 401 after User B login must not flash AUTH badge");
+  assert.equal((await bgSb.JustSaveItApi.getSessionState()).user.id, "bg-user-b9");
+
+  // 5. Cycle 9 [MED-2 & LOW-2]: logoutBtn preserves cross-context User B; stale preview abort keeps new session's badge while enterAuthView clears it
+  storeMap.clear();
+  let resolveSlowLogout = null;
+  let resolveSlowPrev = null;
+  const hostLogout = createPopup401Host(async (url) => {
+    const u = String(url);
+    if (u.endsWith("/health")) return mkResp(200, { status: "ok" });
+    if (u.includes("/api/workspace")) return mkResp(200, { folders: [], tags: [], items: [], user: { id: "u-log", email: "l@t.com" } });
+    if (u.endsWith("/api/preview")) return new Promise((r) => { resolveSlowPrev = r; });
+    if (u.endsWith("/api/auth/logout")) return new Promise((r) => { resolveSlowLogout = r; });
+    return mkResp(200, {});
+  });
+  await hostLogout.initAuthed("u-log");
+  // Wait for preview fetch to enter flight while previewSourceBadge says "กำลังพรีวิว..."
+  assert.equal(hostLogout.getEl("previewSourceBadge").textContent, "กำลังพรีวิว...");
+  const logoutTask = hostLogout.getEl("logoutBtn").dispatch("click");
+  await new Promise((r) => setTimeout(r, 15));
+  // External context connects User B before logout/preview settle
+  storeMap.set("jsi_access_token", "tok-user-b9");
+  storeMap.set("jsi_user", { id: "u-user-b9", email: "b9@t.com" });
+  resolveSlowPrev(mkResp(500, { detail: "err" }));
+  resolveSlowLogout(mkResp(200, { ok: true }));
+  await logoutTask;
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(storeMap.get("jsi_access_token"), "tok-user-b9", "logoutBtn must not wipe cross-context User B session");
+  assert.equal(hostLogout.getEl("authView").classList.contains("hidden"), true);
+  assert.equal(hostLogout.getEl("previewSourceBadge").textContent, "กำลังพรีวิว...", "Stale preview error must not clear badge across session change");
 });

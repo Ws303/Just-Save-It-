@@ -112,8 +112,10 @@ export default function ProfileScreen() {
   }
 
   async function handleEnablePush() {
+    const startGen = getAuthGeneration();
     setBusyAction("push");
     const reg = await registerMobilePushToken();
+    if (getAuthGeneration() !== startGen) return;
     if (!reg.granted) {
       setBusyAction("");
       setPushStatus("ไม่ได้รับสิทธิ์แจ้งเตือนจากระบบ");
@@ -125,8 +127,11 @@ export default function ProfileScreen() {
       delivery_mode: reg.delivery_mode,
       push_token: reg.push_token,
     });
+    if (getAuthGeneration() !== startGen) return;
     const ws = await fetchWorkspace();
+    if (getAuthGeneration() !== startGen) return;
     const synced = await syncLocalRemindersWithOs(ws.reminders);
+    if (getAuthGeneration() !== startGen) return;
     setBusyAction("");
     if (apiRes.ok) {
       setPushStatus(
@@ -140,8 +145,10 @@ export default function ProfileScreen() {
   }
 
   async function handleFlushQueue() {
+    const startGen = getAuthGeneration();
     setBusyAction("queue");
     const res = await flushOfflineQueue();
+    if (getAuthGeneration() !== startGen) return;
     setQueueCount(res.remaining);
     setBusyAction("");
     Alert.alert("ซิงก์คิวออฟไลน์", `อัปโหลดสำเร็จ ${res.flushed} รายการ (เหลือ ${res.remaining})`);
@@ -149,8 +156,10 @@ export default function ProfileScreen() {
   }
 
   async function handleCreateToken() {
+    const startGen = getAuthGeneration();
     setBusyAction("token");
     const res = await createMcpToken(newTokenName || "Expo Mobile Token");
+    if (getAuthGeneration() !== startGen) return;
     setBusyAction("");
     if (!res.ok || !res.data) {
       Alert.alert("สร้าง Token ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
@@ -164,15 +173,19 @@ export default function ProfileScreen() {
   }
 
   async function handleRevokeToken(id: string) {
+    const startGen = getAuthGeneration();
     const res = await revokeMcpToken(id);
+    if (getAuthGeneration() !== startGen) return;
     if (res.ok) {
       setTokens((prev) => prev.filter((t) => t.id !== id));
     }
   }
 
   async function handleExportJson() {
+    const startGen = getAuthGeneration();
     setBusyAction("export");
     const res = await exportWorkspaceJson();
+    if (getAuthGeneration() !== startGen) return;
     setBusyAction("");
     if (!res.ok || !res.data) {
       Alert.alert("ส่งออกข้อมูลไม่สำเร็จ", res.error || "กรุณาลองใหม่");
@@ -188,6 +201,7 @@ export default function ProfileScreen() {
           {
             text: "แชร์ฉบับย่อ",
             onPress: () => {
+              if (getAuthGeneration() !== startGen) return;
               void Share.share({
                 title: "just-save-it-export.json",
                 message: bounded.jsonString,
@@ -198,6 +212,7 @@ export default function ProfileScreen() {
       );
       return;
     }
+    if (getAuthGeneration() !== startGen) return;
     await Share.share({
       title: "just-save-it-export.json",
       message: bounded.jsonString,
@@ -209,19 +224,26 @@ export default function ProfileScreen() {
       Alert.alert("กรุณาพิมพ์คำว่า DELETE เพื่อยืนยัน");
       return;
     }
+    const startGen = getAuthGeneration();
     setBusyAction("delete");
     const res = await deleteMyAccount();
-    setBusyAction("");
     if (!res.ok) {
+      if (getAuthGeneration() !== startGen) return;
+      setBusyAction("");
       Alert.alert("ลบบัญชีไม่สำเร็จ", res.error || "กรุณาลองใหม่");
       return;
     }
+    const latestSess = await loadSession();
+    if (latestSess?.access_token) return;
+    setBusyAction("");
     setDeleteOpen(false);
     router.replace("/login");
   }
 
   async function handleLogout() {
     await logoutAccount();
+    const latestSess = await loadSession();
+    if (latestSess?.access_token) return;
     router.replace("/login");
   }
 

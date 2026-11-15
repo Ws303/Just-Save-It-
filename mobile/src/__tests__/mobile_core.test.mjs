@@ -1071,3 +1071,133 @@ test("Cycle 8 [MED-3, MED-4]: apiFetch mid-parseJsonSafe abort and fetchWorkspac
     await clearSession();
   }
 });
+
+test("Cycle 9 [HIGH-1, MED-1, MED-2, MED-3, MED-4]: partial 401 fallback, cursor page-2 401, logoutAccount race, saveSession expectedGen race, and action handler guards", async () => {
+  const makeFakeJwtC9 = (sub) => {
+    const body = btoa(JSON.stringify({ sub })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return `eyJhbGciOiJIUzI1NiJ9.${body}.sig`;
+  };
+  const { fetchWorkspace, logoutAccount } = await import("../api.ts");
+  const { loadSession } = await import("../storage.ts");
+  const origFetch = globalThis.fetch;
+
+  try {
+    // 1. MED-1: legacy 404 fallback with itemsRes=200 but foldersRes=401 must fail closed without overwriting cache
+    await saveSession({
+      access_token: makeFakeJwtC9("mob-c9-part"),
+      refresh_token: "",
+      user: { id: "mob-c9-part", email: "part@mob.test" },
+    });
+    await saveCachedWorkspace({
+      user_id: "mob-c9-part",
+      items: [{ id: "keep-c9", url: "https://keep.test", title: "Keep" }],
+      folders: [{ id: "keep-f", name: "Keep Folder" }],
+      reminders: [],
+    });
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("/api/workspace")) return { ok: false, status: 404, text: async () => "{}" };
+      if (u.includes("/api/folders")) return { ok: false, status: 401, text: async () => "{}" };
+      if (u.includes("/api/items")) return { ok: true, status: 200, text: async () => '{"items":[{"id":"new-1"}]}' };
+      return { ok: true, status: 200, text: async () => '{"reminders":[]}' };
+    };
+    const wsPartial401 = await fetchWorkspace();
+    assert.equal(wsPartial401.items.length, 0, "Fallback 401 on foldersRes must fail closed");
+    assert.equal((await loadCachedWorkspace()).folders[0].id, "keep-f", "Fallback 401 must not wipe stored cache folders");
+
+    // 2. MED-1: cursor pagination page 2 returning 401 must fail closed instead of persisting truncated page 1
+    await saveSession({
+      access_token: makeFakeJwtC9("mob-c9-cur"),
+      refresh_token: "",
+      user: { id: "mob-c9-cur", email: "cur@mob.test" },
+    });
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("/api/workspace")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '{"items":[{"id":"p1-only","url":"https://p1.test"}],"folders":[],"reminders":[],"next_cursor":"c2"}',
+        };
+      }
+      if (u.includes("cursor=c2")) {
+        return { ok: false, status: 401, text: async () => '{"detail":"expired"}' };
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    };
+    const wsCur401 = await fetchWorkspace();
+    assert.equal(wsCur401.items.length, 0, "Page 2 cursor 401 must fail closed without persisting truncated page 1");
+    assert.equal((await loadCachedWorkspace()).items.length, 0);
+
+    // 3. MED-2: logoutAccount mid-flight OAuth switch to User B must NOT clear User B
+    await saveSession({
+      access_token: makeFakeJwtC9("mob-c9-log-a"),
+      refresh_token: "",
+      user: { id: "mob-c9-log-a", email: "la@mob.test" },
+    });
+    let resolveLogout = null;
+    globalThis.fetch = () => new Promise((r) => { resolveLogout = r; });
+    const logoutTask = logoutAccount();
+    await new Promise((r) => setTimeout(r, 10));
+    await saveSession({
+      access_token: makeFakeJwtC9("mob-c9-log-b"),
+      refresh_token: "",
+      user: { id: "mob-c9-log-b", email: "lb@mob.test" },
+    });
+    resolveLogout({ ok: true, status: 200, text: async () => "{}" });
+    await logoutTask;
+    assert.equal((await loadSession())?.user?.id, "mob-c9-log-b", "logoutAccount must preserve User B signed in mid-flight");
+
+    // 4. MED-3: saveSession({ expectedGen }) concurrent with clearSession() never resurrects cleared session
+    await saveSession({
+      access_token: makeFakeJwtC9("mob-c9-res"),
+      refresh_token: "r-res",
+      user: { id: "mob-c9-res", email: "res@mob.test" },
+    });
+    const refreshGen = getAuthGeneration();
+    const pendingRefreshSave = saveSession(
+      {
+        access_token: makeFakeJwtC9("mob-c9-res"),
+        refresh_token: "r-res-2",
+        user: { id: "mob-c9-res", email: "res@mob.test" },
+      },
+      { expectedGen: refreshGen },
+    );
+    await clearSession();
+    await pendingRefreshSave;
+    assert.equal(await loadSession(), null, "saveSession with stale expectedGen must never resurrect cleared session");
+
+    // 5. HIGH-1: All action handlers across the 5 mobile screens enforce authGeneration/session guards
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const appDir = path.resolve(here, "../../app");
+    const actionChecks = [
+      ["(tabs)/profile.tsx", /async function handleEnablePush[\s\S]{0,900}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/profile.tsx", /async function handleFlushQueue[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/profile.tsx", /async function handleCreateToken[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/profile.tsx", /async function handleRevokeToken[\s\S]{0,300}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/profile.tsx", /async function handleExportJson[\s\S]{0,900}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/profile.tsx", /async function handleDeleteAccount[\s\S]{0,700}loadSession\(\)/],
+      ["(tabs)/profile.tsx", /async function handleLogout[\s\S]{0,300}loadSession\(\)/],
+      ["item/[id].tsx", /async function handleRefreshPreview[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
+      ["item/[id].tsx", /async function handleAiSummarize[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
+      ["item/[id].tsx", /async function handleSaveEdits[\s\S]{0,600}getAuthGeneration\(\) !== startGen/],
+      ["item/[id].tsx", /async function handleQuickReminder[\s\S]{0,900}getAuthGeneration\(\) !== startGen/],
+      ["item/[id].tsx", /async function handleClearReminder[\s\S]{0,350}getAuthGeneration\(\) !== startGen/],
+      ["item/[id].tsx", /function confirmDelete[\s\S]{0,500}getAuthGeneration\(\) !== modalGen/],
+      ["(tabs)/folders.tsx", /async function handleCreate[\s\S]{0,500}getAuthGeneration\(\) !== startGen/],
+      ["folder/[id].tsx", /async function handleShareInvite[\s\S]{0,500}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/index.tsx", /async function handleQuickSave[\s\S]{0,800}getAuthGeneration\(\) !== startGen/],
+      ["(tabs)/index.tsx", /async function toggleFavorite[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
+    ];
+    for (const [rel, pattern] of actionChecks) {
+      const code = fs.readFileSync(path.join(appDir, rel), "utf8");
+      assert.match(code, pattern, `Expected guard in mobile/app/${rel} matching ${pattern}`);
+    }
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+  }
+});

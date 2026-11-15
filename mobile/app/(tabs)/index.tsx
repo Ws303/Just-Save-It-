@@ -174,6 +174,7 @@ export default function HomeFeedScreen() {
       Alert.alert("URL ไม่ถูกต้อง", "กรุณาระบุลิงก์ที่ขึ้นต้นด้วย http:// หรือ https://");
       return;
     }
+    const startGen = getAuthGeneration();
     setSaving(true);
     const parsedTags = saveTags
       .split(/[\s,]+/)
@@ -188,6 +189,7 @@ export default function HomeFeedScreen() {
       folder_id: saveFolderId,
       status: saveStatus,
     });
+    if (getAuthGeneration() !== startGen) return;
     setSaving(false);
     if (!res.ok) {
       Alert.alert("บันทึกไม่สำเร็จ", res.error || "กรุณาลองใหม่อีกครั้ง");
@@ -207,9 +209,11 @@ export default function HomeFeedScreen() {
   }
 
   async function toggleFavorite(item: MobileLinkItem) {
+    const startGen = getAuthGeneration();
     const nextFav = !item.is_favorite;
     setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, is_favorite: nextFav } : it)));
     const res = await patchLinkItem(item.id, { is_favorite: nextFav });
+    if (getAuthGeneration() !== startGen) return;
     if (!res.ok) {
       setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, is_favorite: !nextFav } : it)));
     }

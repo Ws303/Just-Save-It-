@@ -673,7 +673,7 @@
       return !entry?.id || !removedIds.has(String(entry.id));
     });
     await setStorage({ [STORAGE_KEYS.OFFLINE_QUEUE]: nextQueue });
-    return { flushed, remaining: remaining.length, failed, aborted: false, unauthorized: false };
+    return { flushed, remaining: remaining.length, failed, aborted: false, unauthorized };
   }
 
   async function fetchRecentItems({ search = "", limit = 20 } = {}) {

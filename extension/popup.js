@@ -901,10 +901,12 @@
         renderPreviewThumbnail(thumb, preview.site_name || targetUrl);
       }
     } catch (err) {
+      if (await shouldIgnoreErrorAfterExpiryCheck(err, startGen, startSess.accessToken)) {
+        return;
+      }
       if (els.urlInput.value.trim() === targetUrl && els.previewSourceBadge) {
         els.previewSourceBadge.textContent = "";
       }
-      await shouldIgnoreErrorAfterExpiryCheck(err, startGen, startSess.accessToken);
     }
   }
 
@@ -1079,6 +1081,7 @@
     if (els.tagSuggestions) els.tagSuggestions.innerHTML = "";
     if (els.recentList) els.recentList.innerHTML = "";
     if (els.recentCount) els.recentCount.textContent = "0";
+    if (els.previewSourceBadge) els.previewSourceBadge.textContent = "";
     if (els.offlineQueueBar) els.offlineQueueBar.classList.add("hidden");
     if (els.reminderPickerCard) els.reminderPickerCard.classList.add("hidden");
     if (els.feedbackBanner) els.feedbackBanner.classList.add("hidden");
@@ -1526,12 +1529,20 @@
 
     els.logoutBtn.addEventListener("click", async () => {
       els.settingsPanel.classList.add("hidden");
+      const startGen = getSessionGen();
+      const startSess = await api.getSessionState();
+      if (isSessionStale(startGen) || !startSess.accessToken) return;
       try {
         await api.apiRequest("/api/auth/logout", { method: "POST" });
       } catch (_err) {
-        // Always clear local session
+        // Always clear local session unless replaced mid-flight
       }
+      if (isSessionStale(startGen)) return;
+      const latestSess = await api.getSessionState();
+      if (latestSess.accessToken && latestSess.accessToken !== startSess.accessToken) return;
       await api.clearAuthSession();
+      const postClearSess = await api.getSessionState();
+      if (postClearSess.accessToken) return;
       enterAuthView();
     });
 

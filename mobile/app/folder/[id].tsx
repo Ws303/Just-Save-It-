@@ -92,8 +92,10 @@ export default function FolderDetailScreen() {
 
   async function handleShareInvite() {
     if (!id || isVirtualInbox) return;
+    const startGen = getAuthGeneration();
     setInviting(true);
     const res = await createFolderInvite(id, "editor");
+    if (getAuthGeneration() !== startGen) return;
     setInviting(false);
     const inviteUrl = typeof res.data?.invite_url === "string" ? res.data.invite_url : "";
     if (!res.ok || !inviteUrl) {

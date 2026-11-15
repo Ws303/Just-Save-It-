@@ -78,8 +78,10 @@ export default function ItemDetailScreen() {
 
   async function handleRefreshPreview() {
     if (!item) return;
+    const startGen = getAuthGeneration();
     setBusy("preview");
     const res = await refreshLinkPreview(item.id);
+    if (getAuthGeneration() !== startGen) return;
     setBusy("");
     if (res.ok && res.data) {
       const nextItem = (res.data as { item?: MobileLinkItem })?.item ?? res.data;
@@ -92,8 +94,10 @@ export default function ItemDetailScreen() {
 
   async function handleAiSummarize() {
     if (!item) return;
+    const startGen = getAuthGeneration();
     setBusy("ai");
     const res = await summarizeLinkItem(item.id, false);
+    if (getAuthGeneration() !== startGen) return;
     setBusy("");
     if (res.ok && res.data) {
       const summary = typeof res.data.summary_th === "string" ? res.data.summary_th : "";
@@ -105,6 +109,7 @@ export default function ItemDetailScreen() {
 
   async function handleSaveEdits() {
     if (!item) return;
+    const startGen = getAuthGeneration();
     setBusy("save");
     const parsedTags = tagsText
       .split(/[\s,]+/)
@@ -114,6 +119,7 @@ export default function ItemDetailScreen() {
       note: note.trim(),
       tags: parsedTags,
     });
+    if (getAuthGeneration() !== startGen) return;
     setBusy("");
     if (res.ok) {
       Alert.alert("บันทึกการแก้ไขแล้ว");
@@ -125,6 +131,7 @@ export default function ItemDetailScreen() {
 
   async function handleQuickReminder(hoursAhead: number, repeatDays: number | null) {
     if (!item) return;
+    const startGen = getAuthGeneration();
     setBusy("rem");
     const dt = new Date(Date.now() + hoursAhead * 3600 * 1000);
     const iso = dt.toISOString();
@@ -133,10 +140,13 @@ export default function ItemDetailScreen() {
       remind_at: iso,
       repeat_every_days: repeatDays,
     });
+    if (getAuthGeneration() !== startGen) return;
     const remRes = await apiFetch<{ reminders?: MobileLinkItem[] }>("/api/reminders");
+    if (getAuthGeneration() !== startGen) return;
     if (Array.isArray(remRes.data?.reminders)) {
       await syncLocalRemindersWithOs(remRes.data.reminders);
     }
+    if (getAuthGeneration() !== startGen) return;
     setBusy("");
     if (res.ok) {
       Alert.alert("ตั้งเวลาเตือนความจำแล้ว", `แจ้งเตือนเมื่อ ${dt.toLocaleString("th-TH")}`);
@@ -147,19 +157,24 @@ export default function ItemDetailScreen() {
 
   async function handleClearReminder() {
     if (!item) return;
+    const startGen = getAuthGeneration();
     await deleteReminder(item.id);
+    if (getAuthGeneration() !== startGen) return;
     Alert.alert("ลบการแจ้งเตือนแล้ว");
   }
 
   function confirmDelete() {
     if (!item) return;
+    const modalGen = getAuthGeneration();
     Alert.alert("ลบลิงก์นี้?", "ลิงก์จะถูกลบออกจากพื้นที่ทำงานของคุณ", [
       { text: "ยกเลิก", style: "cancel" },
       {
         text: "ลบ",
         style: "destructive",
         onPress: () => {
+          if (getAuthGeneration() !== modalGen) return;
           void deleteLinkItem(item.id).then((res) => {
+            if (getAuthGeneration() !== modalGen) return;
             if (res.ok) router.back();
           });
         },
