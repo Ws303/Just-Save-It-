@@ -8,6 +8,7 @@ import { safeHrefUrl, resolveMediaThumbUrl } from "../components/icons.js";
 import { store, generateUuid, inferPlatform, getFolderById, getLinkById, filterLinks, buildFolderInviteUrl } from "../state/store.js";
 import { getAuthMode } from "./routeGuard.js";
 import { buildAuthRedirectUrl, extractClaimsSummary, supabaseAuth } from "./supabaseAuth.js";
+import { disableWebPush } from "./pushClient.js";
 
 function formatRemindIsoInBangkok(remIso, fallbackTime = "18:00") {
   if (!remIso) return { date: null, time: fallbackTime };
@@ -1700,9 +1701,57 @@ export const apiClient = {
       return res;
     });
     remoteTasks.push(supaTask);
+    remoteTasks.push(
+      disableWebPush({
+        unsubscribeBrowser: true,
+        deactivateDevice: ({ endpoint, platform }) =>
+          dispatchRequest({
+            method: "POST",
+            path: "/api/devices/deactivate",
+            body: { endpoint, platform },
+            customHeaders: authOverride,
+            skipAuthRefresh: true,
+            skipUnauthRedirect: true,
+            keepalive: true,
+            mockHandler: () => ({ status: 200, data: { deactivated: 0 } }),
+          }),
+      }).catch(() => ({ ok: false }))
+    );
 
     await Promise.race([Promise.allSettled(remoteTasks), sleep(250)]);
     return { ok: true, status: 200, data: { logged_out: true } };
+  },
+
+  async getPushConfig() {
+    const res = await dispatchRequest({
+      method: "GET",
+      path: "/api/reminders/push-config",
+      body: null,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({ status: 200, data: { enabled: false, vapid_public_key: null } }),
+    });
+    return res.ok && res.data ? res.data : { enabled: false, vapid_public_key: null };
+  },
+
+  async registerWebPushDevice(payload) {
+    return dispatchRequest({
+      method: "POST",
+      path: "/api/devices",
+      body: payload,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({ status: 201, data: { id: generateUuid(), ...payload } }),
+    });
+  },
+
+  async deactivateWebPushDevice({ endpoint = null, platform = "web" } = {}) {
+    return dispatchRequest({
+      method: "POST",
+      path: "/api/devices/deactivate",
+      body: { endpoint, platform },
+      skipUnauthRedirect: true,
+      keepalive: true,
+      mockHandler: () => ({ status: 200, data: { deactivated: 1 } }),
+    });
   },
 
   async submitFeedback({ category = "general", topic, message, detail, pageContext = null, contactEmail = null, allowContact = false }) {

@@ -27,8 +27,16 @@ services:
         value: thumbnails
       - key: CORS_ALLOW_ORIGINS
         value: "https://just-save-it-web.onrender.com"
+      - key: CORS_ALLOW_ORIGIN_REGEX
+        value: "^chrome-extension://[a-p]{32}$"
       - key: APP_URL
         value: "https://just-save-it-web.onrender.com"
+      - key: VAPID_SUBJECT
+        value: "mailto:support@justsaveit.app"
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY

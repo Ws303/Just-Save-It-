@@ -4,14 +4,17 @@ Endpoints:
 - POST /api/ai/summarize : On-demand summarization endpoint with 3-tier support and Summarize-Once caching.
 """
 
+import json
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NoReturn, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
+import httpx
+from pydantic import ValidationError
 
 from Login.auth_dep import get_current_user_id
-from .llm_client import call_byok_or_custom_llm, resolve_upstream_model_id, validate_ai_base_url
+from .llm_client import UpstreamLLMError, call_byok_or_custom_llm, resolve_upstream_model_id, validate_ai_base_url
 from .schemas import AIConfig, SummarizeRequest, SummarizeResponse
 from .summarizer_service import get_supabase_client, summarize_item_once
 
@@ -49,6 +52,22 @@ def _validate_request_ai_config(ai_config: AIConfig) -> AIConfig:
     return ai_config
 
 
+def _raise_mapped_ai_error(exc: Exception, *, context: str, fallback_to_502: bool = False) -> NoReturn:
+    """Normalize upstream AI errors consistently across /summarize and /test."""
+    if isinstance(exc, HTTPException):
+        raise exc
+    if isinstance(exc, RuntimeError):
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if isinstance(exc, json.JSONDecodeError):
+        raise HTTPException(status_code=502, detail=f"{context}: invalid JSON from upstream AI") from exc
+    # Check Pydantic v2 ValidationError & UpstreamLLMError BEFORE ValueError because both subclass ValueError.
+    if isinstance(exc, (httpx.HTTPError, ValidationError, UpstreamLLMError)) or fallback_to_502:
+        raise HTTPException(status_code=502, detail=f"{context}: {type(exc).__name__}") from exc
+    if isinstance(exc, ValueError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise exc
+
+
 @router.post(
     "/summarize",
     response_model=SummarizeResponse,
@@ -75,12 +94,15 @@ async def summarize_endpoint(
     )
 
     db = get_supabase_client()
-    return await summarize_item_once(
-        db=db,
-        user_id=user_id,
-        req=req,
-        ai_config=ai_config,
-    )
+    try:
+        return await summarize_item_once(
+            db=db,
+            user_id=user_id,
+            req=req,
+            ai_config=ai_config,
+        )
+    except Exception as exc:
+        _raise_mapped_ai_error(exc, context="AI summarization failed", fallback_to_502=False)
 
 
 @router.post(
@@ -138,7 +160,5 @@ async def test_ai_connection_endpoint(
             "model": resolve_upstream_model_id(ai_config.model, default=default_model),
             "engine_used": engine_used,
         }
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI connection check failed: {type(exc).__name__}") from exc
+        _raise_mapped_ai_error(exc, context="AI connection check failed", fallback_to_502=True)

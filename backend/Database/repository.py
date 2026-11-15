@@ -986,8 +986,15 @@ def delete_tag_for_user(db: Any, user_id: str, tag_id: str) -> Dict[str, Any]:
 def register_device_for_user(db: Any, user_id: str, req: DeviceRegisterRequest) -> Dict[str, Any]:
     """Register or refresh a user device for remote push or iOS local_sync."""
     now_iso = _now_iso()
-    if req.push_token:
-        existing = db.table("devices").select("*").eq("push_token", req.push_token).execute()
+    web_endpoint = (
+        str(req.web_push_sub.get("endpoint") or "").strip()
+        if isinstance(req.web_push_sub, dict)
+        else ""
+    )
+    effective_push_token = (req.push_token or "").strip() or (web_endpoint or None)
+
+    if effective_push_token:
+        existing = db.table("devices").select("*").eq("push_token", effective_push_token).execute()
         if existing.data:
             if existing.data[0].get("user_id") != user_id:
                 raise HTTPException(
@@ -998,6 +1005,7 @@ def register_device_for_user(db: Any, user_id: str, req: DeviceRegisterRequest) 
             updates = {
                 "platform": req.platform,
                 "delivery_mode": req.delivery_mode,
+                "push_token": effective_push_token,
                 "web_push_sub": req.web_push_sub,
                 "is_active": req.is_active,
                 "last_seen": now_iso,
@@ -1024,7 +1032,7 @@ def register_device_for_user(db: Any, user_id: str, req: DeviceRegisterRequest) 
         "user_id": user_id,
         "platform": req.platform,
         "delivery_mode": req.delivery_mode,
-        "push_token": req.push_token,
+        "push_token": effective_push_token,
         "web_push_sub": req.web_push_sub,
         "is_active": req.is_active,
         "last_seen": now_iso,
@@ -1032,6 +1040,33 @@ def register_device_for_user(db: Any, user_id: str, req: DeviceRegisterRequest) 
     }
     res = db.table("devices").insert(payload).execute()
     return dict(res.data[0]) if res.data else payload
+
+
+def deactivate_device_for_user(
+    db: Any,
+    user_id: str,
+    *,
+    push_token: Optional[str] = None,
+    endpoint: Optional[str] = None,
+    platform: Optional[str] = "web",
+) -> Dict[str, Any]:
+    """Deactivate matching active push device(s) scoped strictly to the caller user."""
+    now_iso = _now_iso()
+    target = (push_token or endpoint or "").strip()
+    dev_res = db.table("devices").select("*").eq("user_id", user_id).eq("is_active", True).execute()
+    deactivated = 0
+    for row in dev_res.data or []:
+        row_sub = row.get("web_push_sub") if isinstance(row.get("web_push_sub"), dict) else {}
+        row_endpoint = str(row_sub.get("endpoint") or "").strip()
+        row_token = str(row.get("push_token") or "").strip()
+        if target:
+            if row_token != target and row_endpoint != target:
+                continue
+        elif platform and str(row.get("platform") or "").lower() != platform:
+            continue
+        db.table("devices").update({"is_active": False, "last_seen": now_iso}).eq("id", row["id"]).eq("user_id", user_id).execute()
+        deactivated += 1
+    return {"deactivated": deactivated}
 
 
 def export_user_data(db: Any, user_id: str) -> Dict[str, Any]:

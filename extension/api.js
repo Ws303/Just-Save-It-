@@ -5,7 +5,13 @@
 (function (global) {
   "use strict";
 
-  const DEFAULT_BACKEND_URL = "http://localhost:8000";
+  const CLOUD_BACKEND_URL = "https://just-save-it-api.onrender.com";
+  const LOCAL_BACKEND_URL = "http://127.0.0.1:8000";
+  const DEFAULT_BACKEND_URL = CLOUD_BACKEND_URL;
+  const BACKEND_PRESETS = {
+    cloud: CLOUD_BACKEND_URL,
+    local: LOCAL_BACKEND_URL,
+  };
   const STORAGE_KEYS = {
     BACKEND_URL: "jsi_backend_url",
     ACCESS_TOKEN: "jsi_access_token",
@@ -13,15 +19,35 @@
     USER: "jsi_user",
   };
 
+  function isLocalBackendUrl(rawUrl) {
+    try {
+      const parsed = new URL(String(rawUrl || ""));
+      return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]";
+    } catch (_err) {
+      return false;
+    }
+  }
+
   function normalizeBackendUrl(rawUrl) {
     const trimmed = String(rawUrl || "").trim().replace(/\/+$/, "");
     if (!trimmed) {
       return DEFAULT_BACKEND_URL;
     }
-    if (!/^https?:\/\//i.test(trimmed)) {
-      return "http://" + trimmed;
+    const withScheme = /^https?:\/\//i.test(trimmed)
+      ? trimmed
+      : /^(localhost|127\.0\.0\.1)(:|\/|$)/i.test(trimmed)
+        ? `http://${trimmed}`
+        : `https://${trimmed}`;
+    try {
+      const parsed = new URL(withScheme);
+      const isLocal = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+      if (parsed.protocol === "https:" || (parsed.protocol === "http:" && isLocal)) {
+        return parsed.origin;
+      }
+    } catch (_err) {
+      // Fallback safely to production cloud URL on malformed override
     }
-    return trimmed;
+    return DEFAULT_BACKEND_URL;
   }
 
   function getStorage(keys) {
@@ -182,13 +208,50 @@
     return null;
   }
 
+  async function loginWithAccessToken(rawToken, refreshToken = "") {
+    const token = String(rawToken || "").trim().replace(/^Bearer\s+/i, "");
+    if (!token) {
+      throw new Error("กรุณาวาง Access Token ก่อนเข้าสู่ระบบ");
+    }
+    const session = await getSessionState();
+    const response = await fetch(`${session.backendUrl}/api/auth/me`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await parseJsonSafe(response);
+    if (!response.ok || !payload || !payload.id) {
+      const msg = (payload && (payload.detail || payload.message)) || `HTTP ${response.status}`;
+      throw new Error(`Token ไม่ถูกต้องหรือหมดอายุ (${msg})`);
+    }
+    await saveAuthSession({
+      access_token: token,
+      refresh_token: String(refreshToken || "").trim(),
+      user: payload,
+    });
+    return payload;
+  }
+
+  function formatAiSummaryResponse(resp) {
+    const summary = String((resp && (resp.summary_th || resp.summary)) || "").trim();
+    const tags = Array.isArray(resp && resp.suggested_tags)
+      ? resp.suggested_tags
+      : Array.isArray(resp && resp.tags)
+        ? resp.tags
+        : [];
+    return { summary, tags };
+  }
+
   function isSaveableHttpUrl(url) {
     return typeof url === "string" && /^https?:\/\//i.test(url.trim());
   }
 
-  global.JustSaveItApi = {
+  const exportedApi = {
+    CLOUD_BACKEND_URL,
+    LOCAL_BACKEND_URL,
     DEFAULT_BACKEND_URL,
+    BACKEND_PRESETS,
     STORAGE_KEYS,
+    isLocalBackendUrl,
     normalizeBackendUrl,
     getSessionState,
     saveAuthSession,
@@ -196,7 +259,14 @@
     setBackendUrl,
     apiRequest,
     checkHealth,
+    loginWithAccessToken,
+    formatAiSummaryResponse,
     runDomAssist,
     isSaveableHttpUrl,
   };
-})(typeof self !== "undefined" ? self : window);
+
+  global.JustSaveItApi = exportedApi;
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = exportedApi;
+  }
+})(typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : globalThis);

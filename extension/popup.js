@@ -16,6 +16,8 @@
     healthBadge: document.getElementById("healthBadge"),
     toggleSettingsBtn: document.getElementById("toggleSettingsBtn"),
     settingsPanel: document.getElementById("settingsPanel"),
+    presetCloudBtn: document.getElementById("presetCloudBtn"),
+    presetLocalBtn: document.getElementById("presetLocalBtn"),
     backendUrlInput: document.getElementById("backendUrlInput"),
     saveSettingsBtn: document.getElementById("saveSettingsBtn"),
     feedbackBanner: document.getElementById("feedbackBanner"),
@@ -29,6 +31,9 @@
     emailInput: document.getElementById("emailInput"),
     passwordInput: document.getElementById("passwordInput"),
     authSubmitBtn: document.getElementById("authSubmitBtn"),
+    tokenLoginInput: document.getElementById("tokenLoginInput"),
+    tokenLoginBtn: document.getElementById("tokenLoginBtn"),
+    localDemoSection: document.getElementById("localDemoSection"),
     demoLoginBtn: document.getElementById("demoLoginBtn"),
 
     saverView: document.getElementById("saverView"),
@@ -391,8 +396,17 @@
     }
   }
 
+  function syncLocalDemoVisibility(backendUrl) {
+    if (!els.localDemoSection) return;
+    els.localDemoSection.classList.toggle("hidden", !api.isLocalBackendUrl(backendUrl));
+  }
+
   async function handleDemoLogin() {
     clearBanner();
+    if (!api.isLocalBackendUrl(els.backendUrlInput.value)) {
+      showBanner("บัญชีทดสอบใช้ได้เฉพาะโหมด Local Dev (localhost/127.0.0.1) เท่านั้น", "error");
+      return;
+    }
     els.demoLoginBtn.disabled = true;
     try {
       const authResp = await api.apiRequest("/api/auth/login", {
@@ -409,6 +423,25 @@
       );
     } finally {
       els.demoLoginBtn.disabled = false;
+    }
+  }
+
+  async function handleTokenLogin() {
+    clearBanner();
+    const rawToken = els.tokenLoginInput ? els.tokenLoginInput.value.trim() : "";
+    if (!rawToken) {
+      showBanner("กรุณาวาง Web Access Token จากหน้าโปรไฟล์", "error");
+      return;
+    }
+    els.tokenLoginBtn.disabled = true;
+    try {
+      await api.loginWithAccessToken(rawToken);
+      els.tokenLoginInput.value = "";
+      await enterSaverView();
+    } catch (err) {
+      showBanner(err.message || "Token ไม่ถูกต้อง", "error");
+    } finally {
+      els.tokenLoginBtn.disabled = false;
     }
   }
 
@@ -518,8 +551,9 @@
           save_to_note: false,
         },
       });
-      const tagsText = Array.isArray(resp.tags) && resp.tags.length ? `\n\nแท็กแนะนำ: ${resp.tags.join(", ")}` : "";
-      els.aiResultBox.textContent = `${resp.summary || ""}${tagsText}`.trim();
+      const { summary, tags } = api.formatAiSummaryResponse(resp);
+      const tagsText = tags.length ? `\n\nแท็กแนะนำ: ${tags.join(", ")}` : "";
+      els.aiResultBox.textContent = `${summary}${tagsText}`.trim();
       els.aiResultBox.classList.remove("hidden");
     } catch (err) {
       els.aiResultBox.textContent = `ไม่สามารถสรุป AI ได้ในตอนนี้: ${err.message}`;
@@ -538,9 +572,34 @@
     els.saveSettingsBtn.addEventListener("click", async () => {
       const savedUrl = await api.setBackendUrl(els.backendUrlInput.value);
       els.backendUrlInput.value = savedUrl;
+      syncLocalDemoVisibility(savedUrl);
       await updateHealthStatus(savedUrl);
       showBanner(`อัปเดต Backend URL เป็น ${savedUrl} แล้ว`, "info");
     });
+
+    if (els.presetCloudBtn) {
+      els.presetCloudBtn.addEventListener("click", async () => {
+        const savedUrl = await api.setBackendUrl(api.BACKEND_PRESETS.cloud);
+        els.backendUrlInput.value = savedUrl;
+        syncLocalDemoVisibility(savedUrl);
+        await updateHealthStatus(savedUrl);
+        showBanner("สลับไปยัง Render Production Cloud แล้ว", "info");
+      });
+    }
+
+    if (els.presetLocalBtn) {
+      els.presetLocalBtn.addEventListener("click", async () => {
+        const savedUrl = await api.setBackendUrl(api.BACKEND_PRESETS.local);
+        els.backendUrlInput.value = savedUrl;
+        syncLocalDemoVisibility(savedUrl);
+        await updateHealthStatus(savedUrl);
+        showBanner("สลับไปยัง Local Dev (127.0.0.1:8000) แล้ว", "info");
+      });
+    }
+
+    if (els.tokenLoginBtn) {
+      els.tokenLoginBtn.addEventListener("click", handleTokenLogin);
+    }
 
     els.tabLoginBtn.addEventListener("click", () => setAuthMode("login"));
     els.tabRegisterBtn.addEventListener("click", () => setAuthMode("register"));
@@ -596,6 +655,7 @@
     bindEvents();
     const session = await api.getSessionState();
     els.backendUrlInput.value = session.backendUrl;
+    syncLocalDemoVisibility(session.backendUrl);
     await updateHealthStatus(session.backendUrl);
 
     if (session.accessToken) {

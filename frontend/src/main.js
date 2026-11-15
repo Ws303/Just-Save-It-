@@ -1,7 +1,7 @@
 /**
  * Application Entrypoint, Event Dispatcher & Focus-Preserving Renderer for Sharely Test Web App.
  */
-import { AI_PROVIDER_PRESETS, COVER_CHOICES, FOLDER_NAME_SUGGESTIONS } from "./data/seed.js";
+import { COVER_CHOICES, FOLDER_NAME_SUGGESTIONS } from "./data/seed.js";
 import {
   store,
   inferPlatform,
@@ -22,6 +22,7 @@ import {
   isProtectedViewport,
 } from "./services/routeGuard.js";
 import { supabaseAuth } from "./services/supabaseAuth.js";
+import { enableWebPush, disableWebPush } from "./services/pushClient.js";
 import { icons, escHtml } from "./components/icons.js";
 import { renderPostMenuAndDialog } from "./screens/common.js";
 import {
@@ -397,9 +398,13 @@ function downloadFile(filename, content, mimeType) {
   URL.revokeObjectURL(url);
 }
 
-function copyText(text) {
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).catch(() => {});
+async function copyText(text) {
+  if (!navigator.clipboard?.writeText) return false;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -777,10 +782,7 @@ appEl.addEventListener("click", async (e) => {
       return;
     }
     if (act === "close-ai-confirm") {
-      ui.aiRequestId = (ui.aiRequestId || 0) + 1;
-      ui.aiConfirmModalOpen = false;
-      ui.aiSummaryStatus = "idle";
-      store.emit();
+      store.dismissAiSummaryModal();
       return;
     }
     if (act === "confirm-ai-summarize") {
@@ -1574,15 +1576,7 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.selectAiProvider) {
-    const preset = AI_PROVIDER_PRESETS.find((p) => p.id === d.selectAiProvider);
-    data.aiConfig.provider = d.selectAiProvider;
-    data.aiConfig.model = preset?.models[0] || "";
-    data.aiConfig.endpointUrl = preset?.baseUrl || "";
-    data.aiConfig.keyless = preset?.backendProvider === "built-in";
-    data.aiConfig.connected = preset?.backendProvider === "built-in";
-    data.aiConfig.lastTestError = null;
-    ui.aiDropdown = null;
-    store.emit();
+    store.selectAiProvider(d.selectAiProvider);
     return;
   }
   if (d.selectAiModel) {
@@ -1635,10 +1629,50 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.toggleNotifSetting) {
-    data.user.notificationsEnabled = !data.user.notificationsEnabled;
+    const nextEnabled = !data.user.notificationsEnabled;
+    data.user.notificationsEnabled = nextEnabled;
     store.save();
     store.emit();
-    store.showToast(data.user.notificationsEnabled ? "เปิดการแจ้งเตือนแล้ว" : "ปิดการแจ้งเตือนแล้ว");
+
+    if (nextEnabled) {
+      if (store.state.api.mode === "live") {
+        const pushRes = await enableWebPush({
+          fetchPushConfig: () => apiClient.getPushConfig(),
+          registerDevice: (payload) => apiClient.registerWebPushDevice(payload),
+        });
+        if (!pushRes.ok) {
+          if (pushRes.reason === "permission_denied") {
+            data.user.notificationsEnabled = false;
+            store.save();
+            store.emit();
+          }
+          store.showToast(pushRes.message || "ไม่สามารถเปิด Web Push ได้");
+          return;
+        }
+      }
+      store.showToast("เปิดการแจ้งเตือน Web Push แล้ว");
+    } else {
+      if (store.state.api.mode === "live") {
+        await disableWebPush({
+          deactivateDevice: (p) => apiClient.deactivateWebPushDevice(p),
+        });
+      }
+      store.showToast("ปิดการแจ้งเตือนแล้ว");
+    }
+    return;
+  }
+  if (d.copyExtensionToken) {
+    const token = (store.state.api.bearerToken || "").trim();
+    if (!token) {
+      store.showToast("ยังไม่มี Live Access Token (โปรดเข้าสู่ระบบก่อน)");
+      return;
+    }
+    const copied = await copyText(token);
+    store.showToast(
+      copied
+        ? "คัดลอก Extension Token แล้ว (เก็บเป็นความลับ ห้ามแชร์)"
+        : "ไม่สามารถคัดลอกอัตโนมัติได้ กรุณาลองใหม่"
+    );
     return;
   }
   if (d.setTextSize) {
@@ -2033,9 +2067,7 @@ if (typeof document !== "undefined" && typeof document.addEventListener === "fun
       return;
     }
     if (ui.aiConfirmModalOpen || (ui.aiSummaryStatus && ui.aiSummaryStatus !== "idle")) {
-      ui.aiConfirmModalOpen = false;
-      ui.aiSummaryStatus = "idle";
-      store.emit();
+      store.dismissAiSummaryModal();
       return;
     }
     if (ui.noteEditing) {

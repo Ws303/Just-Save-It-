@@ -9,6 +9,7 @@
 import { icons, escHtml } from "../components/icons.js";
 import { THEME_OPTIONS } from "../data/seed.js";
 import { getAuthMode } from "../services/routeGuard.js";
+import { getWebPushPermission } from "../services/pushClient.js";
 import { isQaModeEnabled } from "../state/store.js";
 import { renderBottomNav } from "./common.js";
 
@@ -17,6 +18,13 @@ export function renderProfileBody(state) {
   const displayName = user.displayName || user.email?.split("@")[0] || "ผู้ใช้งาน";
   const initial = displayName.trim().charAt(0).toUpperCase() || "U";
   const isWeb = state.ui.viewportMode === "web";
+  const pushPerm = getWebPushPermission();
+  const pushHint =
+    pushPerm === "denied"
+      ? "เบราว์เซอร์บล็อกสิทธิ์แจ้งเตือน (โปรดเปิดในการตั้งค่าเว็บไซต์)"
+      : user.notificationsEnabled && pushPerm === "granted"
+        ? "เปิดรับแจ้งเตือน Web Push บนเบราว์เซอร์แล้ว"
+        : "รับการแจ้งเตือนลิงก์ที่ตั้งเวลาไว้ผ่านเบราว์เซอร์";
 
   return `
         <div class="settings-card">
@@ -40,7 +48,7 @@ export function renderProfileBody(state) {
                 <span style="color:var(--ink-secondary);display:inline-flex;">${icons.bell(20)}</span>
                 <div>
                   <div style="font-size:15px;font-weight:700;">แจ้งเตือนลิงก์</div>
-                  <div class="tiny-hint">รับการแจ้งเตือนเมื่อถึงเวลาที่ตั้งไว้</div>
+                  <div class="tiny-hint">${escHtml(pushHint)}</div>
                 </div>
               </div>
               <button type="button" class="toggle-switch ${user.notificationsEnabled ? "on" : ""}" data-toggle-notif-setting="1" aria-label="เปิดปิดแจ้งเตือน">
@@ -227,6 +235,16 @@ export function renderSecurityBody(state) {
           <p class="tiny-hint" style="margin:0;">รับลิงก์ทางอีเมลเพื่อตั้งหรือเปลี่ยนรหัสผ่าน</p>
           <button type="button" class="btn-accent-pill full48" data-send-password-reset="1">
             ส่งลิงก์ตั้งรหัสผ่าน
+          </button>
+        </div>
+
+        <hr style="border:none;border-top:1px solid var(--border-divider);width:100%;" />
+
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <strong style="font-size:15px;">เชื่อมต่อ Chrome Extension</strong>
+          <p class="tiny-hint" style="margin:0;">คัดลอก Access Token ปัจจุบันไปวางใน Extension (รองรับบัญชี Google OAuth) — ห้ามส่งต่อ Token นี้ให้ผู้อื่น</p>
+          <button type="button" class="btn-outline-pill" style="width:100%;" data-copy-extension-token="1">
+            คัดลอก Extension Token
           </button>
         </div>
   `;

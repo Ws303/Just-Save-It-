@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 
 from Database.client import get_db
 from Login.auth_dep import get_current_user_id
@@ -19,8 +20,10 @@ from Reminders.schemas import (
     SnoozeReminderRequest,
 )
 from Reminders.service import (
+    deactivate_user_device_push,
     delete_reminder_for_user,
     get_ios_local_sync_payload,
+    get_web_push_public_config,
     list_reminders_for_user,
     patch_reminder_for_user,
     process_due_reminders_cron,
@@ -130,6 +133,38 @@ def delete_reminder_endpoint(
 ) -> Dict[str, Any]:
     """Cancel the authenticated user's reminder on item_id without affecting other users."""
     return delete_reminder_for_user(db, user_id, item_id)
+
+
+class DeviceDeactivateRequest(BaseModel):
+    push_token: Optional[str] = Field(default=None, max_length=2048)
+    endpoint: Optional[str] = Field(default=None, max_length=2048)
+    platform: Optional[Literal["android", "ios", "web", "extension"]] = "web"
+
+
+@router.get("/api/reminders/push-config")
+def get_push_config_endpoint(
+    user_id: str = Depends(get_current_user_id),
+) -> Dict[str, Any]:
+    """Return Web Push availability and public VAPID key without leaking private credentials."""
+    _ = user_id
+    return get_web_push_public_config()
+
+
+@router.post("/api/devices/deactivate")
+def deactivate_device_endpoint(
+    req: Optional[DeviceDeactivateRequest] = Body(default=None),
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Deactivate current user's Web Push or remote notification device on opt-out or logout."""
+    body = req or DeviceDeactivateRequest()
+    return deactivate_user_device_push(
+        db,
+        user_id,
+        push_token=body.push_token,
+        endpoint=body.endpoint,
+        platform=body.platform,
+    )
 
 
 @router.post("/cron/reminders", response_model=CronRemindersResponse)

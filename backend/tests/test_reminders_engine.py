@@ -2131,3 +2131,73 @@ def test_remediation_favorite_done_at_and_dedupe_reopen(mock_db):
     assert bumped["done_at"] is None
     assert bumped["reminder"]["status"] == "pending"
 
+
+def test_web_push_public_config_and_device_deactivate(mock_db, test_client, monkeypatch):
+    """Verify GET /api/reminders/push-config exposes public key only & POST /api/devices/deactivate isolates users."""
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import serialization
+    from Reminders.push_adapters import _b64url_encode
+
+    monkeypatch.delenv("VAPID_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("VAPID_PUBLIC_KEY", raising=False)
+    headers_a = make_auth_headers("usr-push-a")
+    headers_b = make_auth_headers("usr-push-b")
+
+    res_disabled = test_client.get("/api/reminders/push-config", headers=headers_a)
+    assert res_disabled.status_code == 200
+    assert res_disabled.json() == {"enabled": False, "vapid_public_key": None}
+
+    priv = ec.generate_private_key(ec.SECP256R1())
+    priv_pem = priv.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("ascii")
+    expected_pub = _b64url_encode(
+        priv.public_key().public_bytes(
+            encoding=serialization.Encoding.X962,
+            format=serialization.PublicFormat.UncompressedPoint,
+        )
+    )
+    monkeypatch.setenv("VAPID_PRIVATE_KEY", priv_pem)
+    res_enabled = test_client.get("/api/reminders/push-config", headers=headers_a)
+    assert res_enabled.status_code == 200
+    assert res_enabled.json()["enabled"] is True
+    assert res_enabled.json()["vapid_public_key"] == expected_pub
+    assert "BEGIN PRIVATE KEY" not in res_enabled.text
+
+    ep_a = "https://fcm.googleapis.com/fcm/send/device-a"
+    reg_a = test_client.post(
+        "/api/devices",
+        json={
+            "platform": "web",
+            "delivery_mode": "remote",
+            "web_push_sub": {"endpoint": ep_a, "keys": {"p256dh": "k", "auth": "a"}},
+        },
+        headers=headers_a,
+    )
+    assert reg_a.status_code == 201
+    # Re-registering same endpoint updates row without duplicating
+    reg_a2 = test_client.post(
+        "/api/devices",
+        json={
+            "platform": "web",
+            "delivery_mode": "remote",
+            "web_push_sub": {"endpoint": ep_a, "keys": {"p256dh": "k", "auth": "a"}},
+        },
+        headers=headers_a,
+    )
+    assert reg_a2.status_code == 201
+    assert len(mock_db.tables["devices"]) == 1
+
+    # Another user cannot deactivate user A's device
+    deact_b = test_client.post("/api/devices/deactivate", json={"endpoint": ep_a}, headers=headers_b)
+    assert deact_b.status_code == 200
+    assert deact_b.json()["deactivated"] == 0
+    assert mock_db.tables["devices"][0]["is_active"] is True
+
+    deact_a = test_client.post("/api/devices/deactivate", json={"endpoint": ep_a}, headers=headers_a)
+    assert deact_a.status_code == 200
+    assert deact_a.json()["deactivated"] == 1
+    assert mock_db.tables["devices"][0]["is_active"] is False
+

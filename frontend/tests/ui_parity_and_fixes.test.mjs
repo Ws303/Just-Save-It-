@@ -235,3 +235,103 @@ test("summarizeLink decrements freeQuotaRemaining only for Built-in Free provide
     store.state.api.mode = prevMode;
   }
 });
+
+test("Login CSS avoids overlapping password input/toggle and enforces >=28px touch targets", async () => {
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../styles/app.css", import.meta.url), "utf8");
+  const pwToggleBlock = css.match(/\.figma-pw-toggle\s*\{[^}]*\}/)?.[0] || "";
+  assert.ok(!/position:\s*absolute/.test(pwToggleBlock), "figma-pw-toggle must sit as flex sibling, not absolute overlap");
+  assert.match(pwToggleBlock, /min-height:\s*(?:3[2-9]|[4-9]\d)px/);
+  const inlineBlock = css.match(/\.figma-inline-link,\s*\.figma-text-link\s*\{[^}]*\}/)?.[0] || "";
+  assert.match(inlineBlock, /min-height:\s*(?:3[0-9]|[4-9]\d)px/);
+});
+
+test("[L-NEW-1 & L-NEW-2] selectAiProvider clears apiKey/lastTestedAt and dismissAiSummaryModal bumps aiRequestId", async () => {
+  const { readFileSync } = await import("node:fs");
+  const prevConfig = { ...store.state.data.aiConfig };
+  const prevReqId = store.state.ui.aiRequestId || 0;
+  try {
+    store.state.data.aiConfig = {
+      ...store.state.data.aiConfig,
+      provider: "OpenAI",
+      apiKey: "sk-old-openai-key",
+      lastTestedAt: "2026-11-15T10:00:00Z",
+      lastTestError: "Old error",
+      connected: true,
+    };
+    store.selectAiProvider("Anthropic");
+    assert.equal(store.state.data.aiConfig.provider, "Anthropic");
+    assert.equal(store.state.data.aiConfig.apiKey, "");
+    assert.equal(store.state.data.aiConfig.lastTestedAt, null);
+    assert.equal(store.state.data.aiConfig.lastTestError, null);
+    assert.equal(store.state.data.aiConfig.connected, false);
+
+    store.state.ui.aiConfirmModalOpen = true;
+    store.state.ui.aiSummaryStatus = "loading";
+    store.dismissAiSummaryModal();
+    assert.equal(store.state.ui.aiConfirmModalOpen, false);
+    assert.equal(store.state.ui.aiSummaryStatus, "idle");
+    assert.equal(store.state.ui.aiRequestId, prevReqId + 1);
+
+    const mainSrc = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
+    assert.match(mainSrc, /if \(e\.key !== "Escape"\)[\s\S]{0,400}store\.dismissAiSummaryModal\(\)/);
+    assert.match(mainSrc, /if \(d\.selectAiProvider\)[\s\S]{0,120}store\.selectAiProvider\(d\.selectAiProvider\)/);
+  } finally {
+    store.state.data.aiConfig = prevConfig;
+  }
+});
+
+test("Extension API defaults to Render Cloud, supports localhost preset, fixes status & summary_th fields", async () => {
+  const { createRequire } = await import("node:module");
+  const { readFileSync } = await import("node:fs");
+  const require = createRequire(import.meta.url);
+  const extApi = require("../../extension/api.js");
+
+  assert.equal(extApi.DEFAULT_BACKEND_URL, "https://just-save-it-api.onrender.com");
+  assert.equal(extApi.BACKEND_PRESETS.cloud, "https://just-save-it-api.onrender.com");
+  assert.equal(extApi.BACKEND_PRESETS.local, "http://127.0.0.1:8000");
+  assert.equal(extApi.isLocalBackendUrl("http://127.0.0.1:8000"), true);
+  assert.equal(extApi.isLocalBackendUrl("http://localhost:8000"), true);
+  assert.equal(extApi.isLocalBackendUrl("https://just-save-it-api.onrender.com"), false);
+  assert.equal(extApi.normalizeBackendUrl("localhost:8000"), "http://localhost:8000");
+  assert.equal(extApi.normalizeBackendUrl(""), "https://just-save-it-api.onrender.com");
+
+  const parsed = extApi.formatAiSummaryResponse({
+    summary_th: "• สรุปไทย",
+    suggested_tags: ["dev", "ai"],
+  });
+  assert.deepEqual(parsed, { summary: "• สรุปไทย", tags: ["dev", "ai"] });
+
+  const popupHtml = readFileSync(new URL("../../extension/popup.html", import.meta.url), "utf8");
+  assert.ok(!/value="reading"/.test(popupHtml), "Extension statusSelect must not use invalid 'reading' status");
+  assert.match(popupHtml, /value="todo"/);
+  assert.match(popupHtml, /id="tokenLoginInput"/);
+});
+
+test("Web Push helper decodes VAPID key, deactivates safely, and Profile renders Extension token copy", async () => {
+  const { urlBase64ToUint8Array, disableWebPush } = await import("../src/services/pushClient.js");
+  const { renderProfileBody, renderSecurityBody } = await import("../src/screens/profile.js");
+
+  const raw65 = new Uint8Array(65);
+  raw65[0] = 0x04;
+  raw65[64] = 0x7f;
+  const b64url = Buffer.from(raw65).toString("base64url");
+  const decoded = urlBase64ToUint8Array(b64url);
+  assert.equal(decoded.length, 65);
+  assert.equal(decoded[0], 0x04);
+  assert.equal(decoded[64], 0x7f);
+
+  let capturedDeact = null;
+  await disableWebPush({
+    deactivateDevice: async (payload) => {
+      capturedDeact = payload;
+      return { ok: true };
+    },
+  });
+  assert.deepEqual(capturedDeact, { endpoint: null, platform: "web" });
+
+  const secHtml = renderSecurityBody(store.state);
+  assert.match(secHtml, /data-copy-extension-token="1"/);
+  const profHtml = renderProfileBody(store.state);
+  assert.match(profHtml, /data-toggle-notif-setting="1"/);
+});

@@ -25,16 +25,20 @@
     <!-- Settings Panel -->
     <section id="settingsPanel" class="card settings-card hidden">
       <label for="backendUrlInput" class="field-label">Backend API URL</label>
+      <div class="inline-row" style="margin-bottom:6px;gap:6px;">
+        <button id="presetCloudBtn" type="button" class="btn btn-secondary btn-sm">☁️ Production Cloud</button>
+        <button id="presetLocalBtn" type="button" class="btn btn-secondary btn-sm">💻 Localhost</button>
+      </div>
       <div class="inline-row">
         <input
           id="backendUrlInput"
           type="url"
           class="input"
-          placeholder="http://localhost:8000"
+          placeholder="https://just-save-it-api.onrender.com"
         />
         <button id="saveSettingsBtn" type="button" class="btn btn-secondary btn-sm">บันทึก</button>
       </div>
-      <p class="hint">รัน Backend ด้วย <code>uvicorn main:app --reload</code> แล้วกดบันทึกเพื่อทดสอบ</p>
+      <p class="hint">ค่าเริ่มต้นชี้ที่ Render Production Cloud หรือสลับเป็น <code>http://127.0.0.1:8000</code> เพื่อพัฒนาบนเครื่อง</p>
     </section>
 
     <!-- Global Banner Feedback -->
@@ -71,11 +75,22 @@
         <button id="authSubmitBtn" type="submit" class="btn btn-primary btn-full">เข้าสู่ระบบ</button>
       </form>
 
-      <div class="divider"><span>หรือทดสอบทันที (Local Dev)</span></div>
+      <div class="card stack-sm" style="margin-top:8px;">
+        <label for="tokenLoginInput" class="field-label">เข้าสู่ระบบด้วย Web Access Token (Google OAuth)</label>
+        <div class="inline-row">
+          <input id="tokenLoginInput" type="password" class="input" placeholder="วาง Access Token จากหน้าโปรไฟล์เว็บ..." />
+          <button id="tokenLoginBtn" type="button" class="btn btn-secondary btn-sm">ใช้ Token</button>
+        </div>
+        <p class="hint">เปิดเว็บ Sharely &rarr; โปรไฟล์ &rarr; คัดลอก Extension Token</p>
+      </div>
 
-      <button id="demoLoginBtn" type="button" class="btn btn-cream btn-full">
-        ⚡ ใช้บัญชีทดสอบ May (may@example.com)
-      </button>
+      <div id="localDemoSection" class="hidden">
+        <div class="divider"><span>หรือทดสอบทันที (Local Dev)</span></div>
+
+        <button id="demoLoginBtn" type="button" class="btn btn-cream btn-full">
+          ⚡ ใช้บัญชีทดสอบ May (may@example.com)
+        </button>
+      </div>
     </main>
 
     <!-- Main Link Saver View -->
@@ -149,8 +164,9 @@
             <label for="statusSelect" class="field-label">สถานะ</label>
             <select id="statusSelect" class="input">
               <option value="inbox">Inbox (ยังไม่อ่าน)</option>
-              <option value="reading">Reading (กำลังอ่าน)</option>
+              <option value="todo">To-do (ต้องจัดการ)</option>
               <option value="done">Done (อ่านแล้ว)</option>
+              <option value="archived">Archived (เก็บเข้าคลัง)</option>
             </select>
           </div>
           <div>

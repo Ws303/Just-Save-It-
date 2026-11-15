@@ -248,8 +248,14 @@ as $$
   );
 $$;
 
-grant usage on schema private to authenticated;
-grant execute on function private.can_access_folder(uuid, public.folder_role) to authenticated;
+grant usage on schema private to authenticated, service_role;
+grant execute on function private.canonicalize_url(text) to authenticated, service_role;
+grant execute on function private.set_item_url_hash() to authenticated, service_role;
+grant execute on function private.touch_updated_at() to authenticated, service_role;
+grant execute on function private.cancel_reminders_on_item_done() to authenticated, service_role;
+grant execute on function private.guard_profile_tier() to authenticated, service_role;
+grant execute on function private.guard_item_ownership() to authenticated, service_role;
+grant execute on function private.can_access_folder(uuid, public.folder_role) to authenticated, service_role;
 
 -- 7. RPC: Atomic shared folder invite acceptance (for authenticated client & service_role proxy)
 create or replace function public.accept_invite_for_user(p_user_id uuid, invite_token text)

@@ -10,6 +10,15 @@ from typing import Any, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 
+LEGACY_BYOK_VENDOR_DEFAULTS = {
+    "openai": ("gpt-4o-mini", None),
+    "gemini": ("gemini-2.5-flash", None),
+    "anthropic": ("claude-3-5-haiku-20241022", None),
+    "openrouter": ("openai/gpt-4o-mini", "https://openrouter.ai/api/v1"),
+    "groq": ("llama-3.3-70b-versatile", "https://api.groq.com/openai/v1"),
+}
+
+
 class AIConfig(BaseModel):
     """Configuration for LLM execution supporting 3 tiers."""
 
@@ -78,12 +87,13 @@ class AIConfig(BaseModel):
                 api_key=cleaned_key,
                 model=cleaned_model or "llama3.2",
             )
-        if raw_provider in ("byok", "openai", "gemini", "anthropic", "openrouter", "groq"):
+        if raw_provider in ("byok", *LEGACY_BYOK_VENDOR_DEFAULTS.keys()):
+            default_model, default_base = LEGACY_BYOK_VENDOR_DEFAULTS.get(raw_provider, (None, None))
             return cls(
                 provider="byok",
-                base_url=cleaned_base,
+                base_url=cleaned_base or default_base,
                 api_key=cleaned_key,
-                model=cleaned_model,
+                model=cleaned_model or default_model,
             )
         if raw_provider in ("built-in", "builtin"):
             return cls(provider="built-in", model=cleaned_model)

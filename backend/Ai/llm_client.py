@@ -23,6 +23,11 @@ logger = logging.getLogger("just_save_it.ai")
 
 _active_system_prompt_ctx: ContextVar[Optional[str]] = ContextVar("active_system_prompt", default=None)
 
+
+class UpstreamLLMError(ValueError):
+    """Raised when an upstream LLM provider returns malformed, empty, or invalid JSON/schema output."""
+    pass
+
 SYSTEM_PROMPT = """คุณคือผู้ช่วยสรุปเนื้อหาอัจฉริยะของแอป Just-Save-It
 เป้าหมายของคุณคือสรุปเนื้อหาที่ได้รับให้เข้าใจง่ายและรวดเร็วที่สุดสำหรับผู้ใช้
 
@@ -96,6 +101,17 @@ Return strictly valid JSON in this exact schema:
 """
 
 
+def _extract_llm_text(extractor, vendor: str) -> str:
+    """Extract non-empty text from vendor JSON payloads, converting structure drift to UpstreamLLMError."""
+    try:
+        text = extractor()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise UpstreamLLMError(f"{vendor} returned unexpected payload structure") from exc
+    if not isinstance(text, str) or not text.strip():
+        raise UpstreamLLMError(f"{vendor} returned empty response content")
+    return text
+
+
 def _parse_and_validate_json(raw_text: str) -> AISummaryOutput:
     """Clean markdown fences and parse LLM response into AISummaryOutput."""
     text = raw_text.strip()
@@ -111,7 +127,7 @@ def _parse_and_validate_json(raw_text: str) -> AISummaryOutput:
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             return AISummaryOutput.model_validate_json(match.group(0))
-        raise ValueError(f"Failed to parse LLM JSON output: {raw_text[:200]}")
+        raise UpstreamLLMError(f"Failed to parse LLM JSON output: {raw_text[:200]}")
 
 
 async def _call_gemini_raw(prompt: str, api_key: str, model_name: str = "gemini-3.1-flash-lite") -> AISummaryOutput:
@@ -127,14 +143,14 @@ async def _call_gemini_raw(prompt: str, api_key: str, model_name: str = "gemini-
         },
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
         resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
         candidates = data.get("candidates", [])
         if not candidates:
-            raise ValueError("Gemini returned empty candidates")
-        raw_text = candidates[0]["content"]["parts"][0]["text"]
+            raise UpstreamLLMError("Gemini returned empty candidates")
+        raw_text = _extract_llm_text(lambda: candidates[0]["content"]["parts"][0]["text"], "Gemini")
         return _parse_and_validate_json(raw_text)
 
 
@@ -166,7 +182,7 @@ async def _call_openai_compatible_raw(
         resp = await client.post(endpoint, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
-        raw_text = data["choices"][0]["message"]["content"]
+        raw_text = _extract_llm_text(lambda: data["choices"][0]["message"]["content"], "OpenAI-compatible")
         return _parse_and_validate_json(raw_text)
 
 
@@ -195,7 +211,7 @@ async def _call_anthropic_raw(
         resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
-        raw_text = data["content"][0]["text"]
+        raw_text = _extract_llm_text(lambda: data["content"][0]["text"], "Anthropic")
         return _parse_and_validate_json(raw_text)
 
 
@@ -321,14 +337,29 @@ async def call_byok_or_custom_llm(prompt: str, config: AIConfig) -> Tuple[AISumm
     # In BYOK, user can specify specific model or provider
     model = resolve_upstream_model_id(config.model, default="gpt-4o-mini")
     validated_base = validate_ai_base_url(config.base_url, allow_default_local=False) if config.base_url else None
-    base_hint = (validated_base or "").lower()
+    parsed_base = urllib.parse.urlparse(validated_base) if validated_base else None
+    base_host = (parsed_base.hostname or "").lower() if parsed_base else ""
+    base_path = (parsed_base.path or "").lower() if parsed_base else ""
+    is_native_google = base_host == "generativelanguage.googleapis.com" and "/openai" not in base_path
+    is_native_anthropic = base_host == "api.anthropic.com"
 
-    if "gemini" in model.lower() or "generativelanguage.googleapis.com" in base_hint:
+    # Explicit OpenAI-compatible proxy base_url (e.g. OpenRouter, Groq, LiteLLM) takes precedence
+    # over model-name heuristics so `anthropic/claude-*` or `google/gemini-*` stay on the proxy.
+    if validated_base and not (is_native_google or is_native_anthropic):
+        output = await _call_openai_compatible_raw(
+            prompt=prompt,
+            base_url=validated_base,
+            api_key=api_key,
+            model_name=model,
+        )
+        return output, f"byok:{model}"
+
+    if "gemini" in model.lower() or is_native_google:
         gemini_model = model if "gemini" in model.lower() else "gemini-2.5-flash"
         output = await _call_gemini_raw(prompt=prompt, api_key=api_key, model_name=gemini_model)
         return output, f"byok:gemini/{gemini_model}"
 
-    if "claude" in model.lower() or "anthropic" in model.lower() or "anthropic.com" in base_hint:
+    if "claude" in model.lower() or "anthropic" in model.lower() or is_native_anthropic:
         claude_model = model if "claude" in model.lower() else "claude-3-5-haiku-20241022"
         output = await _call_anthropic_raw(prompt=prompt, api_key=api_key, model_name=claude_model)
         return output, f"byok:anthropic/{claude_model}"

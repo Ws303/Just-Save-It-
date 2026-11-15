@@ -2375,20 +2375,29 @@ a {
 
 .qa-floating-toggle {
   position: fixed;
-  bottom: 12px;
-  left: 12px;
+  bottom: 90px;
+  right: 12px;
+  left: auto;
   z-index: 70;
-  height: 24px;
-  padding: 0 9px;
+  min-height: 30px;
+  padding: 4px 10px;
   border-radius: 999px;
   border: 1px solid rgba(20, 36, 51, 0.14);
-  background: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.9);
   color: #55596a;
   font-size: 11px;
   font-weight: 700;
   backdrop-filter: blur(6px);
-  opacity: 0.55;
+  opacity: 0.72;
   transition: opacity 0.15s ease;
+}
+
+@media (min-width: 960px) {
+  .qa-floating-toggle {
+    top: 26px;
+    right: 96px;
+    bottom: auto;
+  }
 }
 
 .qa-floating-toggle:hover {
@@ -2572,31 +2581,57 @@ a {
 }
 
 .figma-password-wrap {
-  position: relative;
   display: flex;
   align-items: center;
+  height: 46px;
+  border-radius: 12px;
+  border: 1px solid #dbe0e3;
+  background: #ffffff;
+  overflow: hidden;
+  transition: border-color 0.15s ease;
+}
+
+.figma-password-wrap:focus-within {
+  border-color: var(--theme-accent);
 }
 
 .figma-password-wrap .figma-input {
-  padding-right: 68px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  background: transparent;
+  padding: 0 8px 0 12px;
+}
+
+.figma-password-wrap .figma-input:focus {
+  border: none;
+  outline: none;
 }
 
 .figma-pw-toggle {
-  position: absolute;
-  right: 10px;
+  flex: 0 0 auto;
+  min-height: 36px;
+  min-width: 48px;
   border: none;
   background: transparent;
   font-size: 12.5px;
   font-weight: 700;
   color: var(--theme-accent-text);
-  padding: 4px 6px;
+  padding: 6px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .figma-inline-link,
 .figma-text-link {
   border: none;
   background: transparent;
-  padding: 0;
+  padding: 4px 2px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
   font-size: 13px;
   font-weight: 700;
   color: var(--theme-accent-text);

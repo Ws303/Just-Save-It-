@@ -15,6 +15,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.applications import Starlette
 
@@ -28,6 +29,19 @@ from Database.supabase_client import is_supabase_configured
 from Login.router import router as login_router
 from Reminders.router import router as reminders_router
 from Unfurl.router import router as unfurl_router
+from Unfurl.security import redact_secrets_in_text
+
+CHROME_EXTENSION_ORIGIN_REGEX = r"^chrome-extension://[a-p]{32}$"
+
+
+def parse_cors_settings():
+    """Resolve CORS origins, regex (allowing unpacked Chrome extensions), and credentials flag."""
+    raw_origins = os.getenv("CORS_ALLOW_ORIGINS", "*").strip()
+    cors_origins = [o.strip() for o in raw_origins.split(",") if o.strip()] or ["*"]
+    allow_all = "*" in cors_origins
+    default_regex = "" if allow_all else CHROME_EXTENSION_ORIGIN_REGEX
+    cors_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX", default_regex).strip() or None
+    return cors_origins, cors_regex, not allow_all
 
 logger = logging.getLogger("just_save_it.main")
 
@@ -115,13 +129,43 @@ app = FastAPI(
     lifespan=_app_lifespan,
 )
 
-# CORS Middleware for Web App, Mobile App, and Browser Extension
-_raw_origins = os.getenv("CORS_ALLOW_ORIGINS", "*").strip()
-_cors_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
+# Inner pure-ASGI unhandled error guard sits INSIDE CORSMiddleware so 500 errors keep CORS headers
+class _UnhandledExceptionMiddleware:
+    def __init__(self, asgi_app):
+        self.asgi_app = asgi_app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.asgi_app(scope, receive, send)
+            return
+        response_started = False
+
+        async def _send_wrapper(message):
+            nonlocal response_started
+            if message.get("type") == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.asgi_app(scope, receive, _send_wrapper)
+        except Exception as exc:
+            safe_err = redact_secrets_in_text(exc)
+            logger.error("Unhandled %s %s exception: %s", scope.get("method", "?"), scope.get("path", "?"), safe_err)
+            if response_started:
+                raise
+            resp = JSONResponse(status_code=500, content={"detail": "Internal server error"})
+            await resp(scope, receive, send)
+
+
+# Add inner error guard BEFORE CORSMiddleware (add_middleware wraps LIFO -> CORS becomes outer)
+app.add_middleware(_UnhandledExceptionMiddleware)
+
+_cors_origins, _cors_origin_regex, _cors_credentials = parse_cors_settings()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials="*" not in _cors_origins,
+    allow_origin_regex=_cors_origin_regex,
+    allow_credentials=_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

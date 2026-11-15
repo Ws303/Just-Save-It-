@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Just-Save-It — Quick Link Saver",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "ดึง URL แท็บปัจจุบันพร้อมภาพปก แท็ก โฟลเดอร์ เตือนอ่าน และสรุป AI บันทึกตรงเข้า Just-Save-It Backend",
   "permissions": [
     "activeTab",
@@ -11,6 +11,8 @@
     "scripting"
   ],
   "host_permissions": [
+    "https://just-save-it-api.onrender.com/*",
+    "https://just-save-it-web.onrender.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*",
     "https://*/*"

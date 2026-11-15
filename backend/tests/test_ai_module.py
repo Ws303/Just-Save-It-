@@ -1059,3 +1059,93 @@ def test_c1_mcp_tag_sanitization_non_destructive_revoke_and_dual_transport():
         set_authenticated_user_id(None)
         set_override_db(None)
 
+
+@pytest.mark.asyncio
+async def test_m_new_1_and_2_summarize_error_mapping_and_openrouter_proxy():
+    """Verify [M-NEW-1] 503/502 error mapping on /summarize and [M-NEW-2] legacy headers + OpenRouter proxy."""
+    from Ai.llm_client import call_byok_or_custom_llm
+    from Ai.schemas import AIConfig
+    from Login.auth_dep import get_current_user_id
+    from main import app as main_app
+    import httpx
+
+    # [M-NEW-2a] Legacy X-AI-Provider resolves vendor-default model & proxy base_url
+    gem_cfg = AIConfig.from_headers(x_ai_provider="gemini", x_ai_key="AIzaTestKey123")
+    assert gem_cfg.provider == "byok"
+    assert gem_cfg.model == "gemini-2.5-flash"
+
+    ant_cfg = AIConfig.from_headers(x_ai_provider="anthropic", x_ai_key="sk-ant-test")
+    assert ant_cfg.provider == "byok"
+    assert ant_cfg.model == "claude-3-5-haiku-20241022"
+
+    or_cfg = AIConfig.from_headers(
+        x_ai_provider="openrouter",
+        x_ai_key="sk-or-test",
+        x_ai_model="anthropic/claude-3.5-sonnet",
+    )
+    assert or_cfg.base_url == "https://openrouter.ai/api/v1"
+
+    # [M-NEW-2b] OpenRouter base_url must route Claude/Gemini models via OpenAI-compatible endpoint, NOT direct Anthropic/Gemini
+    mock_out = AISummaryOutput(
+        summary_th="• จาก OpenRouter",
+        suggested_tags=["proxy"],
+        content_type="article",
+    )
+    with patch("Ai.llm_client.validate_safe_url", side_effect=lambda u: u):
+        with patch("Ai.llm_client._call_openai_compatible_raw", new=AsyncMock(return_value=mock_out)) as spy_oai:
+            with patch("Ai.llm_client._call_anthropic_raw", new=AsyncMock(side_effect=AssertionError("Must not bypass proxy"))):
+                out, engine = await call_byok_or_custom_llm("Prompt", or_cfg)
+                assert out.summary_th == "• จาก OpenRouter"
+                assert spy_oai.call_args.kwargs["base_url"] == "https://openrouter.ai/api/v1"
+                assert engine == "byok:anthropic/claude-3.5-sonnet"
+
+    # [M-NEW-1] POST /api/ai/summarize maps RuntimeError -> 503 and httpx.HTTPError -> 502
+    main_app.dependency_overrides[get_current_user_id] = lambda: "usr-mnew1"
+    try:
+        client = TestClient(main_app, raise_server_exceptions=False)
+        with patch("Ai.router.summarize_item_once", new=AsyncMock(side_effect=RuntimeError("GEMINI_API_KEY missing"))):
+            r503 = client.post("/api/ai/summarize", json={"item_id": "it-1"})
+            assert r503.status_code == 503
+
+        req = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        with patch("Ai.router.summarize_item_once", new=AsyncMock(side_effect=httpx.ConnectError("upstream down", request=req))):
+            r502 = client.post("/api/ai/summarize", json={"item_id": "it-1"})
+            assert r502.status_code == 502
+
+        # [F-A1] Pydantic ValidationError & malformed LLM UpstreamLLMError subclass ValueError -> must still map to 502, not 400
+        try:
+            AISummaryOutput.model_validate_json('{"summary_th": "• ok", "suggested_tags": ["1","2","3","4","5","6"]}')
+            raise AssertionError("Expected ValidationError")
+        except Exception as val_err:
+            with patch("Ai.router.summarize_item_once", new=AsyncMock(side_effect=val_err)):
+                r502_val = client.post("/api/ai/summarize", json={"item_id": "it-1"})
+                assert r502_val.status_code == 502
+
+        from Ai.llm_client import UpstreamLLMError, _parse_and_validate_json
+        with pytest.raises(UpstreamLLMError):
+            _parse_and_validate_json("Sorry, I cannot summarize that secret upstream text.")
+        try:
+            _parse_and_validate_json("Sorry, I cannot summarize that secret upstream text.")
+        except UpstreamLLMError as llm_err:
+            with patch("Ai.router.summarize_item_once", new=AsyncMock(side_effect=llm_err)):
+                r502_llm = client.post("/api/ai/summarize", json={"item_id": "it-1"})
+                assert r502_llm.status_code == 502
+                assert "secret upstream text" not in r502_llm.text
+
+        # [F-A2] Path containing api.anthropic.com must stay on proxy hostname instead of direct Anthropic
+        proxy_cfg = AIConfig(
+            provider="byok",
+            api_key="sk-proxy-test",
+            base_url="https://gateway.example.com/proxy/api.anthropic.com/v1",
+            model="claude-3-5-sonnet",
+        )
+        with patch("Ai.llm_client.validate_safe_url", side_effect=lambda u: u):
+            with patch("Ai.llm_client._call_openai_compatible_raw", new=AsyncMock(return_value=mock_out)) as spy_oai2:
+                with patch("Ai.llm_client._call_anthropic_raw", new=AsyncMock(side_effect=AssertionError("Must match hostname, not URL path"))):
+                    _, eng2 = await call_byok_or_custom_llm("Prompt", proxy_cfg)
+                    assert eng2 == "byok:claude-3-5-sonnet"
+                    assert spy_oai2.call_args.kwargs["base_url"] == "https://gateway.example.com/proxy/api.anthropic.com/v1"
+    finally:
+        main_app.dependency_overrides.pop(get_current_user_id, None)
+
+

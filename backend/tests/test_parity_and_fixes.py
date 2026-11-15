@@ -310,3 +310,32 @@ def test_ai_empty_byok_or_custom_returns_400_not_builtin_or_500(isolated_db, mon
         assert sum_custom_headers.status_code == 400
     finally:
         app.dependency_overrides.pop(get_current_user_id, None)
+
+
+def test_parse_cors_settings_supports_extension_regex_and_unhandled_500_keeps_cors(isolated_db, monkeypatch):
+    import re
+    from main import CHROME_EXTENSION_ORIGIN_REGEX, parse_cors_settings
+    from Login.auth_dep import get_current_user_id
+
+    monkeypatch.setenv("CORS_ALLOW_ORIGINS", "https://just-save-it-web.onrender.com")
+    monkeypatch.delenv("CORS_ALLOW_ORIGIN_REGEX", raising=False)
+    origins, regex, allow_creds = parse_cors_settings()
+    assert origins == ["https://just-save-it-web.onrender.com"]
+    assert regex == CHROME_EXTENSION_ORIGIN_REGEX
+    assert allow_creds is True
+    assert re.match(regex, "chrome-extension://" + "a" * 32)
+    assert not re.match(regex, "https://evil.example.com")
+
+    app.dependency_overrides[get_current_user_id] = lambda: "11111111-1111-4111-8111-111111111111"
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        with patch("Database.router.list_folders_for_user", side_effect=RuntimeError("db connection leaked_key=abc")):
+            resp = client.get(
+                "/api/folders",
+                headers={"Origin": "https://just-save-it-web.onrender.com"},
+            )
+        assert resp.status_code == 500
+        assert resp.json() == {"detail": "Internal server error"}
+        assert "access-control-allow-origin" in {k.lower() for k in resp.headers.keys()}
+    finally:
+        app.dependency_overrides.pop(get_current_user_id, None)

@@ -2,7 +2,7 @@
  * Reactive state store for the Sharely Test Web Application.
  * Persists user workspace data in localStorage while exposing runtime QA controls.
  */
-import { createInitialSeed } from "../data/seed.js";
+import { AI_PROVIDER_PRESETS, createInitialSeed } from "../data/seed.js";
 import { guardNavigation } from "../services/routeGuard.js";
 import { DEFAULT_SUPABASE_KEY, DEFAULT_SUPABASE_URL } from "../services/supabaseAuth.js";
 
@@ -882,6 +882,30 @@ export const store = {
     this.state.ui.notificationScreenOpen = false;
     this.state.ui.showNotifications = false;
     this.showToast("รีเซ็ตข้อมูลทดสอบทั้งหมดกลับเป็นค่าเริ่มต้นแล้ว");
+  },
+
+  selectAiProvider(providerId) {
+    const preset = AI_PROVIDER_PRESETS.find((p) => p.id === providerId);
+    const isBuiltin = preset?.backendProvider === "built-in";
+    Object.assign(this.state.data.aiConfig, {
+      provider: providerId,
+      model: preset?.models[0] || "",
+      endpointUrl: preset?.baseUrl || "",
+      apiKey: "",
+      keyless: isBuiltin,
+      connected: isBuiltin,
+      lastTestedAt: null,
+      lastTestError: null,
+    });
+    this.state.ui.aiDropdown = null;
+    this.emit();
+  },
+
+  dismissAiSummaryModal() {
+    this.state.ui.aiRequestId = (this.state.ui.aiRequestId || 0) + 1;
+    this.state.ui.aiConfirmModalOpen = false;
+    this.state.ui.aiSummaryStatus = "idle";
+    this.emit();
   },
 };
 

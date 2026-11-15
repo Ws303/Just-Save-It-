@@ -280,6 +280,8 @@ create trigger trg_items_created_webhook
   after insert on public.items
   for each row execute function private.trg_items_after_insert_webhook();
 
+grant execute on function private.trg_items_after_insert_webhook() to authenticated, service_role;
+
 do $$
 begin
   if exists (select 1 from pg_extension where extname = 'pg_cron') then
@@ -288,7 +290,7 @@ begin
     end if;
     perform cron.schedule(
       'just_save_it_cron_reminders',
-      '* * * * *',
+      '*/5 * * * *',
       $cron$select private.invoke_backend_endpoint('/cron/reminders', 'X-Cron-Secret', 'cron_secret', '{}'::jsonb);$cron$
     );
 

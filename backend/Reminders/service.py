@@ -12,8 +12,8 @@ import httpx
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
-from Database.repository import can_access_item, upsert_item_reminder
-from Reminders.push_adapters import dispatch_push_to_device
+from Database.repository import can_access_item, deactivate_device_for_user, upsert_item_reminder
+from Reminders.push_adapters import _load_vapid_keys, dispatch_push_to_device
 from Reminders.schemas import (
     CronRemindersResponse,
     LocalSyncResponse,
@@ -542,4 +542,31 @@ async def process_due_reminders_cron(
         skipped_completed_items=skipped_completed,
         push_summary=summary,
         ran_at=now_ref,
+    )
+
+
+def get_web_push_public_config() -> Dict[str, Any]:
+    """Return Web Push availability and public VAPID key (never private key)."""
+    try:
+        _, pub_b64url, _ = _load_vapid_keys()
+        return {"enabled": True, "vapid_public_key": pub_b64url}
+    except Exception:
+        return {"enabled": False, "vapid_public_key": None}
+
+
+def deactivate_user_device_push(
+    db: Any,
+    user_id: str,
+    *,
+    push_token: Optional[str] = None,
+    endpoint: Optional[str] = None,
+    platform: Optional[str] = "web",
+) -> Dict[str, Any]:
+    """Deactivate caller's remote push device row (e.g. toggle off or logout)."""
+    return deactivate_device_for_user(
+        db,
+        user_id,
+        push_token=push_token,
+        endpoint=endpoint,
+        platform=platform,
     )
