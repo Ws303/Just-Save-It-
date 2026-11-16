@@ -2835,6 +2835,7 @@ test("Cycle 18 [LOW-1, LOW-2, LOW-4]: GoTrue signup redirect_to, stale login/reg
     }
 
     let postedItemPayload = null;
+    let releaseWorkspaceResp = null;
     const sb = {
       globalThis: null,
       window: null,
@@ -2876,11 +2877,20 @@ test("Cycle 18 [LOW-1, LOW-2, LOW-4]: GoTrue signup redirect_to, stale login/reg
         });
         if (u.endsWith("/health")) return mk(200, { status: "ok" });
         if (u.includes("/api/workspace")) {
-          return mk(200, {
-            folders: [],
-            tags: [],
-            items: [],
-            user: { id: "u-tz-ny", email: "ny@test.com", default_timezone: "America/New_York" },
+          return new Promise((resolve) => {
+            releaseWorkspaceResp = () =>
+              resolve(
+                mk(200, {
+                  folders: [],
+                  tags: [],
+                  items: [],
+                  user: {
+                    id: "u-tz-ny",
+                    email: "ny@test.com",
+                    profile: { default_timezone: "America/New_York" },
+                  },
+                }),
+              );
           });
         }
         if (u.includes("/api/items") && init?.method === "POST") {
@@ -2896,13 +2906,24 @@ test("Cycle 18 [LOW-1, LOW-2, LOW-4]: GoTrue signup redirect_to, stale login/reg
     vm.runInNewContext(apiCode, sb, { filename: "extension/api.js" });
     vm.runInNewContext(popupCode, sb, { filename: "extension/popup.js" });
 
+    // Initial session uses nested profile.default_timezone = UTC (where 2026-11-16T03:00Z is already Nov 16)
     await sb.JustSaveItApi.saveAuthSession({
       access_token: "tok-tz-ny",
       refresh_token: "",
-      user: { id: "u-tz-ny", email: "ny@test.com", default_timezone: "America/New_York" },
+      user: { id: "u-tz-ny", email: "ny@test.com", profile: { default_timezone: "UTC" } },
     });
     for (const fn of docListeners.get("DOMContentLoaded") || []) await fn();
+    await new Promise((r) => setTimeout(r, 20));
+    const nov15Initial = getEl("calDaysGrid").children.find((c) => c.dataset.calDate === "2026-11-15");
+    assert.equal(nov15Initial?.disabled, true, "Initial UTC profile TZ must render 2026-11-15 disabled");
+
+    // Resolving /api/workspace with nested America/New_York must immediately re-render calendar cells
+    assert.equal(typeof releaseWorkspaceResp, "function");
+    releaseWorkspaceResp();
     await new Promise((r) => setTimeout(r, 25));
+    const nov15Synced = getEl("calDaysGrid").children.find((c) => c.dataset.calDate === "2026-11-15");
+    assert.equal(nov15Synced?.disabled, false, "Workspace sync must immediately re-render calendar for America/New_York");
+    assert.equal(nov15Synced?.classList.contains("is-today"), true);
 
     await todayPresetBtn.dispatch("click");
     const selectedCalCells = getEl("calDaysGrid").children
@@ -2918,6 +2939,18 @@ test("Cycle 18 [LOW-1, LOW-2, LOW-4]: GoTrue signup redirect_to, stale login/reg
     await new Promise((r) => setTimeout(r, 25));
     assert.equal(postedItemPayload?.reminder?.timezone, "America/New_York");
     assert.equal(postedItemPayload?.reminder?.remind_at, "2026-11-15T23:00:00.000Z");
+
+    // Selecting a summer DST date (2027-06-15, EDT -04:00) resolves target date's DST offset (-04:00 -> 22:00Z)
+    for (let m = 0; m < 7; m += 1) {
+      await getEl("calNextBtn").dispatch("click");
+    }
+    const jun15Cell = getEl("calDaysGrid").children.find((c) => c.dataset.calDate === "2027-06-15");
+    assert.ok(jun15Cell, "Expected 2027-06-15 calendar cell after advancing 7 months");
+    await jun15Cell.dispatch("click");
+    await getEl("saveForm").dispatch("submit");
+    await new Promise((r) => setTimeout(r, 25));
+    assert.equal(postedItemPayload?.reminder?.timezone, "America/New_York");
+    assert.equal(postedItemPayload?.reminder?.remind_at, "2027-06-15T22:00:00.000Z");
   } finally {
     __setSupabaseClientForTests(null);
     globalThis.window = origWindow;

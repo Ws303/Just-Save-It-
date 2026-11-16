@@ -95,6 +95,15 @@
     }
   }
 
+  function extractProfileTimezone(userLike, cacheUserLike = null) {
+    return (
+      (userLike && (userLike.default_timezone || userLike.profile?.default_timezone || userLike.timezone)) ||
+      (cacheUserLike &&
+        (cacheUserLike.default_timezone || cacheUserLike.profile?.default_timezone || cacheUserLike.timezone)) ||
+      ""
+    );
+  }
+
   function getTodayIsoForTimezone(timeZone = state.userTimezone, now = new Date()) {
     const cleanTz = resolveValidTimezone(timeZone, "Asia/Bangkok");
     try {
@@ -798,7 +807,14 @@
     const parsedMm = Number.parseInt(mmRaw, 10);
     const hh = String(Math.max(0, Math.min(23, Number.isFinite(parsedHh) ? parsedHh : 18))).padStart(2, "0");
     const mm = String(Math.max(0, Math.min(59, Number.isFinite(parsedMm) ? parsedMm : 0))).padStart(2, "0");
-    const offsetIso = getTimezoneOffsetIso(state.userTimezone);
+    const probeUtc = new Date(`${r.selectedDate}T${hh}:${mm}:00Z`);
+    const safeProbe = Number.isNaN(probeUtc.getTime()) ? new Date() : probeUtc;
+    const initialOffset = getTimezoneOffsetIso(state.userTimezone, safeProbe);
+    const initialInstant = new Date(`${r.selectedDate}T${hh}:${mm}:00${initialOffset}`);
+    const offsetIso = getTimezoneOffsetIso(
+      state.userTimezone,
+      Number.isNaN(initialInstant.getTime()) ? safeProbe : initialInstant,
+    );
     const isoWithOffset = `${r.selectedDate}T${hh}:${mm}:00${offsetIso}`;
     const remindAtDate = new Date(isoWithOffset);
     if (Number.isNaN(remindAtDate.getTime())) {
@@ -859,10 +875,14 @@
     const items = Array.isArray(ws && ws.items) ? ws.items : [];
     const profile = (ws && (ws.user || ws.profile)) || ws || {};
     state.cachedUser = profile;
-    state.userTimezone = resolveValidTimezone(profile.default_timezone || profile.timezone, DEFAULT_USER_TIMEZONE);
+    state.userTimezone = resolveValidTimezone(
+      extractProfileTimezone(profile, ws && ws.profile),
+      DEFAULT_USER_TIMEZONE,
+    );
     if (!state.reminder.selectedDate) {
       state.reminder.viewYearMonth = getTodayIsoForTimezone().slice(0, 7);
     }
+    renderReminderPicker();
 
     renderFoldersDropdown(folders);
     renderTagChips(tags);
@@ -1050,7 +1070,7 @@
     const cachedUser = session.user || cache.user;
     state.cachedUser = cachedUser;
     state.userTimezone = resolveValidTimezone(
-      (cachedUser && (cachedUser.default_timezone || cachedUser.timezone)) || "",
+      extractProfileTimezone(cachedUser, cache.user),
       DEFAULT_USER_TIMEZONE,
     );
     if (!state.reminder.selectedDate) {

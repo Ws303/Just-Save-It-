@@ -1761,18 +1761,12 @@ test("19. Cycle 18 LOW-3: signupWithPassword email confirmation yields empty acc
   const { signupWithPassword } = await import("../api.ts");
   const { clearSession, loadSession, __setStorageBackendsForTests } = await import("../storage.ts");
   const mem = new Map();
-  __setStorageBackendsForTests({
-    asyncStore: {
-      getItem: async (k) => (mem.has(k) ? mem.get(k) : null),
-      setItem: async (k, v) => { mem.set(k, String(v)); },
-      removeItem: async (k) => { mem.delete(k); },
-    },
-    secureStore: {
-      getItemAsync: async (k) => (mem.has(k) ? mem.get(k) : null),
-      setItemAsync: async (k, v) => { mem.set(k, String(v)); },
-      deleteItemAsync: async (k) => { mem.delete(k); },
-    },
-  });
+  const memBackend = {
+    getItem: async (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: async (k, v) => { mem.set(k, String(v)); },
+    removeItem: async (k) => { mem.delete(k); },
+  };
+  __setStorageBackendsForTests({ standard: memBackend, secure: memBackend });
   const origFetch = globalThis.fetch;
   globalThis.fetch = async () => ({
     ok: true,
@@ -1780,6 +1774,7 @@ test("19. Cycle 18 LOW-3: signupWithPassword email confirmation yields empty acc
     text: async () => JSON.stringify({ user: { id: "u-confirm-1", email: "confirm@mob.test" }, access_token: "" }),
   });
   try {
+    await clearSession();
     const res = await signupWithPassword("confirm@mob.test", "Secret123!", "ConfirmUser");
     assert.equal(res.ok, true);
     assert.equal(res.data?.access_token, "");
