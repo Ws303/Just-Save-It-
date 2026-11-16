@@ -1756,3 +1756,50 @@ test("Cycle 13: FIFO auth storage serialization, simulated IPC jitter, cache/que
     __setStorageBackendsForTests(null);
   }
 });
+
+test("19. Cycle 18 LOW-3: signupWithPassword email confirmation yields empty access_token and login.tsx requires non-empty token before tab redirect", async () => {
+  const { signupWithPassword } = await import("../api.ts");
+  const { clearSession, loadSession, __setStorageBackendsForTests } = await import("../storage.ts");
+  const mem = new Map();
+  __setStorageBackendsForTests({
+    asyncStore: {
+      getItem: async (k) => (mem.has(k) ? mem.get(k) : null),
+      setItem: async (k, v) => { mem.set(k, String(v)); },
+      removeItem: async (k) => { mem.delete(k); },
+    },
+    secureStore: {
+      getItemAsync: async (k) => (mem.has(k) ? mem.get(k) : null),
+      setItemAsync: async (k, v) => { mem.set(k, String(v)); },
+      deleteItemAsync: async (k) => { mem.delete(k); },
+    },
+  });
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ user: { id: "u-confirm-1", email: "confirm@mob.test" }, access_token: "" }),
+  });
+  try {
+    const res = await signupWithPassword("confirm@mob.test", "Secret123!", "ConfirmUser");
+    assert.equal(res.ok, true);
+    assert.equal(res.data?.access_token, "");
+    assert.equal(await loadSession(), null, "Empty access_token signup must not persist a session");
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+    __setStorageBackendsForTests(null);
+  }
+
+  const fsMob = await import("node:fs");
+  const pathMob = await import("node:path");
+  const { fileURLToPath: f2p } = await import("node:url");
+  const loginSrc = fsMob.readFileSync(
+    pathMob.resolve(pathMob.dirname(f2p(import.meta.url)), "../../app/login.tsx"),
+    "utf8",
+  );
+  assert.match(
+    loginSrc,
+    /typeof res\.data\?\.access_token === "string" && res\.data\.access_token\.trim\(\)\.length > 0/,
+    "mobile/app/login.tsx must require non-empty access_token before redirecting into /(tabs)",
+  );
+});

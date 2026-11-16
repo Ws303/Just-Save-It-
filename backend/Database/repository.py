@@ -1122,6 +1122,12 @@ def update_tag_for_user(db: Any, user_id: str, tag_id: str, req: TagUpdateReques
         clean_name = clean_text_field(req.name, unescape_html=False)
         if not clean_name:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tag name cannot be blank.")
+        dup = db.table("tags").select("id").eq("owner_id", user_id).eq("name", clean_name).execute()
+        if any(str(row.get("id")) != str(tag_id) for row in (dup.data or [])):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Tag with this name already exists.",
+            )
         updates["name"] = clean_name
     if "color" in req.model_fields_set:
         updates["color"] = req.color

@@ -33,7 +33,7 @@ from Database.supabase_client import (
     get_supabase_url,
     is_supabase_configured,
 )
-from .auth_dep import get_configured_hs256_secret
+from .auth_dep import get_configured_hs256_secret, is_user_deleted
 from .schemas import (
     ApiTokenSummary,
     AuthTokenResponse,
@@ -143,6 +143,19 @@ class AuthService:
         token = self._generate_refresh_token()
         self._local_refresh_tokens[token] = user_id
         return token
+
+    def purge_local_user(self, user_id: str) -> None:
+        """Remove cached local credentials, API tokens, and refresh tokens for a deleted user."""
+        if not user_id:
+            return
+        local_db = self._get_local_dev_client()
+        if local_db is not None and hasattr(local_db, "delete_local_user"):
+            local_db.delete_local_user(user_id)
+        for email in [em for em, rec in self._local_users.items() if rec.get("id") == user_id]:
+            self._local_users.pop(email, None)
+        self._local_tokens.pop(user_id, None)
+        for ref_tok in [tok for tok, uid in self._local_refresh_tokens.items() if uid == user_id]:
+            self._local_refresh_tokens.pop(ref_tok, None)
 
     def _validate_redirect_url(self, redirect_to: str) -> str:
         """Ensure OAuth redirect_to is http(s) without userinfo and points to an allowed host."""
@@ -561,7 +574,7 @@ class AuthService:
         # Local fallback renewal
         clean_refresh = str(refresh_token or "").strip()
         user_id = self._local_refresh_tokens.pop(clean_refresh, None) if clean_refresh else None
-        if not user_id:
+        if not user_id or is_user_deleted(user_id):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token.")
         local_user = self._find_local_user_by_id(user_id)
         if not local_user:

@@ -1468,3 +1468,75 @@ def test_mcp_server_batch_folders_and_tag_23505_recovery(isolated_db):
     finally:
         set_authenticated_user_id(None)
         set_override_db(None)
+
+
+def test_cycle18_tag_rename_409_and_delete_local_user_purge(isolated_db, monkeypatch):
+    """PATCH /api/tags/{id} rejects duplicate name with 409, and DELETE /api/auth/me purges local credentials + refresh tokens."""
+    from Login import auth_dep
+    from Login.service import auth_service
+
+    monkeypatch.setenv("ENV", "development")
+    monkeypatch.setenv("SUPABASE_URL", "")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    monkeypatch.setenv("JWT_SECRET", "cycle18-test-jwt-secret-key-at-least-32b")
+
+    client = TestClient(app)
+    email = "cycle18-del@example.com"
+    password = "Password123!"
+
+    reg_res = client.post(
+        "/api/auth/register",
+        json={"email": email, "password": password, "display_name": "Cycle18 User"},
+    )
+    assert reg_res.status_code == 201
+    reg_body = reg_res.json()
+    uid = reg_body["user"]["id"]
+    access_token = reg_body["access_token"]
+    refresh_token = reg_body["refresh_token"]
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    try:
+        # 1. Duplicate tag rename via PATCH /api/tags/{id} returns 409 Conflict
+        t1 = client.post("/api/tags", json={"name": "TagOne"}, headers=headers)
+        t2 = client.post("/api/tags", json={"name": "TagTwo"}, headers=headers)
+        assert t1.status_code == 201 and t2.status_code == 201
+        tag2_id = t2.json()["id"]
+
+        dup_patch = client.patch(f"/api/tags/{tag2_id}", json={"name": "TagOne"}, headers=headers)
+        assert dup_patch.status_code == 409
+        same_patch = client.patch(
+            f"/api/tags/{tag2_id}",
+            json={"name": "TagTwo", "color": "#112233"},
+            headers=headers,
+        )
+        assert same_patch.status_code == 200
+        assert same_patch.json()["color"] == "#112233"
+
+        # 2. DELETE /api/auth/me purges local user record + local refresh tokens
+        del_res = client.delete("/api/auth/me", headers=headers)
+        assert del_res.status_code == 200
+        assert del_res.json()["deleted"] is True
+
+        assert isolated_db.get_local_user_by_id(uid) is None
+        assert auth_service._find_local_user_by_id(uid) is None
+        assert all(owner_id != uid for owner_id in auth_service._local_refresh_tokens.values())
+
+        ref_after = client.post("/api/auth/refresh", json={"refresh_token": refresh_token})
+        assert ref_after.status_code == 401
+
+        login_after = client.post("/api/auth/login", json={"email": email, "password": password})
+        assert login_after.status_code == 401
+
+        # Re-registering with same email issues a fresh distinct user ID cleanly
+        rereg = client.post(
+            "/api/auth/register",
+            json={"email": email, "password": password, "display_name": "Reborn"},
+        )
+        assert rereg.status_code == 201
+        new_uid = rereg.json()["user"]["id"]
+        assert new_uid != uid
+        auth_service.purge_local_user(new_uid)
+    finally:
+        auth_dep._DELETED_USER_IDS.discard(uid)
+        auth_service.purge_local_user(uid)

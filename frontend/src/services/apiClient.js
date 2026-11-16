@@ -1913,7 +1913,7 @@ export const apiClient = {
         claims: res.data.access_token && !res.isMock ? extractClaimsSummary(res.data.access_token) : null,
         isMock: Boolean(res.isMock),
       });
-    } else {
+    } else if (!res.stale) {
       store.state.ui.authError = res.error || "อีเมลหรือรหัสผ่านไม่ถูกต้อง";
       store.emit();
     }
@@ -1957,7 +1957,7 @@ export const apiClient = {
           refreshToken: res.data.refresh_token || "",
           claims: res.data.claims || extractClaimsSummary(res.data.access_token),
         });
-      } else if (!res.ok) {
+      } else if (!res.ok && !res.stale) {
         store.state.ui.authError = res.error || "สมัครสมาชิกไม่สำเร็จ";
         store.emit();
       }
@@ -1986,7 +1986,7 @@ export const apiClient = {
         claims: res.data.access_token && !res.isMock ? extractClaimsSummary(res.data.access_token) : null,
         isMock: Boolean(res.isMock),
       });
-    } else {
+    } else if (!res.stale) {
       store.state.ui.authError = res.error || "สมัครสมาชิกไม่สำเร็จ";
       store.emit();
     }

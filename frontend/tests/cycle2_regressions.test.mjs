@@ -2632,3 +2632,296 @@ test("Cycle 15 [CHRIS HIGH-1, MED-1]: deleteAccount & 401 clear Supabase SDK sto
     globalThis.localStorage = origLocalStorage;
   }
 });
+
+test("Cycle 18 [LOW-1, LOW-2, LOW-4]: GoTrue signup redirect_to, stale login/register guard, and extension reminder userTimezone", async () => {
+  const { supabaseAuth, __setSupabaseClientForTests } = await import("../src/services/supabaseAuth.js");
+
+  const origFetch = globalThis.fetch;
+  const origLocalStorage = globalThis.localStorage;
+  const origWindow = globalThis.window;
+  const lsMap = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (lsMap.has(k) ? lsMap.get(k) : null),
+    setItem: (k, v) => lsMap.set(k, String(v)),
+    removeItem: (k) => lsMap.delete(k),
+    clear: () => lsMap.clear(),
+  };
+
+  try {
+    // 1. LOW-1: GoTrue REST /signup fallback preserves invite redirect_to query param when client SDK is null
+    __setSupabaseClientForTests(null);
+    let capturedSignupUrl = "";
+    globalThis.window = {
+      location: {
+        href: "https://just-save-it-web.onrender.com/?invite=inv-fallback&role=editor",
+        origin: "https://just-save-it-web.onrender.com",
+        pathname: "/",
+      },
+    };
+    globalThis.fetch = async (url) => {
+      capturedSignupUrl = String(url);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "u-gt-1", email: "gt@supa.test", user_metadata: {} }),
+      };
+    };
+    const gtRes = await supabaseAuth.signUpWithPassword(
+      { supabaseUrl: "https://pnqjamwhgzqzvpiytcln.supabase.co", supabaseAnonKey: "anon-test-key" },
+      {
+        email: "gt@supa.test",
+        password: "Password123!",
+        displayName: "GoTrue User",
+      },
+    );
+    assert.equal(gtRes.ok, true);
+    assert.match(
+      capturedSignupUrl,
+      /\/auth\/v1\/signup\?redirect_to=https%3A%2F%2Fjust-save-it-web\.onrender\.com%2F%3Finvite%3Dinv-fallback%26role%3Deditor/,
+      `Expected GoTrue /signup fallback URL to carry redirect_to, got: ${capturedSignupUrl}`,
+    );
+
+    // 2. LOW-2: backend signInPassword & registerUser never clobber store.state.ui.authError when res.stale is true,
+    // and main.js aborts before error toast on res?.stale
+    store.clearSession({ clearWorkspace: true });
+    store.state.api.authProvider = "backend";
+    store.state.api.useDevBypass = false;
+    store.state.ui.authError = null;
+
+    let releaseSlowLogin = null;
+    globalThis.fetch = () => new Promise((r) => { releaseSlowLogin = r; });
+    const loginPromise = apiClient.signInPassword("stale-a@test.com", "wrong");
+    await new Promise((r) => setTimeout(r, 10));
+    store.applyAuthenticatedSession({
+      mode: "live",
+      authProvider: "backend",
+      accessToken: "jwt-active-b",
+      refreshToken: "",
+      user: { id: "u-active-b", email: "b@test.com", name: "Active B" },
+    });
+    store.state.ui.authError = null;
+    releaseSlowLogin({
+      ok: false,
+      status: 401,
+      headers: { get: () => "application/json" },
+      text: async () => JSON.stringify({ detail: "Invalid login credentials" }),
+    });
+    const staleLoginRes = await loginPromise;
+    assert.equal(staleLoginRes.stale, true);
+    assert.equal(store.state.ui.authError, null, "Stale signInPassword failure must not overwrite ui.authError");
+
+    let releaseSlowRegister = null;
+    globalThis.fetch = () => new Promise((r) => { releaseSlowRegister = r; });
+    const regPromise = apiClient.registerUser("stale-reg@test.com", "Password123!", "Stale Reg");
+    await new Promise((r) => setTimeout(r, 10));
+    store.applyAuthenticatedSession({
+      mode: "live",
+      authProvider: "backend",
+      accessToken: "jwt-active-c",
+      refreshToken: "",
+      user: { id: "u-active-c", email: "c@test.com", name: "Active C" },
+    });
+    store.state.ui.authError = null;
+    releaseSlowRegister({
+      ok: false,
+      status: 400,
+      headers: { get: () => "application/json" },
+      text: async () => JSON.stringify({ detail: "Email already registered" }),
+    });
+    const staleRegRes = await regPromise;
+    assert.equal(staleRegRes.stale, true);
+    assert.equal(store.state.ui.authError, null, "Stale registerUser failure must not overwrite ui.authError");
+
+    const mainCode = fs.readFileSync(path.join(repoRoot, "frontend", "src", "main.js"), "utf8");
+    assert.match(mainCode, /await apiClient\.registerUser\([^\n]+\);\s*if \(res\?\.stale\) return;/);
+    assert.match(mainCode, /await apiClient\.signInPassword\([^\n]+\);\s*if \(res\?\.stale\) return;/);
+
+    // 3. LOW-4: Extension popup resolves "today" & calendar preset in state.userTimezone (e.g. America/New_York),
+    // not hardcoded Asia/Bangkok
+    const storeMap = new Map();
+    const sharedChromeStorage = {
+      local: {
+        get: (keys, cb) => {
+          const out = {};
+          const keyList = Array.isArray(keys) ? keys : keys ? [keys] : [];
+          for (const k of keyList) if (storeMap.has(k)) out[k] = storeMap.get(k);
+          cb(out);
+        },
+        set: (obj, cb) => {
+          for (const [k, v] of Object.entries(obj || {})) storeMap.set(k, v);
+          if (cb) cb();
+        },
+        remove: (keys, cb) => {
+          const keyList = Array.isArray(keys) ? keys : [keys];
+          for (const k of keyList) storeMap.delete(k);
+          if (cb) cb();
+        },
+      },
+    };
+    const apiCode = fs.readFileSync(path.join(repoRoot, "extension", "api.js"), "utf8");
+    const popupCode = fs.readFileSync(path.join(repoRoot, "extension", "popup.js"), "utf8");
+    const elMap = new Map();
+    const docListeners = new Map();
+    const makeEl = (id = "") => {
+      const classes = new Set();
+      const listeners = new Map();
+      const attrs = new Map();
+      let _inner = "";
+      const el = {
+        id,
+        value: "",
+        textContent: "",
+        get innerHTML() {
+          return _inner;
+        },
+        set innerHTML(v) {
+          _inner = String(v || "");
+          if (_inner === "") el.children = [];
+        },
+        className: "",
+        disabled: false,
+        checked: false,
+        src: "",
+        title: "",
+        dataset: {},
+        style: {},
+        children: [],
+        classList: {
+          add: (...cs) => cs.forEach((c) => classes.add(c)),
+          remove: (...cs) => cs.forEach((c) => classes.delete(c)),
+          toggle: (c, force) => {
+            if (force === true) { classes.add(c); return true; }
+            if (force === false) { classes.delete(c); return false; }
+            if (classes.has(c)) { classes.delete(c); return false; }
+            classes.add(c); return true;
+          },
+          contains: (c) => classes.has(c),
+        },
+        addEventListener: (evt, fn) => {
+          if (!listeners.has(evt)) listeners.set(evt, []);
+          listeners.get(evt).push(fn);
+        },
+        dispatch: async (type) => {
+          const ev = { type, key: "Enter", preventDefault() {} };
+          for (const fn of listeners.get(type) || []) await fn(ev);
+        },
+        appendChild: (c) => { el.children.push(c); return c; },
+        replaceChildren: (...nodes) => { el.children = nodes; },
+        focus() {},
+        setAttribute: (k, v) => attrs.set(k, String(v)),
+        getAttribute: (k) => attrs.get(k) ?? null,
+        removeAttribute: (k) => attrs.delete(k),
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        closest: () => null,
+      };
+      return el;
+    };
+    const getEl = (id) => {
+      if (!elMap.has(id)) elMap.set(id, makeEl(id));
+      return elMap.get(id);
+    };
+    const todayPresetBtn = makeEl("remTodayBtn");
+    todayPresetBtn.setAttribute("data-rem-preset", "today_18");
+
+    // 2026-11-16T03:00:00Z = 10:00 on 2026-11-16 in Asia/Bangkok, 22:00 on 2026-11-15 in America/New_York
+    const FixedMs = Date.parse("2026-11-16T03:00:00Z");
+    class FixedDate extends Date {
+      constructor(...args) {
+        if (args.length === 0) super(FixedMs);
+        else super(...args);
+      }
+      static now() { return FixedMs; }
+    }
+
+    let postedItemPayload = null;
+    const sb = {
+      globalThis: null,
+      window: null,
+      chrome: {
+        runtime: { lastError: null },
+        storage: sharedChromeStorage,
+        tabs: { async query() { return [{ id: 1, url: "https://ny-tz.test/post", title: "NY Post" }]; }, async create() {} },
+      },
+      document: {
+        getElementById: getEl,
+        createElement: (tag) => makeEl(tag),
+        createDocumentFragment: () => makeEl("#frag"),
+        querySelectorAll: (sel) => (sel === "[data-rem-preset]" ? [todayPresetBtn] : []),
+        querySelector: () => null,
+        addEventListener: (evt, fn) => {
+          if (!docListeners.has(evt)) docListeners.set(evt, []);
+          docListeners.get(evt).push(fn);
+        },
+      },
+      Intl,
+      URL,
+      URLSearchParams,
+      Date: FixedDate,
+      Math,
+      console,
+      setTimeout,
+      clearTimeout,
+      btoa,
+      atob,
+      navigator: {},
+      fetch: async (url, init) => {
+        const u = String(url);
+        const mk = (st, body) => ({
+          ok: st >= 200 && st < 300,
+          status: st,
+          statusText: "OK",
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify(body),
+        });
+        if (u.endsWith("/health")) return mk(200, { status: "ok" });
+        if (u.includes("/api/workspace")) {
+          return mk(200, {
+            folders: [],
+            tags: [],
+            items: [],
+            user: { id: "u-tz-ny", email: "ny@test.com", default_timezone: "America/New_York" },
+          });
+        }
+        if (u.includes("/api/items") && init?.method === "POST") {
+          postedItemPayload = JSON.parse(String(init.body || "{}"));
+          return mk(201, { item: { id: "it-ny-1", url: postedItemPayload.url, title: postedItemPayload.title } });
+        }
+        return mk(200, {});
+      },
+    };
+    sb.globalThis = sb;
+    sb.self = sb;
+    sb.window = sb;
+    vm.runInNewContext(apiCode, sb, { filename: "extension/api.js" });
+    vm.runInNewContext(popupCode, sb, { filename: "extension/popup.js" });
+
+    await sb.JustSaveItApi.saveAuthSession({
+      access_token: "tok-tz-ny",
+      refresh_token: "",
+      user: { id: "u-tz-ny", email: "ny@test.com", default_timezone: "America/New_York" },
+    });
+    for (const fn of docListeners.get("DOMContentLoaded") || []) await fn();
+    await new Promise((r) => setTimeout(r, 25));
+
+    await todayPresetBtn.dispatch("click");
+    const selectedCalCells = getEl("calDaysGrid").children
+      .filter((c) => c.classList.contains("selected"))
+      .map((c) => c.dataset.calDate);
+    assert.deepEqual(
+      selectedCalCells,
+      ["2026-11-15"],
+      `Expected today_18 preset in America/New_York at 2026-11-16T03:00Z to select 2026-11-15, got: ${JSON.stringify(selectedCalCells)}`,
+    );
+
+    await getEl("saveForm").dispatch("submit");
+    await new Promise((r) => setTimeout(r, 25));
+    assert.equal(postedItemPayload?.reminder?.timezone, "America/New_York");
+    assert.equal(postedItemPayload?.reminder?.remind_at, "2026-11-15T23:00:00.000Z");
+  } finally {
+    __setSupabaseClientForTests(null);
+    globalThis.window = origWindow;
+    globalThis.fetch = origFetch;
+    globalThis.localStorage = origLocalStorage;
+  }
+});

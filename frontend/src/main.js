@@ -1296,6 +1296,7 @@ appEl.addEventListener("click", async (e) => {
       return;
     }
     const res = await apiClient.registerUser(email, password, displayName);
+    if (res?.stale) return;
     if (!res.ok) {
       store.showToast(res.error || "สมัครสมาชิกไม่สำเร็จ");
       return;
@@ -1319,6 +1320,7 @@ appEl.addEventListener("click", async (e) => {
       return;
     }
     const res = await apiClient.signInPassword(email, password);
+    if (res?.stale) return;
     if (res.ok && hasValidSession(store.state)) {
       completePostAuthNavigation("home");
       store.showToast("เข้าสู่ระบบด้วยรหัสผ่านสำเร็จ");
@@ -2167,6 +2169,7 @@ appEl.addEventListener("click", async (e) => {
         return;
       }
       const res = await apiClient.signInPassword(email, password);
+      if (res?.stale) return;
       if (res.ok && hasValidSession(store.state)) {
         completePostAuthNavigation("home");
       }

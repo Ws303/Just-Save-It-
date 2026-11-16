@@ -442,4 +442,9 @@ def delete_my_account(
 
     db.table("profiles").delete().eq("id", user_id).execute()
 
+    delete_local_fn = getattr(db, "delete_local_user", None)
+    if callable(delete_local_fn):
+        delete_local_fn(user_id)
+    auth_service.purge_local_user(user_id)
+
     return {"deleted": True, "user_id": user_id}

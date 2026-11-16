@@ -76,10 +76,30 @@
     return isSessionStale(startGen, err);
   }
 
-  function getBangkokTodayIso(now = new Date()) {
+  const DEFAULT_USER_TIMEZONE = (() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Bangkok";
+    } catch (_err) {
+      return "Asia/Bangkok";
+    }
+  })();
+
+  function resolveValidTimezone(candidate, fallback = DEFAULT_USER_TIMEZONE) {
+    const clean = String(candidate || "").trim();
+    if (!clean) return fallback;
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: clean });
+      return clean;
+    } catch (_err) {
+      return fallback;
+    }
+  }
+
+  function getTodayIsoForTimezone(timeZone = state.userTimezone, now = new Date()) {
+    const cleanTz = resolveValidTimezone(timeZone, "Asia/Bangkok");
     try {
       const parts = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "Asia/Bangkok",
+        timeZone: cleanTz,
         year: "numeric",
         month: "2-digit",
         day: "2-digit",
@@ -101,7 +121,7 @@
   }
 
   function stepYearMonth(ym, deltaMonths) {
-    const [yStr, mStr] = String(ym || getBangkokTodayIso().slice(0, 7)).split("-");
+    const [yStr, mStr] = String(ym || getTodayIsoForTimezone().slice(0, 7)).split("-");
     const y = Number(yStr) || new Date().getFullYear();
     const m = (Number(mStr) || 1) - 1;
     const total = y * 12 + m + Number(deltaMonths || 0);
@@ -111,7 +131,7 @@
   }
 
   function formatThaiMonthYear(ym) {
-    const [yStr, mStr] = String(ym || getBangkokTodayIso().slice(0, 7)).split("-");
+    const [yStr, mStr] = String(ym || getTodayIsoForTimezone().slice(0, 7)).split("-");
     const y = Number(yStr) || new Date().getFullYear();
     const m = Math.max(1, Math.min(12, Number(mStr) || 1));
     return `${THAI_MONTH_NAMES[m - 1]} ${y + 543}`;
@@ -173,7 +193,7 @@
     cachedFolders: [],
     cachedTags: [],
     cachedUser: null,
-    userTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Bangkok",
+    userTimezone: DEFAULT_USER_TIMEZONE,
     reminder: {
       pickerOpen: false,
       enabled: false,
@@ -182,7 +202,7 @@
       time: "18:00",
       scheduleType: "once",
       repeatEveryDays: 3,
-      viewYearMonth: getBangkokTodayIso().slice(0, 7),
+      viewYearMonth: getTodayIsoForTimezone(DEFAULT_USER_TIMEZONE).slice(0, 7),
     },
   };
 
@@ -683,7 +703,7 @@
     }
     if (!els.calDaysGrid) return;
 
-    const todayIso = getBangkokTodayIso();
+    const todayIso = getTodayIsoForTimezone();
     const [yStr, mStr] = r.viewYearMonth.split("-");
     const year = Number(yStr) || new Date().getFullYear();
     const month = Math.max(1, Math.min(12, Number(mStr) || 1));
@@ -722,7 +742,7 @@
 
   function applyReminderPreset(presetKey) {
     const r = state.reminder;
-    const todayIso = getBangkokTodayIso();
+    const todayIso = getTodayIsoForTimezone();
     if (presetKey === "none") {
       r.enabled = false;
       r.presetKey = "none";
@@ -839,6 +859,10 @@
     const items = Array.isArray(ws && ws.items) ? ws.items : [];
     const profile = (ws && (ws.user || ws.profile)) || ws || {};
     state.cachedUser = profile;
+    state.userTimezone = resolveValidTimezone(profile.default_timezone || profile.timezone, DEFAULT_USER_TIMEZONE);
+    if (!state.reminder.selectedDate) {
+      state.reminder.viewYearMonth = getTodayIsoForTimezone().slice(0, 7);
+    }
 
     renderFoldersDropdown(folders);
     renderTagChips(tags);
@@ -1014,7 +1038,6 @@
     els.saverView.classList.remove("hidden");
     if (els.submenuAccountRow) els.submenuAccountRow.classList.remove("hidden");
     setSaverPaneMode("save");
-    renderReminderPicker();
 
     const session = preloadedSession || { user: null };
     const rawCache = preloadedCache || { folders: [], tags: [], recentItems: [], user: null };
@@ -1026,6 +1049,14 @@
         : rawCache;
     const cachedUser = session.user || cache.user;
     state.cachedUser = cachedUser;
+    state.userTimezone = resolveValidTimezone(
+      (cachedUser && (cachedUser.default_timezone || cachedUser.timezone)) || "",
+      DEFAULT_USER_TIMEZONE,
+    );
+    if (!state.reminder.selectedDate) {
+      state.reminder.viewYearMonth = getTodayIsoForTimezone().slice(0, 7);
+    }
+    renderReminderPicker();
     const userDisplay = (cachedUser && (cachedUser.display_name || cachedUser.email)) || "บัญชี Sharely";
     if (els.userLabel) {
       els.userLabel.textContent = `👤 ${userDisplay}`;
@@ -1055,6 +1086,7 @@
     state.cachedTags = [];
     state.allRecentItems = [];
     state.cachedUser = null;
+    state.userTimezone = DEFAULT_USER_TIMEZONE;
     state.lastSavedItemId = null;
     state.previewMeta = null;
     state.previewUrl = "";
@@ -1066,7 +1098,7 @@
       time: "18:00",
       scheduleType: "once",
       repeatEveryDays: 3,
-      viewYearMonth: getBangkokTodayIso().slice(0, 7),
+      viewYearMonth: getTodayIsoForTimezone(DEFAULT_USER_TIMEZONE).slice(0, 7),
     };
     if (els.noteInput) els.noteInput.value = "";
     if (els.tagsInput) els.tagsInput.value = "";
@@ -1637,7 +1669,7 @@
       els.reminderTriggerBtn.addEventListener("click", () => {
         state.reminder.pickerOpen = !state.reminder.pickerOpen;
         if (state.reminder.pickerOpen && !state.reminder.selectedDate) {
-          state.reminder.viewYearMonth = getBangkokTodayIso().slice(0, 7);
+          state.reminder.viewYearMonth = getTodayIsoForTimezone().slice(0, 7);
         }
         renderReminderPicker();
       });
@@ -1664,7 +1696,7 @@
         state.reminder.scheduleType = "every_n_days";
         if (!state.reminder.selectedDate) {
           state.reminder.enabled = true;
-          state.reminder.selectedDate = getBangkokTodayIso();
+          state.reminder.selectedDate = getTodayIsoForTimezone();
         }
         renderReminderPicker();
       });

@@ -203,9 +203,9 @@ export const supabaseAuth = {
     const cleanEmail = String(email || "").trim();
     const cleanName = String(displayName || "").trim() || cleanEmail.split("@")[0];
     const client = await getSupabaseBrowserClient(config);
+    const redirectTo = typeof window !== "undefined" ? buildAuthRedirectUrl(window) : undefined;
 
     if (client) {
-      const redirectTo = typeof window !== "undefined" ? buildAuthRedirectUrl(window) : undefined;
       const { data, error } = await client.auth.signUp({
         email: cleanEmail,
         password,
@@ -237,7 +237,7 @@ export const supabaseAuth = {
 
     const res = await fetchGoTrueJson({
       ...config,
-      path: "/signup",
+      path: redirectTo ? `/signup?redirect_to=${encodeURIComponent(redirectTo)}` : "/signup",
       method: "POST",
       body: {
         email: cleanEmail,

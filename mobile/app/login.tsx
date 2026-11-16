@@ -91,7 +91,7 @@ export default function LoginScreen() {
       setErrorText(res.error || "สมัครสมาชิกไม่สำเร็จ");
       return;
     }
-    if (typeof res.data?.access_token === "string") {
+    if (typeof res.data?.access_token === "string" && res.data.access_token.trim().length > 0) {
       router.replace("/(tabs)");
     } else {
       Alert.alert("สมัครสมาชิกสำเร็จ", "กรุณายืนยันอีเมลแล้วเข้าสู่ระบบ");
