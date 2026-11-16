@@ -34,6 +34,7 @@ except ImportError:
         FastMCP = Any  # type: ignore
 
 from Database.repository import (
+    _attach_tags_to_item,
     _get_accessible_folder_ids,
     can_access_item,
     get_folder_role,
@@ -317,22 +318,7 @@ def create_item(
         item_id = created_item.get("id")
 
     if tags and item_id:
-        for t_name in tags:
-            tag_str = clean_text_field(t_name, unescape_html=False)
-            if not tag_str:
-                continue
-            existing_t = db.table("tags").select("id").eq("owner_id", user_id).eq("name", tag_str).execute()
-            if existing_t.data:
-                tag_id = existing_t.data[0]["id"]
-            else:
-                new_t = db.table("tags").insert({"owner_id": user_id, "name": tag_str}).execute()
-                tag_id = new_t.data[0]["id"] if new_t.data else None
-
-            if tag_id:
-                try:
-                    db.table("item_tags").insert({"item_id": item_id, "tag_id": tag_id}).execute()
-                except Exception as e:
-                    logger.debug("Failed to link tag %s to item %s: %s", tag_id, item_id, e)
+        _attach_tags_to_item(db, user_id, str(item_id), tags)
 
     return created_item
 
@@ -454,35 +440,40 @@ def manage_item_tags(
     if not can_access_item(db, user_id, item, require_editor=True):
         raise PermissionError("Access denied: You do not have permission to manage tags on this item.")
 
-    # Handle additions
+    # Handle additions (batched + 23505 recovery)
     if add_tags:
-        for t_name in add_tags:
-            tag_str = (clean_text_field(t_name, unescape_html=False) or "")[:60].strip()
-            if not tag_str:
-                continue
-            existing = db.table("tags").select("id").eq("owner_id", user_id).eq("name", tag_str).execute()
-            if existing.data:
-                tag_id = existing.data[0]["id"]
-            else:
-                new_t = db.table("tags").insert({"owner_id": user_id, "name": tag_str}).execute()
-                tag_id = new_t.data[0]["id"] if new_t.data else None
+        clean_add = [
+            t
+            for t in (
+                (clean_text_field(t_name, unescape_html=False) or "")[:60].strip()
+                for t_name in add_tags
+            )
+            if t
+        ]
+        if clean_add:
+            _attach_tags_to_item(db, user_id, item_id, clean_add)
 
-            if tag_id:
-                try:
-                    db.table("item_tags").insert({"item_id": item_id, "tag_id": tag_id}).execute()
-                except Exception as e:
-                    logger.debug("Failed to link tag %s: %s", tag_id, e)
-
-    # Handle removals
+    # Handle removals (batched)
     if remove_tags:
-        for t_name in remove_tags:
-            tag_str = (clean_text_field(t_name, unescape_html=False) or "")[:60].strip()
-            if not tag_str:
-                continue
-            existing = db.table("tags").select("id").eq("owner_id", user_id).eq("name", tag_str).execute()
-            if existing.data:
-                tag_id = existing.data[0]["id"]
-                db.table("item_tags").delete().eq("item_id", item_id).eq("tag_id", tag_id).execute()
+        clean_rem = [
+            t
+            for t in (
+                (clean_text_field(t_name, unescape_html=False) or "")[:60].strip()
+                for t_name in remove_tags
+            )
+            if t
+        ]
+        if clean_rem:
+            existing_rem = (
+                db.table("tags")
+                .select("id")
+                .eq("owner_id", user_id)
+                .in_("name", clean_rem)
+                .execute()
+            )
+            rem_ids = [row["id"] for row in (getattr(existing_rem, "data", None) or []) if row.get("id")]
+            if rem_ids:
+                db.table("item_tags").delete().eq("item_id", item_id).in_("tag_id", rem_ids).execute()
 
     return {"success": True, "item_id": item_id, "updated": True}
 
@@ -528,20 +519,28 @@ def list_folders() -> List[Dict[str, Any]]:
     db = get_active_db()
 
     owned_res = db.table("folders").select("*").eq("owner_id", user_id).execute()
-    folders = owned_res.data or []
-    for f in folders:
-        f["role"] = "owner"
+    folders = [dict(f, role="owner") for f in (owned_res.data or [])]
+    seen_ids = {f.get("id") for f in folders if f.get("id")}
 
-    # Fetch shared folders
+    # Fetch shared folders (batched)
     try:
         shared_res = db.table("folder_members").select("folder_id, role").eq("user_id", user_id).execute()
-        if shared_res.data:
-            for sm in shared_res.data:
-                f_id = sm["folder_id"]
-                f_res = db.table("folders").select("*").eq("id", f_id).execute()
-                if f_res.data:
-                    sf = f_res.data[0]
-                    sf["role"] = sm["role"]
+        role_by_fid: Dict[str, Any] = {}
+        shared_ids: List[str] = []
+        for sm in shared_res.data or []:
+            fid = sm.get("folder_id")
+            if not fid or fid in seen_ids or fid in role_by_fid:
+                continue
+            role_by_fid[fid] = sm.get("role")
+            shared_ids.append(fid)
+        if shared_ids:
+            f_res = db.table("folders").select("*").in_("id", shared_ids).execute()
+            by_id = {row["id"]: row for row in (f_res.data or []) if row.get("id")}
+            for fid in shared_ids:
+                row = by_id.get(fid)
+                if row:
+                    sf = dict(row)
+                    sf["role"] = role_by_fid[fid]
                     folders.append(sf)
     except Exception as e:
         logger.debug("Failed to list shared folders: %s", e)

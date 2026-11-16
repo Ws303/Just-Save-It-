@@ -2379,3 +2379,84 @@ test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quic
   await assert.rejects(slowLoginClearTask, (err) => err && err.aborted === true);
   assert.equal((await delaySb.JustSaveItApi.getSessionState()).accessToken, "", "Slow login racing clearAuthSession must not resurrect session");
 });
+
+test("Cycle 15 [CHRIS HIGH-1, MED-1]: deleteAccount & 401 clear Supabase SDK storage safely and confirm-delete-account guards stale switch & busy re-entry", async () => {
+  const { supabaseAuth } = await import("../src/services/supabaseAuth.js");
+  const lsMap = new Map();
+  const origLocalStorage = globalThis.localStorage;
+  const origFetch = globalThis.fetch;
+  globalThis.localStorage = {
+    get length() { return lsMap.size; },
+    key: (i) => Array.from(lsMap.keys())[i] ?? null,
+    getItem: (k) => (lsMap.has(k) ? lsMap.get(k) : null),
+    setItem: (k, v) => lsMap.set(k, String(v)),
+    removeItem: (k) => lsMap.delete(k),
+  };
+
+  try {
+    store.resetSeed();
+    store.applyAuthenticatedSession({
+      mode: "live",
+      authProvider: "supabase",
+      accessToken: "jwt-del-supa",
+      refreshToken: "",
+      user: { id: "u-del-supa", email: "del@supa.test", name: "Del" },
+    });
+    store.state.api.authProvider = "supabase";
+    lsMap.set("sb-pnqjamwhgzqzvpiytcln-auth-token", '{"access_token":"jwt-del-supa"}');
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("/api/auth/me")) {
+        return mockResp(200, { deleted: true });
+      }
+      return mockResp(200, {});
+    };
+
+    const delRes = await apiClient.deleteAccount();
+    assert.equal(delRes.ok, true);
+    assert.equal(lsMap.has("sb-pnqjamwhgzqzvpiytcln-auth-token"), false, "deleteAccount must purge persisted Supabase SDK auth token");
+    assert.equal(store.state.data.user.isAuthenticated, false);
+
+    // 401 handler in supabase mode must also purge persisted SDK session so reload doesn't re-login
+    store.applyAuthenticatedSession({
+      mode: "live",
+      authProvider: "supabase",
+      accessToken: "jwt-401-supa",
+      refreshToken: "",
+      user: { id: "u-401-supa", email: "401@supa.test", name: "401" },
+    });
+    store.state.api.authProvider = "supabase";
+    lsMap.set("sb-pnqjamwhgzqzvpiytcln-auth-token", '{"access_token":"jwt-401-supa"}');
+    globalThis.fetch = async () => mockResp(401, { detail: "Token revoked" });
+    await apiClient.getMe();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(lsMap.has("sb-pnqjamwhgzqzvpiytcln-auth-token"), false, "HTTP 401 clear on getMe must purge persisted Supabase SDK token");
+
+    // hydrateWorkspace returning 401 must also fail closed & purge persisted SDK token instead of bouncing on reload
+    store.applyAuthenticatedSession({
+      mode: "live",
+      authProvider: "supabase",
+      accessToken: "jwt-401-ws",
+      refreshToken: "",
+      user: { id: "u-401-ws", email: "ws401@supa.test", name: "WS401" },
+    });
+    store.state.api.authProvider = "supabase";
+    lsMap.set("sb-pnqjamwhgzqzvpiytcln-auth-token", '{"access_token":"jwt-401-ws"}');
+    const wsHydrateRes = await apiClient.hydrateWorkspace();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(wsHydrateRes.status, 401);
+    assert.equal(lsMap.has("sb-pnqjamwhgzqzvpiytcln-auth-token"), false, "HTTP 401 on hydrateWorkspace must purge persisted Supabase SDK token");
+
+    // clearLocalSession respects guard predicate (does not wipe User B if signed in before cleanup completes)
+    lsMap.set("sb-pnqjamwhgzqzvpiytcln-auth-token", '{"access_token":"user-b-fresh"}');
+    const abortedClear = await supabaseAuth.clearLocalSession({}, () => false);
+    assert.equal(abortedClear.aborted, true);
+    assert.equal(lsMap.has("sb-pnqjamwhgzqzvpiytcln-auth-token"), true, "Guarded clearLocalSession must abort when auth context changed");
+
+    // confirm-delete-account handler in main.js enforces busy lock, stale/authGeneration check, and auth-state gate
+    const mainCode = fs.readFileSync(path.join(repoRoot, "frontend", "src", "main.js"), "utf8");
+    assert.match(mainCode, /confirm-delete-account[\s\S]{0,400}deleteAccountBusy[\s\S]{0,500}res\?\.stale[\s\S]{0,400}!store\.state\.data\.user\?\.isAuthenticated/);
+  } finally {
+    globalThis.fetch = origFetch;
+    globalThis.localStorage = origLocalStorage;
+  }
+});

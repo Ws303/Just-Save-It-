@@ -1281,3 +1281,98 @@ async def test_cycle4_yt_upgrade_when_initial_platform_web(isolated_db):
         ItemCreateRequest(url="https://www.youtube.com/watch?v=c5bump123456", title="Bump Again"),
     )
     assert bumped["enrich_status"] == "pending"
+
+
+def test_mcp_server_batch_folders_and_tag_23505_recovery(isolated_db):
+    """MCP list_folders batches shared folder queries and MCP tag attachment recovers from 23505 races."""
+    from Ai.mcp_server import (
+        create_item,
+        list_folders,
+        manage_item_tags,
+        set_authenticated_user_id,
+        set_override_db,
+    )
+
+    uid = "usr-mcp-batch"
+    owner_b = "usr-owner-shared"
+    isolated_db.tables["folders"].extend(
+        [
+            {"id": "f-owned-1", "owner_id": uid, "name": "Owned", "icon": "📁"},
+            {"id": "f-sh-1", "owner_id": owner_b, "name": "Shared 1", "icon": "🤝"},
+            {"id": "f-sh-2", "owner_id": owner_b, "name": "Shared 2", "icon": "🤝"},
+        ]
+    )
+    isolated_db.tables["folder_members"].extend(
+        [
+            {"folder_id": "f-sh-1", "user_id": uid, "role": "editor"},
+            {"folder_id": "f-sh-2", "user_id": uid, "role": "viewer"},
+        ]
+    )
+
+    set_override_db(isolated_db)
+    set_authenticated_user_id(uid)
+    try:
+        # 1. list_folders batches shared folders with a single in_("id", ...) query (not N separate loops)
+        folder_queries = []
+        orig_table = isolated_db.table
+
+        def _counting_table(tname):
+            if tname == "folders":
+                folder_queries.append("folders")
+            return orig_table(tname)
+
+        isolated_db.table = _counting_table
+        try:
+            folders = list_folders()
+        finally:
+            isolated_db.table = orig_table
+
+        assert len(folder_queries) == 2  # 1 owned + 1 batched shared query (even with 2 shared folders)
+        names_by_id = {f["id"]: (f["name"], f["role"]) for f in folders}
+        assert names_by_id["f-owned-1"] == ("Owned", "owner")
+        assert names_by_id["f-sh-1"] == ("Shared 1", "editor")
+        assert names_by_id["f-sh-2"] == ("Shared 2", "viewer")
+
+        # 2. create_item + manage_item_tags recover cleanly from 23505 duplicate tag insert races
+        with patch("Ai.mcp_server.validate_safe_url", side_effect=lambda u: u):
+            orig_tags_table = isolated_db.table
+
+            class _RaceTagsTableProxy:
+                def __init__(self, inner):
+                    self._inner = inner
+                    self._pending_insert = None
+
+                def insert(self, payload):
+                    self._pending_insert = payload
+                    return self
+
+                def execute(self):
+                    if self._pending_insert is not None:
+                        rows = self._pending_insert if isinstance(self._pending_insert, list) else [self._pending_insert]
+                        for row in (rows if isinstance(rows, list) else [rows]):
+                            orig_table("tags").insert(row).execute()
+                        raise Exception("duplicate key value violates unique constraint (23505)")
+                    return self._inner.execute()
+
+                def __getattr__(self, name):
+                    return getattr(self._inner, name)
+
+            def _racing_table(tname):
+                tbl = orig_tags_table(tname)
+                return _RaceTagsTableProxy(tbl) if tname == "tags" else tbl
+
+            isolated_db.table = _racing_table
+            try:
+                created_item = create_item(url="https://mcp-race.test/1", title="Race Item", tags=["RaceCreate"])
+                item_id = created_item["id"]
+                res_tags = manage_item_tags(item_id=item_id, add_tags=["RaceTag", "RaceTag2"], remove_tags=["RaceTag2"])
+            finally:
+                isolated_db.table = orig_tags_table
+
+        assert res_tags["success"] is True
+        linked_ids = [r["tag_id"] for r in isolated_db.tables["item_tags"] if r["item_id"] == item_id]
+        linked_names = {r["name"] for r in isolated_db.tables["tags"] if r["id"] in linked_ids}
+        assert linked_names == {"RaceCreate", "RaceTag"}
+    finally:
+        set_authenticated_user_id(None)
+        set_override_db(None)

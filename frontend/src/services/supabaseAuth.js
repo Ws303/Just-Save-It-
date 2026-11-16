@@ -473,11 +473,38 @@ export const supabaseAuth = {
     });
   },
 
-  async signOut(config, accessToken = "") {
-    const client = await getSupabaseBrowserClient(config);
+  async clearLocalSession(config = {}, isStillCurrentFn = null) {
+    if (typeof isStillCurrentFn === "function" && !isStillCurrentFn()) {
+      return { ok: false, aborted: true };
+    }
+    try {
+      if (typeof globalThis.localStorage !== "undefined") {
+        const toRemove = [];
+        for (let i = 0; i < globalThis.localStorage.length; i += 1) {
+          const k = globalThis.localStorage.key(i);
+          if (k && /^sb-.+-auth-token/.test(k)) {
+            toRemove.push(k);
+          }
+        }
+        for (const k of toRemove) {
+          globalThis.localStorage.removeItem(k);
+        }
+      }
+    } catch {
+      // Ignore restricted storage environments
+    }
+    const client = _cachedClient || (await getSupabaseBrowserClient(config));
+    if (typeof isStillCurrentFn === "function" && !isStillCurrentFn()) {
+      return { ok: false, aborted: true };
+    }
     if (client) {
       await client.auth.signOut({ scope: "local" }).catch(() => {});
     }
+    return { ok: true };
+  },
+
+  async signOut(config, accessToken = "") {
+    await this.clearLocalSession(config);
     if (accessToken) {
       await fetchGoTrueJson({
         ...config,

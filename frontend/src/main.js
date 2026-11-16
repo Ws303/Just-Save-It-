@@ -801,19 +801,35 @@ appEl.addEventListener("click", async (e) => {
       return;
     }
     if (act === "confirm-delete-account") {
+      if (ui.deleteAccountBusy) return;
       const confirmVal = (document.getElementById("deleteAccountConfirmInput")?.value || "").trim();
       if (confirmVal !== "DELETE") {
         store.showToast("กรุณาพิมพ์ DELETE ให้ถูกต้องเพื่อยืนยัน");
         return;
       }
-      const res = await apiClient.deleteAccount();
-      if (!res?.ok) {
-        store.showToast(res?.error || "ลบบัญชีไม่สำเร็จ กรุณาลองอีกครั้ง");
-        return;
+      const startGen = store.state.api?.authGeneration || 0;
+      ui.deleteAccountBusy = true;
+      store.emit();
+      try {
+        const res = await apiClient.deleteAccount();
+        if (res?.stale) {
+          return;
+        }
+        if (!res?.ok) {
+          if ((store.state.api?.authGeneration || 0) === startGen) {
+            store.showToast(res?.error || "ลบบัญชีไม่สำเร็จ กรุณาลองอีกครั้ง");
+          }
+          return;
+        }
+        if (!store.state.data.user?.isAuthenticated) {
+          stopRealtimeSync();
+          store.closeSheet();
+          store.navigate("login", { allowGuestSwitch: true });
+        }
+      } finally {
+        ui.deleteAccountBusy = false;
+        store.emit();
       }
-      stopRealtimeSync();
-      store.closeSheet();
-      store.navigate("login", { allowGuestSwitch: true });
       return;
     }
     if (act === "open-notifications") {

@@ -406,6 +406,27 @@ function getSupabaseConfig() {
   };
 }
 
+function clearSessionAndSdk({ clearWorkspace = false, redirectToLogin = false, authError = null, awaitSdk = false } = {}) {
+  const prevAuthMode = getAuthMode(store.state);
+  const supaCfg = getSupabaseConfig();
+  if (typeof store.clearSession === "function") {
+    store.clearSession({
+      ...(clearWorkspace ? { clearWorkspace: true } : {}),
+      ...(redirectToLogin ? { redirectToLogin: true } : {}),
+      ...(authError ? { authError } : {}),
+    });
+  }
+  if (prevAuthMode === "supabase" && typeof supabaseAuth.clearLocalSession === "function") {
+    const clearedGen = store.state.api?.authGeneration || 0;
+    const task = supabaseAuth.clearLocalSession(
+      supaCfg,
+      () => !store.state.data.user?.isAuthenticated && (store.state.api?.authGeneration || 0) === clearedGen,
+    );
+    return awaitSdk ? task : undefined;
+  }
+  return undefined;
+}
+
 async function dispatchRequest({
   method = "GET",
   path,
@@ -521,7 +542,7 @@ async function dispatchRequest({
     });
 
     if (isAuthContextCurrent(startKey) && resp.status === 401 && !skipUnauthRedirect && !path.startsWith("/api/auth/login") && !path.startsWith("/api/auth/register")) {
-      store.clearSession({
+      clearSessionAndSdk({
         redirectToLogin: store.state.ui.authGuardEnabled !== false,
         authError: parsed?.detail || "เซสชันหมดอายุหรือยังไม่ได้ยืนยันตัวตน (HTTP 401)",
       });
@@ -1484,6 +1505,14 @@ export const apiClient = {
           return { ok: false, hydrated: false, stale: true };
         }
 
+        if (wsRes?.status === 401) {
+          clearSessionAndSdk({
+            redirectToLogin: store.state.ui.authGuardEnabled !== false,
+            authError: wsRes.error || "เซสชันหมดอายุหรือยังไม่ได้ยืนยันตัวตน (HTTP 401)",
+          });
+          return { ok: false, hydrated: false, status: 401 };
+        }
+
         if (wsRes?.ok && wsRes.data && Array.isArray(wsRes.data.items)) {
           const d = wsRes.data;
           const allRows = [];
@@ -1502,6 +1531,13 @@ export const apiClient = {
             });
             if (!store.state.data.user?.isAuthenticated || !isAuthContextCurrent(startKey)) {
               return { ok: false, hydrated: false, stale: true };
+            }
+            if (nextPage?.status === 401) {
+              clearSessionAndSdk({
+                redirectToLogin: store.state.ui.authGuardEnabled !== false,
+                authError: nextPage.error || "เซสชันหมดอายุหรือยังไม่ได้ยืนยันตัวตน (HTTP 401)",
+              });
+              return { ok: false, hydrated: false, status: 401 };
             }
             const batch = nextPage?.ok && Array.isArray(nextPage.data?.items) ? nextPage.data.items : [];
             const added = mergeUniqueRowsById(allRows, seenIds, batch);
@@ -1570,6 +1606,15 @@ export const apiClient = {
           return { ok: false, hydrated: false, stale: true };
         }
 
+        const first401 = [meRes, foldersRes, itemsRes, tagsRes, remindersRes].find((r) => r?.status === 401);
+        if (first401) {
+          clearSessionAndSdk({
+            redirectToLogin: store.state.ui.authGuardEnabled !== false,
+            authError: first401.error || "เซสชันหมดอายุหรือยังไม่ได้ยืนยันตัวตน (HTTP 401)",
+          });
+          return { ok: false, hydrated: false, status: 401 };
+        }
+
         let itemRows = null;
         if (itemsRes?.ok && Array.isArray(itemsRes.data?.items)) {
           itemRows = [];
@@ -1588,6 +1633,13 @@ export const apiClient = {
             });
             if (!store.state.data.user?.isAuthenticated || !isAuthContextCurrent(startKey)) {
               return { ok: false, hydrated: false, stale: true };
+            }
+            if (nextPage?.status === 401) {
+              clearSessionAndSdk({
+                redirectToLogin: store.state.ui.authGuardEnabled !== false,
+                authError: nextPage.error || "เซสชันหมดอายุหรือยังไม่ได้ยืนยันตัวตน (HTTP 401)",
+              });
+              return { ok: false, hydrated: false, status: 401 };
             }
             const batch = nextPage?.ok && Array.isArray(nextPage.data?.items) ? nextPage.data.items : [];
             const added = mergeUniqueRowsById(itemRows, seenIds, batch);
@@ -2202,9 +2254,7 @@ export const apiClient = {
     });
     if (res.ok && isAuthContextCurrent(startKey)) {
       stopRealtimeSync();
-      if (typeof store.clearSession === "function") {
-        store.clearSession({ clearWorkspace: true });
-      }
+      await clearSessionAndSdk({ clearWorkspace: true, awaitSdk: true });
       store.showToast("ลบบัญชีและข้อมูลทั้งหมดเรียบร้อยแล้ว");
     }
     return res;
