@@ -205,7 +205,7 @@ export const supabaseAuth = {
     const client = await getSupabaseBrowserClient(config);
 
     if (client) {
-      const redirectTo = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : undefined;
+      const redirectTo = typeof window !== "undefined" ? buildAuthRedirectUrl(window) : undefined;
       const { data, error } = await client.auth.signUp({
         email: cleanEmail,
         password,

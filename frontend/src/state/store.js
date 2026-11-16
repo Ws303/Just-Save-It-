@@ -656,10 +656,11 @@ export const store = {
 
   applyAuthenticatedSession({ user, accessToken = "", refreshToken = "", claims = null, isMock = false } = {}) {
     const prevUserId = this.state.data.user?.id || "";
+    const wasAuthenticated = Boolean(this.state.data.user?.isAuthenticated);
     const nextUserId = user?.id || prevUserId;
     const isAccountSwitch = Boolean(prevUserId && nextUserId && prevUserId !== nextUserId);
     const isIdentityChange = isAccountSwitch || Boolean(!prevUserId && nextUserId);
-    if (isAccountSwitch) {
+    if (isAccountSwitch || !wasAuthenticated || isIdentityChange) {
       this.state.api.authGeneration = (this.state.api.authGeneration || 0) + 1;
     }
     if (isIdentityChange) {

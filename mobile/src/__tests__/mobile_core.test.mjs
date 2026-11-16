@@ -1120,7 +1120,8 @@ test("Cycle 9 [HIGH-1, MED-1, MED-2, MED-3, MED-4]: partial 401 fallback, cursor
     };
     const wsPartial401 = await fetchWorkspace();
     assert.equal(wsPartial401.items.length, 0, "Fallback 401 on foldersRes must fail closed");
-    assert.equal((await loadCachedWorkspace()).folders[0].id, "keep-f", "Fallback 401 must not wipe stored cache folders");
+    assert.equal(await loadSession(), null, "Unrecoverable fallback 401 must clear revoked session cleanly");
+    assert.equal((await loadCachedWorkspace()).folders.length, 0, "Cleared session after fallback 401 must not expose cached folders");
 
     // 2. MED-1: cursor pagination page 2 returning 401 must fail closed instead of persisting truncated page 1
     await saveSession({
@@ -1657,6 +1658,98 @@ test("Cycle 13: FIFO auth storage serialization, simulated IPC jitter, cache/que
     guestOpaqueFetch.resolve({ ok: false, status: 401, text: async () => "{}" });
     await guestOpaqueTask;
     assert.equal((await loadSession())?.access_token, "opaque-guest-b", "Signed-out -> opaque B mid-logout must preserve opaque User B");
+
+    // 10. Cycle 17 CHRIS CRITICAL-1 & MEDIUM-1: unrecoverable 401 clears session + notifies session-expired listeners,
+    // while createFolder sends `emoji` (matching backend schema) and screens fall back cleanly
+    const { createFolder, subscribeSessionExpired } = await import("../api.ts");
+    const fsMob = await import("node:fs");
+    const pathMob = await import("node:path");
+    const { fileURLToPath: f2p } = await import("node:url");
+    let expiredEvents = 0;
+    const unsubExp = subscribeSessionExpired(() => {
+      expiredEvents += 1;
+    });
+    try {
+      // Case A: refresh fails on 401 -> clears session + emits expired
+      await clearSession();
+      await saveSession({
+        access_token: makeFakeJwtC13("mob-del-u1"),
+        refresh_token: "ref-del-1",
+        user: { id: "mob-del-u1", email: "del1@mob.test" },
+      });
+      await saveCachedWorkspace({
+        user_id: "mob-del-u1",
+        items: [{ id: "it-del-1", url: "https://del.mob/1", title: "Del" }],
+        folders: [],
+        reminders: [],
+      });
+      globalThis.fetch = async (url) => {
+        if (String(url).includes("grant_type=refresh_token")) {
+          return { ok: false, status: 400, text: async () => '{"error":"invalid_grant"}' };
+        }
+        return { ok: false, status: 401, text: async () => '{"detail":"deleted"}' };
+      };
+      const deadWs = await fetchWorkspace();
+      assert.equal(deadWs.items.length, 0);
+      assert.equal(await loadSession(), null, "Failed refresh after 401 must clear session");
+      assert.equal(getMemoryCachedWorkspace(), null);
+      assert.ok(expiredEvents >= 1, "Unrecoverable 401 must notify subscribeSessionExpired listeners");
+
+      // Case B: retry still returns 401 after refresh -> clears session + emits expired
+      const countBeforeB = expiredEvents;
+      await saveSession({
+        access_token: makeFakeJwtC13("mob-del-u2"),
+        refresh_token: "ref-del-2",
+        user: { id: "mob-del-u2", email: "del2@mob.test" },
+      });
+      globalThis.fetch = async (url) => {
+        if (String(url).includes("grant_type=refresh_token")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              access_token: makeFakeJwtC13("mob-del-u2"),
+              refresh_token: "ref-del-2-next",
+              user: { id: "mob-del-u2", email: "del2@mob.test" },
+            }),
+          };
+        }
+        return { ok: false, status: 401, text: async () => '{"detail":"deleted on backend"}' };
+      };
+      const deadApiRes = await apiFetch("/api/items");
+      assert.equal(deadApiRes.status, 401);
+      assert.equal(await loadSession(), null, "401 even after refresh retry must clear deleted user session");
+      assert.ok(expiredEvents > countBeforeB);
+
+      // Case C: createFolder sends `emoji` instead of `icon` and skipClearOn401 preserves session
+      await saveSession({
+        access_token: makeFakeJwtC13("mob-fld-ok"),
+        refresh_token: "",
+        user: { id: "mob-fld-ok", email: "fld@mob.test" },
+      });
+      let capturedFolderBody = null;
+      globalThis.fetch = async (_url, init) => {
+        capturedFolderBody = init?.body ? JSON.parse(String(init.body)) : null;
+        return { ok: true, status: 201, text: async () => '{"id":"f-new","name":"Projects","emoji":"🚀"}' };
+      };
+      const fldRes = await createFolder("Projects", "🚀");
+      assert.equal(fldRes.ok, true);
+      assert.equal(capturedFolderBody?.emoji, "🚀");
+      assert.equal("icon" in (capturedFolderBody || {}), false);
+
+      globalThis.fetch = async () => ({ ok: false, status: 401, text: async () => "{}" });
+      const skipClearRes = await apiFetch("/api/test", { skipClearOn401: true });
+      assert.equal(skipClearRes.status, 401);
+      assert.equal((await loadSession())?.user?.id, "mob-fld-ok", "skipClearOn401 must preserve active session");
+
+      const appRootMob = pathMob.resolve(pathMob.dirname(f2p(import.meta.url)), "../../app");
+      for (const rel of ["(tabs)/folders.tsx", "(tabs)/index.tsx", "folder/[id].tsx"]) {
+        const src = fsMob.readFileSync(pathMob.join(appRootMob, rel), "utf8");
+        assert.match(src, /\.emoji \|\| [^.\n]+\.icon \|\| "📁"/, `Expected emoji fallback in mobile/app/${rel}`);
+      }
+    } finally {
+      unsubExp();
+    }
   } finally {
     globalThis.fetch = origFetch;
     await clearSession();

@@ -2552,6 +2552,80 @@ test("Cycle 15 [CHRIS HIGH-1, MED-1]: deleteAccount & 401 clear Supabase SDK sto
     const mainCode = fs.readFileSync(path.join(repoRoot, "frontend", "src", "main.js"), "utf8");
     assert.match(mainCode, /confirm-delete-account[\s\S]{0,400}deleteAccountBusy[\s\S]{0,500}res\?\.stale[\s\S]{0,400}!store\.state\.data\.user\?\.isAuthenticated/);
     assert.match(mainCode, /_bootSupabaseAuthGen[\s\S]{0,600}authGeneration \|\| 0\) === _bootSupabaseAuthGen/);
+    assert.match(mainCode, /bootParams\.oauthCode[\s\S]{0,120}_bootSupabaseAuthGen[\s\S]{0,220}exchangeOAuthCode[\s\S]{0,220}_bootSupabaseAuthGen/);
+
+    // Cycle 17 CHRIS HIGH-1 & LOW-2: signed-out -> signed-in bumps authGeneration, fenced Supabase SDK logins, and signUp preserves invite query params
+    store.clearSession({ clearWorkspace: true });
+    const genSignedOut = store.state.api.authGeneration;
+    store.applyAuthenticatedSession({
+      mode: "live",
+      authProvider: "supabase",
+      accessToken: "jwt-signed-in-1",
+      refreshToken: "",
+      user: { id: "u-bump-1", email: "b1@supa.test", name: "B1" },
+    });
+    assert.ok(store.state.api.authGeneration > genSignedOut, "Signed-out -> signed-in must bump authGeneration");
+
+    // Fenced signInPassword returning stale when User B signs in mid-flight + signUp preserving invite query params
+    let resolveSlowPwdSignIn = null;
+    let capturedEmailRedirectTo = "";
+    const origWindow = globalThis.window;
+    globalThis.window = {
+      location: {
+        href: "https://just-save-it-web.onrender.com/?invite=inv-xyz&role=editor",
+        origin: "https://just-save-it-web.onrender.com",
+        pathname: "/",
+      },
+    };
+    try {
+      __setSupabaseClientForTests({
+        auth: {
+          onAuthStateChange() {
+            return { data: { subscription: { unsubscribe() {} } } };
+          },
+          async getSession() {
+            return { data: { session: null }, error: null };
+          },
+          signInWithPassword() {
+            return new Promise((r) => { resolveSlowPwdSignIn = r; });
+          },
+          async signUp(opts) {
+            capturedEmailRedirectTo = opts?.options?.emailRedirectTo || "";
+            return { data: { user: { id: "u-inv-new", email: "inv@supa.test" }, session: null }, error: null };
+          },
+        },
+      });
+      await apiClient.registerUser("inv@supa.test", "Secret123!", "InvUser");
+      assert.equal(
+        capturedEmailRedirectTo,
+        "https://just-save-it-web.onrender.com/?invite=inv-xyz&role=editor",
+        "signUpWithPassword must preserve invite & role params in emailRedirectTo",
+      );
+
+      store.clearSession({ clearWorkspace: true });
+      store.state.api.authProvider = "supabase";
+      const pwdTask = apiClient.signInPassword("slow@supa.test", "Password123!");
+      await new Promise((r) => setTimeout(r, 10));
+      store.applyAuthenticatedSession({
+        mode: "live",
+        authProvider: "supabase",
+        accessToken: "jwt-concurrent-b",
+        refreshToken: "",
+        user: { id: "u-conc-b", email: "cb@supa.test", name: "CB" },
+      });
+      resolveSlowPwdSignIn({
+        data: {
+          user: { id: "u-slow-a", email: "slow@supa.test" },
+          session: { access_token: "jwt-slow-a", refresh_token: "ref-slow-a" },
+        },
+        error: null,
+      });
+      const pwdOut = await pwdTask;
+      assert.equal(pwdOut.stale, true, "Slow signInPassword across context switch must return stale");
+      assert.equal(store.state.data.user.id, "u-conc-b");
+    } finally {
+      globalThis.window = origWindow;
+    }
   } finally {
     __setSupabaseClientForTests(null);
     globalThis.fetch = origFetch;

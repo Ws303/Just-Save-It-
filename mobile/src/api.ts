@@ -576,14 +576,41 @@ export async function refreshSession(): Promise<boolean> {
   }
 }
 
+type SessionExpiredListener = () => void;
+const _sessionExpiredListeners = new Set<SessionExpiredListener>();
+
+export function subscribeSessionExpired(fn: SessionExpiredListener): () => void {
+  _sessionExpiredListeners.add(fn);
+  return () => {
+    _sessionExpiredListeners.delete(fn);
+  };
+}
+
+function emitSessionExpired(): void {
+  for (const fn of _sessionExpiredListeners) {
+    try {
+      fn();
+    } catch {
+      // Ignore listener errors
+    }
+  }
+}
+
 export async function apiFetch<T = JsonRecord>(
   path: string,
-  options: { method?: string; body?: unknown; headers?: Record<string, string>; skipRetry?: boolean } = {},
+  options: {
+    method?: string;
+    body?: unknown;
+    headers?: Record<string, string>;
+    skipRetry?: boolean;
+    skipClearOn401?: boolean;
+  } = {},
 ): Promise<ApiResult<T>> {
   const method = options.method || "GET";
   const startGen = getAuthGeneration();
+  const startClearEpoch = getClearEpoch();
   const session = await loadSession();
-  if (getAuthGeneration() !== startGen) {
+  if (getAuthGeneration() !== startGen || getClearEpoch() !== startClearEpoch) {
     return { ok: false, status: 401, data: null, error: "Session changed" };
   }
   const headers: Record<string, string> = {
@@ -600,13 +627,13 @@ export async function apiFetch<T = JsonRecord>(
       headers,
       body: options.body !== undefined && method !== "GET" ? JSON.stringify(options.body) : undefined,
     });
-    if (getAuthGeneration() !== startGen) {
+    if (getAuthGeneration() !== startGen || getClearEpoch() !== startClearEpoch) {
       return { ok: false, status: 401, data: null, error: "Session changed" };
     }
 
     if (resp.status === 401 && !options.skipRetry && session?.refresh_token) {
       const okRefresh = await refreshSession();
-      if (getAuthGeneration() !== startGen) {
+      if (getAuthGeneration() !== startGen || getClearEpoch() !== startClearEpoch) {
         return { ok: false, status: 401, data: null, error: "Session changed" };
       }
       if (okRefresh) {
@@ -614,8 +641,27 @@ export async function apiFetch<T = JsonRecord>(
       }
     }
 
+    if (
+      resp.status === 401 &&
+      !options.skipClearOn401 &&
+      session?.access_token &&
+      getAuthGeneration() === startGen &&
+      getClearEpoch() === startClearEpoch
+    ) {
+      const latestBeforeClear = await loadSession().catch(() => null);
+      const startUid = resolveSessionUserId(session);
+      const latestUid = resolveSessionUserId(latestBeforeClear);
+      const sameIdentity =
+        Boolean(latestBeforeClear?.access_token) &&
+        (startUid ? latestUid === startUid : !latestUid && latestBeforeClear?.access_token === session.access_token);
+      if (sameIdentity && getAuthGeneration() === startGen && getClearEpoch() === startClearEpoch) {
+        await clearSession();
+        emitSessionExpired();
+      }
+    }
+
     const data = await parseJsonSafe(resp);
-    if (getAuthGeneration() !== startGen) {
+    if (getAuthGeneration() !== startGen || getClearEpoch() !== startClearEpoch) {
       return { ok: false, status: 401, data: null, error: "Session changed" };
     }
     if (!resp.ok) {
@@ -929,8 +975,8 @@ export async function summarizeLinkItem(itemId: string, forceRefresh = false): P
   });
 }
 
-export async function createFolder(name: string, icon = "📁"): Promise<ApiResult<MobileFolderItem>> {
-  return apiFetch<MobileFolderItem>("/api/folders", { method: "POST", body: { name: name.trim(), icon } });
+export async function createFolder(name: string, emoji = "📁"): Promise<ApiResult<MobileFolderItem>> {
+  return apiFetch<MobileFolderItem>("/api/folders", { method: "POST", body: { name: name.trim(), emoji } });
 }
 
 export async function createFolderInvite(
@@ -1028,7 +1074,7 @@ export async function logoutAccount(): Promise<void> {
   const startSession = await loadSession().catch(() => null);
   const startUid = resolveSessionUserId(startSession);
   const startAccessToken = startSession?.access_token || "";
-  await apiFetch("/api/auth/logout", { method: "POST", body: {}, skipRetry: true });
+  await apiFetch("/api/auth/logout", { method: "POST", body: {}, skipRetry: true, skipClearOn401: true });
   if (getClearEpoch() !== startClearEpoch) {
     return;
   }

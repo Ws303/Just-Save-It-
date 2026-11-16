@@ -1423,6 +1423,48 @@ def test_mcp_server_batch_folders_and_tag_23505_recovery(isolated_db):
         counts = {t["name"]: t["item_count"] for t in listed}
         assert counts["EditorAdded"] == 1
         assert counts["OwnerSecond"] == 0
+
+        # 4. CHRIS Cycle 17 MED-2 & LOW-1: set_or_cancel_reminder blocks done/archived items,
+        # and rename_or_delete_tag cascades item_tags delete & blocks duplicate renames
+        from Ai.mcp_server import rename_or_delete_tag, set_or_cancel_reminder
+
+        set_authenticated_user_id(uid)
+        done_item = isolated_db.table("items").insert(
+            {
+                "id": "it-done-rem",
+                "owner_id": uid,
+                "url": "https://done-rem.test/1",
+                "url_hash": "h-done-rem",
+                "title": "Done Item",
+                "status": "done",
+            }
+        ).execute().data[0]
+        archived_item = isolated_db.table("items").insert(
+            {
+                "id": "it-arch-rem",
+                "owner_id": uid,
+                "url": "https://arch-rem.test/1",
+                "url_hash": "h-arch-rem",
+                "title": "Archived Item",
+                "status": "archived",
+            }
+        ).execute().data[0]
+        with pytest.raises(ValueError, match="done or archived"):
+            set_or_cancel_reminder(item_id=done_item["id"], remind_at_iso="2027-01-01T10:00:00Z")
+        with pytest.raises(ValueError, match="done or archived"):
+            set_or_cancel_reminder(item_id=archived_item["id"], remind_at_iso="2027-01-01T10:00:00Z")
+        cancel_res = set_or_cancel_reminder(item_id=done_item["id"], cancel=True)
+        assert cancel_res["success"] is True
+
+        # Tag rename duplicate rejection & cascade delete in LocalDevDatabase
+        set_authenticated_user_id(owner_b)
+        with pytest.raises(ValueError, match="already exists"):
+            rename_or_delete_tag(tag_name="OwnerSecond", new_name="EditorAdded")
+
+        del_tag_res = rename_or_delete_tag(tag_name="EditorAdded", delete=True)
+        assert del_tag_res["success"] is True
+        remaining_tag_links = [r for r in isolated_db.tables["item_tags"] if r["item_id"] == "it-shared-tags"]
+        assert len(remaining_tag_links) == 0
     finally:
         set_authenticated_user_id(None)
         set_override_db(None)

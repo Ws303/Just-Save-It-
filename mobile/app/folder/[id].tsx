@@ -114,7 +114,7 @@ export default function FolderDetailScreen() {
       <View style={styles.header}>
         <View style={styles.titleRow}>
           <Text style={styles.title}>
-            {folder?.icon || "📁"} {folder?.name || "โฟลเดอร์"}
+            {folder?.emoji || folder?.icon || "📁"} {folder?.name || "โฟลเดอร์"}
           </Text>
           {!isVirtualInbox ? (
             <Pressable

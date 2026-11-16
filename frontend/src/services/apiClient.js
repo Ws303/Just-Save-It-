@@ -1859,8 +1859,12 @@ export const apiClient = {
     const authMode = getAuthMode(store.state);
 
     if (authMode === "supabase") {
+      const startKey = getAuthContextKey();
       const started = performance.now();
       const res = await supabaseAuth.signInWithPassword(getSupabaseConfig(), { email: clean, password });
+      if (!isAuthContextCurrent(startKey)) {
+        return staleAuthResult();
+      }
       recordLog({
         method: "POST",
         path: "/auth/v1/token?grant_type=password",
@@ -1921,12 +1925,16 @@ export const apiClient = {
     const authMode = getAuthMode(store.state);
 
     if (authMode === "supabase") {
+      const startKey = getAuthContextKey();
       const started = performance.now();
       const res = await supabaseAuth.signUpWithPassword(getSupabaseConfig(), {
         email: clean,
         password,
         displayName,
       });
+      if (!isAuthContextCurrent(startKey)) {
+        return staleAuthResult();
+      }
       recordLog({
         method: "POST",
         path: "/auth/v1/signup",
@@ -2064,7 +2072,11 @@ export const apiClient = {
   },
 
   async checkSupabaseSession() {
+    const startKey = getAuthContextKey();
     const res = await supabaseAuth.getClaimsOrSession(getSupabaseConfig());
+    if (!isAuthContextCurrent(startKey)) {
+      return staleAuthResult();
+    }
     if (res.ok && res.data?.access_token) {
       store.applyAuthenticatedSession({
         user: res.data.user,
@@ -2329,9 +2341,13 @@ export const apiClient = {
   async exchangeOAuthCode(code) {
     const cleanCode = String(code || "").trim();
     if (!cleanCode) return { ok: false, status: 400, error: "ไม่พบ Authorization Code" };
+    const startKey = getAuthContextKey();
     const authMode = getAuthMode(store.state);
     if (authMode === "supabase") {
       const sbRes = await supabaseAuth.exchangeCodeForSession(getSupabaseConfig(), cleanCode);
+      if (!isAuthContextCurrent(startKey)) {
+        return staleAuthResult();
+      }
       if (sbRes.ok && sbRes.data?.access_token) {
         store.applyAuthenticatedSession({
           user: sbRes.data.user,
@@ -2349,6 +2365,9 @@ export const apiClient = {
       skipUnauthRedirect: true,
       mockHandler: () => ({ status: 400, data: { detail: "OAuth code exchange not available in mock mode" } }),
     });
+    if (!isAuthContextCurrent(startKey)) {
+      return staleAuthResult();
+    }
     if (res.ok && res.data?.access_token) {
       store.applyAuthenticatedSession({
         user: res.data.user,

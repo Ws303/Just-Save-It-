@@ -2602,9 +2602,9 @@ supabaseAuth
   .then(async ({ session, claims, user }) => {
     if (session?.access_token && (store.state.api?.authGeneration || 0) === _bootSupabaseAuthGen) {
       handleSupabaseAuthChange({ event: "INITIAL_SESSION", session, claims, user }, _supabaseAuthDeps);
-    } else if (!session?.access_token && bootParams.oauthCode) {
+    } else if (!session?.access_token && bootParams.oauthCode && (store.state.api?.authGeneration || 0) === _bootSupabaseAuthGen) {
       const cbRes = await apiClient.exchangeOAuthCode(bootParams.oauthCode);
-      if (cbRes?.ok && hasValidSession(store.state)) {
+      if ((store.state.api?.authGeneration || 0) === _bootSupabaseAuthGen && cbRes?.ok && hasValidSession(store.state)) {
         hydrateOnceIfNeeded();
         completePostAuthNavigation(bootParams.inviteToken ? "inviteLanding" : "home");
       }

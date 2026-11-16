@@ -688,7 +688,11 @@ def test_b1_b13_mcp_tools_suite():
     revoked = share_folder_link(folder_id=f_id, revoke_all=True)
     assert revoked["success"] is True
 
-    # Reminder scheduling and cancellation
+    # Reminder scheduling rejects done/archived items cleanly, then schedules once reopened
+    with pytest.raises(ValueError, match="done or archived"):
+        set_or_cancel_reminder(item_id=item_id, remind_at_iso="2026-11-30T12:00:00Z")
+    reopened = update_item(item_id=item_id, status="todo")
+    assert reopened["status"] == "todo"
     rem_set = set_or_cancel_reminder(item_id=item_id, remind_at_iso="2026-11-30T12:00:00Z")
     assert rem_set["action"] == "set"
     rem_cancel = set_or_cancel_reminder(item_id=item_id, cancel=True)

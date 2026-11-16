@@ -102,7 +102,7 @@ export default function FoldersScreen() {
     ...folders.map((f) => ({
       id: f.id,
       name: f.name,
-      icon: f.icon || "📁",
+      icon: f.emoji || f.icon || "📁",
       count: typeof f.item_count === "number" ? f.item_count : items.filter((it) => it.folder_id === f.id).length,
     })),
   ];

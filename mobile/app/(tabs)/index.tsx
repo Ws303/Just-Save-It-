@@ -453,7 +453,7 @@ export default function HomeFeedScreen() {
                         onPress={() => setSaveFolderId(f.id)}
                       >
                         <Text style={[styles.chipText, saveFolderId === f.id && styles.chipTextActive]}>
-                          {f.icon || "📁"} {f.name}
+                          {f.emoji || f.icon || "📁"} {f.name}
                         </Text>
                       </Pressable>
                     ))}

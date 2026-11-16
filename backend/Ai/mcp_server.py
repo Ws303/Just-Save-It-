@@ -507,12 +507,18 @@ def rename_or_delete_tag(
     tag_id = tag_res.data[0]["id"]
 
     if delete:
+        db.table("item_tags").delete().eq("tag_id", tag_id).execute()
         db.table("tags").delete().eq("id", tag_id).execute()
         return {"success": True, "action": "deleted", "tag_name": clean_tag_name}
 
     clean_new_name = (clean_text_field(new_name, unescape_html=False) or "")[:60].strip() if new_name else ""
     if not clean_new_name:
         raise ValueError("new_name is required when renaming a tag.")
+
+    if clean_new_name != clean_tag_name:
+        dup_res = db.table("tags").select("id").eq("owner_id", user_id).eq("name", clean_new_name).execute()
+        if any(row.get("id") != tag_id for row in (dup_res.data or [])):
+            raise ValueError(f"Tag '{clean_new_name}' already exists.")
 
     db.table("tags").update({"name": clean_new_name}).eq("id", tag_id).execute()
     return {"success": True, "action": "renamed", "old_name": clean_tag_name, "new_name": clean_new_name}
@@ -711,6 +717,9 @@ def set_or_cancel_reminder(
             {"status": "cancelled", "updated_at": datetime.now(dt_tz_utc).isoformat()}
         ).eq("item_id", item_id).eq("user_id", user_id).execute()
         return {"success": True, "action": "cancelled", "item_id": item_id}
+
+    if item.get("status") in ("done", "archived"):
+        raise ValueError("Cannot set a reminder on a done or archived item.")
 
     resolved_schedule: Literal["once", "every_n_days"] = (
         schedule_type

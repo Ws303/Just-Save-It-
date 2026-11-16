@@ -21,6 +21,7 @@ import {
   exchangeOAuthCode,
   fetchWorkspace,
   flushOfflineQueue,
+  subscribeSessionExpired,
 } from "../src/api";
 import { syncLocalRemindersWithOs } from "../src/notifications";
 import {
@@ -101,18 +102,29 @@ function RootLayoutContent() {
   const [debugEnabled, setDebugEnabled] = useState<boolean>(getDebugBannerEnabled);
   const [debugEvents, setDebugEvents] = useState<AuthDebugEvent[]>(getAuthDebugEvents);
   const navReady = Boolean(rootNavState?.key);
+  const navReadyRef = useRef(false);
+  navReadyRef.current = navReady;
+  const inAuthRouteRef = useRef(false);
+  inAuthRouteRef.current = segments[0] === "login" || segments[0] === "auth-callback";
 
   useEffect(() => {
     void loadThemeMode().then((mode) => setThemeMode(mode)).catch(() => {});
     const unsubTheme = subscribeThemeMode((mode) => setThemeMode(mode));
     const unsubBanner = subscribeDebugBanner((next) => setDebugEnabled(next));
     const unsubLog = subscribeAuthDebugEvents((evts) => setDebugEvents([...evts]));
+    const unsubExpired = subscribeSessionExpired(() => {
+      hydratedUserRef.current = "";
+      if (navReadyRef.current && !inAuthRouteRef.current) {
+        router.replace("/login");
+      }
+    });
     return () => {
       unsubTheme();
       unsubBanner();
       unsubLog();
+      unsubExpired();
     };
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     let active = true;
@@ -191,6 +203,14 @@ function RootLayoutContent() {
           hydratedUserRef.current = sessionKey;
           await flushOfflineQueue().catch(() => {});
           const ws = await fetchWorkspace().catch(() => ({ items: [], folders: [], reminders: [] }));
+          const liveSess = await loadSession().catch(() => null);
+          if (active && !liveSess?.access_token) {
+            hydratedUserRef.current = "";
+            if (!inLogin && !inAuthCallback) {
+              router.replace("/login");
+            }
+            return;
+          }
           if (active && Array.isArray(ws.reminders) && ws.reminders.length > 0) {
             await syncLocalRemindersWithOs(ws.reminders).catch(() => {});
           }

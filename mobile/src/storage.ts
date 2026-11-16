@@ -38,6 +38,7 @@ export interface MobileLinkItem {
 export interface MobileFolderItem {
   id: string;
   name: string;
+  emoji?: string | null;
   icon?: string | null;
   item_count?: number;
   owner_id?: string;
