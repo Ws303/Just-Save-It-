@@ -32,6 +32,7 @@
   function addImage(rawUrl) {
     const clean = toHttpUrl(rawUrl);
     if (!clean || seenImages.has(clean) || mediaItems.length >= 5) return;
+    if (/emoji\.php|rsrc\.php|safe_image\.php.*&w=50|p50x50|s50x50|s40x40|p32x32/i.test(clean)) return;
     seenImages.add(clean);
     mediaItems.push({ url: clean, type: "image" });
   }
@@ -51,7 +52,10 @@
     addImage(video.getAttribute("poster"));
   }
 
-  for (const img of document.querySelectorAll("img")) {
+  const imageContainers = document.querySelectorAll(
+    '[role="main"] img, [role="article"] img, img'
+  );
+  for (const img of imageContainers) {
     if (mediaItems.length >= 5) break;
     const rect = img.getBoundingClientRect();
     const width = Math.max(rect.width || 0, img.naturalWidth || 0);
@@ -65,11 +69,24 @@
     readMeta(['meta[property="og:title"]', 'meta[name="twitter:title"]']) ||
     (document.title || "").trim();
 
-  const description = readMeta([
+  let description = readMeta([
     'meta[property="og:description"]',
     'meta[name="twitter:description"]',
     'meta[name="description"]',
   ]);
+
+  if (!description || /log in|เข้าสู่ระบบ facebook/i.test(description)) {
+    const fbMsgEl =
+      document.querySelector('[data-ad-preview="message"]') ||
+      document.querySelector('[data-ad-comet-preview="message"]') ||
+      document.querySelector('[role="article"] div[dir="auto"]');
+    if (fbMsgEl) {
+      const msgText = String(fbMsgEl.innerText || fbMsgEl.textContent || "").trim();
+      if (msgText.length >= 8) {
+        description = msgText.slice(0, 600);
+      }
+    }
+  }
 
   const canonicalUrl =
     toHttpUrl(readMeta(['link[rel="canonical"]', 'meta[property="og:url"]'])) ||

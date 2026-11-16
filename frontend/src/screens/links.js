@@ -10,7 +10,7 @@ import { getFolderById, getLinkById, buildMonthCalendarDays } from "../state/sto
 
 const EMBED_ALLOWLIST_RULES = [
   { hosts: ["youtube.com", "www.youtube.com", "m.youtube.com", "youtube-nocookie.com", "www.youtube-nocookie.com"], exact: false, check: (p) => p.startsWith("/embed/") },
-  { hosts: ["tiktok.com", "www.tiktok.com"], exact: false, check: (p) => p.startsWith("/embed/") },
+  { hosts: ["tiktok.com", "www.tiktok.com"], exact: false, check: (p) => p.startsWith("/embed/") || p.startsWith("/player/v1/") },
   { hosts: ["player.vimeo.com"], exact: true, check: (p) => p.startsWith("/video/") },
   { hosts: ["open.spotify.com"], exact: true, check: (p) => p.startsWith("/embed/") },
   { hosts: ["platform.twitter.com"], exact: true, check: (p) => p.startsWith("/embed/") },

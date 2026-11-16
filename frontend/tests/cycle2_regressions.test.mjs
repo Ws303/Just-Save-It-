@@ -152,7 +152,7 @@ test("Extension C4: cross-account cache & offline queue isolation + narrow CSS +
   assert.equal(signedOutFlush.failed, 0);
 
   const popupCss = fs.readFileSync(path.join(repoRoot, "extension", "popup.css"), "utf8");
-  assert.match(popupCss, /width:\s*min\(400px,\s*100vw\)/);
+  assert.match(popupCss, /width:\s*min\(460px,\s*100vw\)/);
   const popupJs = fs.readFileSync(path.join(repoRoot, "extension", "popup.js"), "utf8");
   assert.match(popupJs, /resetSaverMemoryAndInputs/);
   assert.doesNotMatch(popupJs, /els\.folderChipWrap\.innerHTML\s*=\s*""/);

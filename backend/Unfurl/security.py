@@ -242,7 +242,7 @@ def validate_embed_url(embed_type: Optional[str], embed_url: Optional[str]) -> O
         return None
     if embed_type == "youtube" and not path.startswith("/embed/"):
         return None
-    if embed_type == "tiktok" and not path.startswith("/embed/"):
+    if embed_type == "tiktok" and not (path.startswith("/embed/") or path.startswith("/player/v1/")):
         return None
     if embed_type == "vimeo" and not path.startswith("/video/"):
         return None

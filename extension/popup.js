@@ -1374,16 +1374,24 @@
       (activePreviewMeta && (activePreviewMeta.image_url || activePreviewMeta.thumbnail_url)) || "";
     const previewMedia = normalizeMediaUrlList(activePreviewMeta && activePreviewMeta.media_items, previewImage);
     const domMedia = normalizeMediaUrlList(activeDomMeta && activeDomMeta.media_items);
-    const mergedMedia = previewMedia.length ? previewMedia : domMedia;
-    const coverImage = previewImage || mergedMedia[0] || undefined;
+    const mergedMedia = [];
+    const seenMerged = new Set();
+    const primaryList = domMedia.length > previewMedia.length ? domMedia : previewMedia;
+    const secondaryList = domMedia.length > previewMedia.length ? previewMedia : domMedia;
+    for (const u of [...primaryList, ...secondaryList]) {
+      if (!u || seenMerged.has(u) || mergedMedia.length >= 5) continue;
+      seenMerged.add(u);
+      mergedMedia.push(u);
+    }
+    const coverImage = mergedMedia[0] || previewImage || undefined;
     const tags = parseTagList();
 
     const payload = {
       url,
       title: els.titleInput.value.trim() || undefined,
       description:
-        (activePreviewMeta && activePreviewMeta.description) ||
         (activeDomMeta && activeDomMeta.description) ||
+        (activePreviewMeta && activePreviewMeta.description) ||
         undefined,
       note: els.noteInput.value.trim() || undefined,
       folder_id: state.selectedFolderId || els.folderSelect.value || undefined,

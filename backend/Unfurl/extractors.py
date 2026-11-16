@@ -388,6 +388,10 @@ def _parse_html_metadata(html_text: str, final_url: str) -> Dict[str, Any]:
             _host_matches(parsed_final_host, ("youtube.com", "youtu.be")) or _YOUTUBE_ID_RE.search(final_url)
         ):
             title = None
+        if title and title.strip().lower() in ("tiktok", "tiktok - make your day") and (
+            _host_matches(parsed_final_host, ("tiktok.com",)) or _TIKTOK_ID_RE.search(final_url)
+        ):
+            title = None
 
         description = (
             _extract_meta_content(tree, "property", "og:description")
@@ -404,6 +408,50 @@ def _parse_html_metadata(html_text: str, final_url: str) -> Dict[str, Any]:
                         description = cleaned_sd[:500]
                 except Exception as exc:
                     logger.debug("YouTube shortDescription JSON decode skipped: %s", exc)
+
+        if html_text and _host_matches(parsed_final_host, ("tiktok.com",)):
+            uni_match = re.search(
+                r'<script[^>]+id=["\']__UNIVERSAL_DATA_FOR_REHYDRATION__["\'][^>]*>(.*?)</script>',
+                html_text,
+                re.S | re.I,
+            )
+            if uni_match:
+                try:
+                    uni_data = json.loads(uni_match.group(1))
+                    detail = (
+                        uni_data.get("__DEFAULT_SCOPE__", {})
+                        .get("webapp.video-detail", {})
+                        .get("itemInfo", {})
+                        .get("itemStruct", {})
+                    )
+                    if isinstance(detail, dict) and detail:
+                        tt_desc = clean_text_field(detail.get("desc"), unescape_html=True)
+                        author_obj = detail.get("author") or {}
+                        tt_uid = clean_text_field(author_obj.get("uniqueId"), unescape_html=True)
+                        tt_nick = clean_text_field(author_obj.get("nickname"), unescape_html=True)
+                        author_label = tt_nick or (f"@{tt_uid}" if tt_uid else None)
+                        if not title:
+                            if author_label and tt_desc:
+                                title = f"{author_label}: {tt_desc[:90]}"
+                            else:
+                                title = tt_desc or author_label
+                        if not description:
+                            if tt_uid and tt_desc:
+                                description = f"@{tt_uid} — {tt_desc}"
+                            else:
+                                description = tt_desc or (f"@{tt_uid}" if tt_uid else None)
+                        video_obj = detail.get("video") or {}
+                        for cov_key in ("originCover", "cover", "dynamicCover"):
+                            cov_url = video_obj.get(cov_key)
+                            if isinstance(cov_url, str) and cov_url.strip():
+                                image_candidates.append((cov_url.strip(), None, None))
+                        img_post = detail.get("imagePost") or {}
+                        for img_entry in (img_post.get("images") or [])[:MAX_MEDIA_ITEMS]:
+                            url_list = (img_entry.get("imageURL") or {}).get("urlList") or []
+                            if url_list and isinstance(url_list[0], str):
+                                image_candidates.append((url_list[0].strip(), None, None))
+                except Exception as exc:
+                    logger.debug("TikTok universal data parse skipped: %s", exc)
 
         site_name = _extract_meta_content(tree, "property", "og:site_name")
         og_type = (_extract_meta_content(tree, "property", "og:type") or "").lower()
