@@ -2381,7 +2381,7 @@ test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quic
 });
 
 test("Cycle 15 [CHRIS HIGH-1, MED-1]: deleteAccount & 401 clear Supabase SDK storage safely and confirm-delete-account guards stale switch & busy re-entry", async () => {
-  const { supabaseAuth } = await import("../src/services/supabaseAuth.js");
+  const { supabaseAuth, __setSupabaseClientForTests } = await import("../src/services/supabaseAuth.js");
   const lsMap = new Map();
   const origLocalStorage = globalThis.localStorage;
   const origFetch = globalThis.fetch;
@@ -2446,16 +2446,114 @@ test("Cycle 15 [CHRIS HIGH-1, MED-1]: deleteAccount & 401 clear Supabase SDK sto
     assert.equal(wsHydrateRes.status, 401);
     assert.equal(lsMap.has("sb-pnqjamwhgzqzvpiytcln-auth-token"), false, "HTTP 401 on hydrateWorkspace must purge persisted Supabase SDK token");
 
+    // Cycle 16 MED-1: clearSessionAndSdk respects authGuardEnabled === false (does not force redirect to login)
+    store.applyAuthenticatedSession({
+      mode: "live",
+      authProvider: "supabase",
+      accessToken: "jwt-noguard",
+      refreshToken: "",
+      user: { id: "u-noguard", email: "ng@supa.test", name: "NG" },
+    });
+    store.state.ui.authGuardEnabled = false;
+    store.state.ui.screen = "home";
+    lsMap.set("sb-pnqjamwhgzqzvpiytcln-auth-token", '{"access_token":"jwt-noguard"}');
+    await apiClient.getMe();
+    assert.equal(store.state.data.user.isAuthenticated, false);
+    assert.equal(store.state.ui.screen, "home", "redirectToLogin: false must preserve non-guarded route");
+    store.state.ui.authGuardEnabled = true;
+
     // clearLocalSession respects guard predicate (does not wipe User B if signed in before cleanup completes)
     lsMap.set("sb-pnqjamwhgzqzvpiytcln-auth-token", '{"access_token":"user-b-fresh"}');
     const abortedClear = await supabaseAuth.clearLocalSession({}, () => false);
     assert.equal(abortedClear.aborted, true);
     assert.equal(lsMap.has("sb-pnqjamwhgzqzvpiytcln-auth-token"), true, "Guarded clearLocalSession must abort when auth context changed");
 
-    // confirm-delete-account handler in main.js enforces busy lock, stale/authGeneration check, and auth-state gate
+    // Cycle 16 HIGH-1: async onAuthStateChange getClaims() and init() interrupted by clearLocalSession must not resurrect deleted/signed-out user
+    let registeredCb = null;
+    let resolveSlowClaims = null;
+    let initSessionData = { access_token: "stale-init-jwt", user: { id: "u-stale-init", email: "stale@supa.test" } };
+    __setSupabaseClientForTests({
+      auth: {
+        onAuthStateChange(cb) {
+          registeredCb = cb;
+          return { data: { subscription: { unsubscribe() {} } } };
+        },
+        async getSession() {
+          return { data: { session: initSessionData }, error: null };
+        },
+        getClaims() {
+          return new Promise((r) => { resolveSlowClaims = r; });
+        },
+        async signOut() {
+          return { error: null };
+        },
+      },
+    });
+    const receivedUpdates = [];
+    const initTask = supabaseAuth.init({}, (u) => receivedUpdates.push(u));
+    await new Promise((r) => setTimeout(r, 10));
+    await supabaseAuth.clearLocalSession({});
+    resolveSlowClaims({ data: { claims: { sub: "u-stale-init", email: "stale@supa.test" } } });
+    const initResult = await initTask;
+    assert.equal(initResult.session, null, "init() interrupted by clearLocalSession must return null session");
+
+    // Also test onAuthStateChange callback awaiting getClaims() while clearLocalSession runs
+    resolveSlowClaims = null;
+    const cbTask = registeredCb("TOKEN_REFRESHED", { access_token: "stale-refresh-jwt", user: { id: "u-stale-cb", email: "cb@supa.test" } });
+    await new Promise((r) => setTimeout(r, 10));
+    await supabaseAuth.clearLocalSession({});
+    resolveSlowClaims({ data: { claims: { sub: "u-stale-cb", email: "cb@supa.test" } } });
+    await cbTask;
+    assert.equal(receivedUpdates.length, 0, "Stale onAuthStateChange getClaims() resolution after clearLocalSession must be ignored");
+
+    // Cycle 16 HIGH-2: apiClient.signOut forwards current-auth guard to supabaseAuth.signOut so fast re-login survives
+    let signOutCalls = 0;
+    let resolveDelayedSdkSignOut = null;
+    __setSupabaseClientForTests({
+      auth: {
+        onAuthStateChange() {
+          return { data: { subscription: { unsubscribe() {} } } };
+        },
+        async getSession() {
+          return { data: { session: null }, error: null };
+        },
+        async signOut() {
+          signOutCalls += 1;
+          return new Promise((r) => { resolveDelayedSdkSignOut = r; });
+        },
+      },
+    });
+    store.applyAuthenticatedSession({
+      mode: "live",
+      authProvider: "supabase",
+      accessToken: "jwt-signout-a",
+      refreshToken: "",
+      user: { id: "u-so-a", email: "soa@supa.test", name: "SOA" },
+    });
+    store.state.api.authProvider = "supabase";
+    globalThis.fetch = async () => mockResp(200, { logged_out: true });
+    const soPromise = apiClient.signOut();
+    // Sign User B in right after synchronous clearSession before delayed SDK cleanup finishes
+    store.applyAuthenticatedSession({
+      mode: "live",
+      authProvider: "supabase",
+      accessToken: "jwt-fast-b",
+      refreshToken: "",
+      user: { id: "u-fast-b", email: "fb@supa.test", name: "FB" },
+    });
+    lsMap.set("sb-pnqjamwhgzqzvpiytcln-auth-token", '{"access_token":"jwt-fast-b"}');
+    await soPromise;
+    if (resolveDelayedSdkSignOut) resolveDelayedSdkSignOut({ error: null });
+    assert.equal(signOutCalls, 0, "supabaseAuth.signOut must abort before wiping newly signed-in User B's SDK session");
+    assert.equal(lsMap.has("sb-pnqjamwhgzqzvpiytcln-auth-token"), true);
+    assert.equal(store.state.data.user.id, "u-fast-b");
+
+    // confirm-delete-account handler & boot authGeneration guard in main.js
     const mainCode = fs.readFileSync(path.join(repoRoot, "frontend", "src", "main.js"), "utf8");
     assert.match(mainCode, /confirm-delete-account[\s\S]{0,400}deleteAccountBusy[\s\S]{0,500}res\?\.stale[\s\S]{0,400}!store\.state\.data\.user\?\.isAuthenticated/);
+    assert.match(mainCode, /_bootSupabaseAuthGen[\s\S]{0,600}authGeneration \|\| 0\) === _bootSupabaseAuthGen/);
   } finally {
+    __setSupabaseClientForTests(null);
     globalThis.fetch = origFetch;
     globalThis.localStorage = origLocalStorage;
   }

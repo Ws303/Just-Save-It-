@@ -14,6 +14,13 @@ const SUPABASE_ESM_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+
 let _cachedClient = null;
 let _cachedConfigKey = "";
 let _authSubscription = null;
+let _authEventSeq = 0;
+let _clearLocalSeq = 0;
+let _testClientOverride = null;
+
+export function __setSupabaseClientForTests(client) {
+  _testClientOverride = client || null;
+}
 
 function normalizeUrl(url) {
   return String(url || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, "");
@@ -40,6 +47,7 @@ export function buildAuthRedirectUrl(runtimeWindow = typeof window !== "undefine
 }
 
 export async function getSupabaseBrowserClient({ supabaseUrl, supabaseAnonKey } = {}) {
+  if (_testClientOverride) return _testClientOverride;
   const url = normalizeUrl(supabaseUrl);
   const anonKey = String(supabaseAnonKey || DEFAULT_SUPABASE_KEY).trim();
   const key = buildConfigKey(url, anonKey);
@@ -130,8 +138,11 @@ async function fetchGoTrueJson({ supabaseUrl, supabaseAnonKey, path, method = "P
 
 export const supabaseAuth = {
   async init(config, onSessionUpdate) {
+    const initClearSeq = _clearLocalSeq;
     const client = await getSupabaseBrowserClient(config);
-    if (!client) return { sdkLoaded: false, session: null };
+    if (!client || initClearSeq !== _clearLocalSeq) {
+      return { sdkLoaded: Boolean(client), session: null, claims: null, user: null };
+    }
 
     if (_authSubscription && typeof _authSubscription.unsubscribe === "function") {
       _authSubscription.unsubscribe();
@@ -140,6 +151,8 @@ export const supabaseAuth = {
 
     const { data: listenerData } = client.auth.onAuthStateChange(async (event, session) => {
       if (typeof onSessionUpdate !== "function") return;
+      const eventSeq = ++_authEventSeq;
+      const clearSeq = _clearLocalSeq;
       let claims = null;
       if (session?.access_token && typeof client.auth.getClaims === "function") {
         try {
@@ -148,6 +161,9 @@ export const supabaseAuth = {
         } catch {
           claims = null;
         }
+      }
+      if (eventSeq !== _authEventSeq || clearSeq !== _clearLocalSeq) {
+        return;
       }
       onSessionUpdate({
         event,
@@ -159,6 +175,9 @@ export const supabaseAuth = {
     _authSubscription = listenerData?.subscription || null;
 
     const { data, error } = await client.auth.getSession();
+    if (initClearSeq !== _clearLocalSeq) {
+      return { sdkLoaded: true, session: null, claims: null, user: null };
+    }
     const session = !error ? data?.session : null;
     let claims = null;
     if (session?.access_token && typeof client.auth.getClaims === "function") {
@@ -168,6 +187,9 @@ export const supabaseAuth = {
       } catch {
         claims = null;
       }
+    }
+    if (initClearSeq !== _clearLocalSeq) {
+      return { sdkLoaded: true, session: null, claims: null, user: null };
     }
     return {
       sdkLoaded: true,
@@ -477,6 +499,7 @@ export const supabaseAuth = {
     if (typeof isStillCurrentFn === "function" && !isStillCurrentFn()) {
       return { ok: false, aborted: true };
     }
+    _clearLocalSeq += 1;
     try {
       if (typeof globalThis.localStorage !== "undefined") {
         const toRemove = [];
@@ -503,8 +526,11 @@ export const supabaseAuth = {
     return { ok: true };
   },
 
-  async signOut(config, accessToken = "") {
-    await this.clearLocalSession(config);
+  async signOut(config, accessToken = "", isStillCurrentFn = null) {
+    const clearRes = await this.clearLocalSession(config, isStillCurrentFn);
+    if (clearRes?.aborted) {
+      return { ok: true, aborted: true, status: 200, data: { logged_out: false } };
+    }
     if (accessToken) {
       await fetchGoTrueJson({
         ...config,

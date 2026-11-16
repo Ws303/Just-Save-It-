@@ -412,13 +412,20 @@ def list_tags() -> List[Dict[str, Any]]:
 
     tags_res = db.table("tags").select("*").eq("owner_id", user_id).execute()
     tags = tags_res.data or []
+    tag_ids = [t["id"] for t in tags if t.get("id")]
+    counts_by_tag: Dict[Any, int] = {}
+    if tag_ids:
+        try:
+            links_res = db.table("item_tags").select("tag_id").in_("tag_id", tag_ids).execute()
+            for row in links_res.data or []:
+                tid = row.get("tag_id")
+                if tid:
+                    counts_by_tag[tid] = counts_by_tag.get(tid, 0) + 1
+        except Exception:
+            counts_by_tag = {}
 
     for t in tags:
-        try:
-            count_res = db.table("item_tags").select("item_id").eq("tag_id", t["id"]).execute()
-            t["item_count"] = len(count_res.data or [])
-        except Exception:
-            t["item_count"] = 0
+        t["item_count"] = counts_by_tag.get(t.get("id"), 0)
 
     return tags
 
@@ -439,8 +446,9 @@ def manage_item_tags(
     item = item_res.data[0]
     if not can_access_item(db, user_id, item, require_editor=True):
         raise PermissionError("Access denied: You do not have permission to manage tags on this item.")
+    tag_owner_id = str(item.get("owner_id") or user_id)
 
-    # Handle additions (batched + 23505 recovery)
+    # Handle additions (batched + 23505 recovery, attributed to item owner)
     if add_tags:
         clean_add = [
             t
@@ -451,29 +459,30 @@ def manage_item_tags(
             if t
         ]
         if clean_add:
-            _attach_tags_to_item(db, user_id, item_id, clean_add)
+            _attach_tags_to_item(db, tag_owner_id, item_id, clean_add)
 
-    # Handle removals (batched)
+    # Handle removals (batched across all linked tags regardless of creator)
     if remove_tags:
-        clean_rem = [
+        clean_rem_set = {
             t
             for t in (
                 (clean_text_field(t_name, unescape_html=False) or "")[:60].strip()
                 for t_name in remove_tags
             )
             if t
-        ]
-        if clean_rem:
-            existing_rem = (
-                db.table("tags")
-                .select("id")
-                .eq("owner_id", user_id)
-                .in_("name", clean_rem)
-                .execute()
-            )
-            rem_ids = [row["id"] for row in (getattr(existing_rem, "data", None) or []) if row.get("id")]
-            if rem_ids:
-                db.table("item_tags").delete().eq("item_id", item_id).in_("tag_id", rem_ids).execute()
+        }
+        if clean_rem_set:
+            linked_res = db.table("item_tags").select("tag_id").eq("item_id", item_id).execute()
+            linked_ids = [row["tag_id"] for row in (getattr(linked_res, "data", None) or []) if row.get("tag_id")]
+            if linked_ids:
+                tags_meta = db.table("tags").select("id, name").in_("id", linked_ids).execute()
+                rem_ids = [
+                    row["id"]
+                    for row in (getattr(tags_meta, "data", None) or [])
+                    if row.get("id") and str(row.get("name") or "") in clean_rem_set
+                ]
+                if rem_ids:
+                    db.table("item_tags").delete().eq("item_id", item_id).in_("tag_id", rem_ids).execute()
 
     return {"success": True, "item_id": item_id, "updated": True}
 

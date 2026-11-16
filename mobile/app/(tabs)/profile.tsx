@@ -67,6 +67,7 @@ export default function ProfileScreen() {
   const [deletePhrase, setDeletePhrase] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const actionSeqRef = useRef(0);
+  const deleteInFlightRef = useRef(false);
 
   const loadProfile = useCallback(async () => {
     const startGen = getAuthGeneration();
@@ -240,12 +241,14 @@ export default function ProfileScreen() {
   }
 
   async function handleDeleteAccount() {
+    if (deleteInFlightRef.current || busyAction === "delete") return;
     if (deletePhrase.trim().toUpperCase() !== "DELETE") {
       Alert.alert("กรุณาพิมพ์คำว่า DELETE เพื่อยืนยัน");
       return;
     }
     const startGen = getAuthGeneration();
     const seq = (actionSeqRef.current += 1);
+    deleteInFlightRef.current = true;
     setBusyAction("delete");
     try {
       const res = await deleteMyAccount();
@@ -258,6 +261,7 @@ export default function ProfileScreen() {
       setDeleteOpen(false);
       router.replace("/login");
     } finally {
+      deleteInFlightRef.current = false;
       if (actionSeqRef.current === seq) {
         setBusyAction("");
       }
@@ -435,7 +439,11 @@ export default function ProfileScreen() {
               <Pressable style={styles.cancelBtn} onPress={() => setDeleteOpen(false)}>
                 <Text style={styles.cancelBtnText}>ยกเลิก</Text>
               </Pressable>
-              <Pressable style={styles.deleteConfirmBtn} onPress={() => void handleDeleteAccount()}>
+              <Pressable
+                style={[styles.deleteConfirmBtn, busyAction === "delete" ? { opacity: 0.6 } : null]}
+                disabled={busyAction === "delete"}
+                onPress={() => void handleDeleteAccount()}
+              >
                 <Text style={styles.confirmBtnText}>
                   {busyAction === "delete" ? "กำลังลบ..." : "ลบบัญชีถาวร"}
                 </Text>

@@ -1373,6 +1373,56 @@ def test_mcp_server_batch_folders_and_tag_23505_recovery(isolated_db):
         linked_ids = [r["tag_id"] for r in isolated_db.tables["item_tags"] if r["item_id"] == item_id]
         linked_names = {r["name"] for r in isolated_db.tables["tags"] if r["id"] in linked_ids}
         assert linked_names == {"RaceCreate", "RaceTag"}
+
+        # 3. CHRIS Cycle 16 MED-2 & LOW-1: shared-folder editor attributes tags to item owner and removes owner's tags,
+        # while list_tags batches item_tags count lookup cleanly
+        from Ai.mcp_server import list_tags
+
+        owner_item_res = isolated_db.table("items").insert(
+            {
+                "id": "it-shared-tags",
+                "owner_id": owner_b,
+                "folder_id": "f-sh-1",
+                "url": "https://shared-tags.test/1",
+                "url_hash": "h-st-1",
+                "title": "Shared Item",
+            }
+        ).execute()
+        owner_tag = isolated_db.table("tags").insert({"owner_id": owner_b, "name": "OwnerInitial"}).execute().data[0]
+        isolated_db.table("item_tags").insert({"item_id": "it-shared-tags", "tag_id": owner_tag["id"]}).execute()
+
+        # Shared editor (uid) removes OwnerInitial and adds EditorAdded
+        shared_res = manage_item_tags(
+            item_id="it-shared-tags",
+            add_tags=["EditorAdded"],
+            remove_tags=["OwnerInitial"],
+        )
+        assert shared_res["success"] is True
+        final_shared_links = [r["tag_id"] for r in isolated_db.tables["item_tags"] if r["item_id"] == "it-shared-tags"]
+        final_shared_rows = [r for r in isolated_db.tables["tags"] if r["id"] in final_shared_links]
+        assert {r["name"] for r in final_shared_rows} == {"EditorAdded"}
+        assert all(r["owner_id"] == owner_b for r in final_shared_rows)
+
+        # list_tags batches item_tags counts with 1 query even when multiple tags exist
+        set_authenticated_user_id(owner_b)
+        isolated_db.table("tags").insert({"owner_id": owner_b, "name": "OwnerSecond"}).execute()
+        item_tags_queries = []
+        orig_tbl_fn = isolated_db.table
+
+        def _counting_item_tags(tname):
+            if tname == "item_tags":
+                item_tags_queries.append("item_tags")
+            return orig_tbl_fn(tname)
+
+        isolated_db.table = _counting_item_tags
+        try:
+            listed = list_tags()
+        finally:
+            isolated_db.table = orig_tbl_fn
+        assert len(item_tags_queries) == 1
+        counts = {t["name"]: t["item_count"] for t in listed}
+        assert counts["EditorAdded"] == 1
+        assert counts["OwnerSecond"] == 0
     finally:
         set_authenticated_user_id(None)
         set_override_db(None)

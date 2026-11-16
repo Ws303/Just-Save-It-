@@ -2590,6 +2590,7 @@ const _supabaseAuthDeps = {
 };
 
 // Hydrate & listen for live Supabase Auth session / OAuth / Magic-Link callbacks
+const _bootSupabaseAuthGen = store.state.api?.authGeneration || 0;
 supabaseAuth
   .init(
     {
@@ -2599,9 +2600,9 @@ supabaseAuth
     (changePayload) => handleSupabaseAuthChange(changePayload, _supabaseAuthDeps)
   )
   .then(async ({ session, claims, user }) => {
-    if (session?.access_token) {
+    if (session?.access_token && (store.state.api?.authGeneration || 0) === _bootSupabaseAuthGen) {
       handleSupabaseAuthChange({ event: "INITIAL_SESSION", session, claims, user }, _supabaseAuthDeps);
-    } else if (bootParams.oauthCode) {
+    } else if (!session?.access_token && bootParams.oauthCode) {
       const cbRes = await apiClient.exchangeOAuthCode(bootParams.oauthCode);
       if (cbRes?.ok && hasValidSession(store.state)) {
         hydrateOnceIfNeeded();

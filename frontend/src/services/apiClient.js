@@ -412,7 +412,7 @@ function clearSessionAndSdk({ clearWorkspace = false, redirectToLogin = false, a
   if (typeof store.clearSession === "function") {
     store.clearSession({
       ...(clearWorkspace ? { clearWorkspace: true } : {}),
-      ...(redirectToLogin ? { redirectToLogin: true } : {}),
+      redirectToLogin: Boolean(redirectToLogin),
       ...(authError ? { authError } : {}),
     });
   }
@@ -2370,6 +2370,9 @@ export const apiClient = {
     // Clear UI session and stop realtime socket/channel immediately so logout never leaks stale syncs
     stopRealtimeSync();
     store.clearSession({ redirectToLogin: true });
+    const clearedGen = store.state.api?.authGeneration || 0;
+    const isSignOutStillCurrent = () =>
+      !store.state.data.user?.isAuthenticated && (store.state.api?.authGeneration || 0) === clearedGen;
 
     const remoteTasks = [];
     if (apiMode === "live") {
@@ -2399,7 +2402,7 @@ export const apiClient = {
       );
     }
 
-    const supaTask = supabaseAuth.signOut(supaCfg, capturedToken).then((res) => {
+    const supaTask = supabaseAuth.signOut(supaCfg, capturedToken, isSignOutStillCurrent).then((res) => {
       if (authMode === "supabase") {
         recordLog({
           method: "POST",
