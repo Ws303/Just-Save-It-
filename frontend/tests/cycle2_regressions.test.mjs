@@ -882,10 +882,10 @@ test("Extension Cycle 4 [F-2/F-3]: guest 401 does not wipe subsequent sign-in & 
     return { ok: true };
   });
   await getPausedPromise;
-  await sandboxB.JustSaveItApi.clearAuthSession();
+  const clearTask = sandboxB.JustSaveItApi.clearAuthSession();
   trackWritesAfterClear = true;
   pausedGetCallback(pausedSnapshot);
-  await flushPromise;
+  await Promise.all([clearTask, flushPromise]);
 
   assert.equal(queueWritesAfterClear, 0, "Cleared queue must not be written back after post-getStorage logout");
   assert.equal(storeMapB.has(sandboxB.JustSaveItApi.STORAGE_KEYS.OFFLINE_QUEUE), false);
@@ -1228,10 +1228,10 @@ test("Cycle 6 [H-1, L-3]: extension setWorkspaceCache rejects signed-out writes,
     recentItems: [{ id: "resurrected", url: "https://res.test" }],
   });
   await pausedGetPromise;
-  await sandbox.JustSaveItApi.clearAuthSession();
-  assert.ok(sandbox.JustSaveItApi.getSessionGeneration() >= genBeforeClear + 2, "clearAuthSession must bump gen before and after removal");
+  const clearCacheTask = sandbox.JustSaveItApi.clearAuthSession();
   resumePausedGet();
-  await pendingCacheWrite;
+  await Promise.all([clearCacheTask, pendingCacheWrite]);
+  assert.ok(sandbox.JustSaveItApi.getSessionGeneration() >= genBeforeClear + 2, "clearAuthSession must bump gen before and after removal");
   assert.equal(storeMap.has(sandbox.JustSaveItApi.STORAGE_KEYS.WORKSPACE_CACHE), false);
 
   // 4. extension/popup.js async fetchers guard against session generation change & aborted flag
@@ -2276,7 +2276,7 @@ test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quic
     tags: [],
     recentItems: [],
   });
-  await Promise.all([
+  const [okSaveBeforeClear] = await Promise.all([
     delaySb.JustSaveItApi.saveAuthSession({
       access_token: "tok-c13-b2",
       refresh_token: "ref-c13-b2",
@@ -2284,7 +2284,10 @@ test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quic
     }),
     delaySb.JustSaveItApi.clearAuthSession(),
   ]);
+  assert.equal(okSaveBeforeClear, false, "saveAuthSession raced by synchronous clearAuthSession must fail closed");
   assert.equal(delayMap.get("jsi_access_token"), undefined, "Concurrent saveAuthSession + clearAuthSession must end cleared");
+  assert.equal(delayMap.get("jsi_workspace_cache"), undefined, "Workspace cache must be cleared after concurrent clearAuthSession");
+  assert.equal((await delaySb.JustSaveItApi.getWorkspaceCache("u-c13-b")).folders.length, 0);
   assert.equal((await delaySb.JustSaveItApi.getSessionState()).accessToken, "");
 
   // Case C: clearAuthSession followed concurrently by User B login -> User B survives delayed clear
@@ -2298,4 +2301,81 @@ test("Cycle 8 [HIGH-1, MED-1, MED-2, MED-4]: handleConnectMessage rollback, quic
   ]);
   assert.equal((await delaySb.JustSaveItApi.getSessionState()).user?.id, "u-c13-b");
   assert.equal(delayMap.get("jsi_access_token"), "tok-c13-b3", "Concurrent clearAuthSession + saveAuthSession(B) must keep User B");
+
+  // Case D: Cycle 13 CHRIS HIGH-1 — non-auth writers serialized with clearAuthSession & saveAuthSession(B)
+  await Promise.all([
+    delaySb.JustSaveItApi.setWorkspaceCache({
+      user: { id: "u-c13-b", email: "c13b@t.com" },
+      folders: [{ id: "fc13-race", name: "Race" }],
+      tags: [],
+      recentItems: [],
+    }),
+    delaySb.JustSaveItApi.clearAuthSession(),
+  ]);
+  assert.equal(delayMap.get("jsi_workspace_cache"), undefined, "Concurrent setWorkspaceCache + clearAuthSession must not resurrect cache");
+
+  await delaySb.JustSaveItApi.saveAuthSession({
+    access_token: "tok-c13-a-q",
+    refresh_token: "ref-c13-a-q",
+    user: { id: "u-c13-a", email: "c13a@t.com" },
+  });
+  await Promise.all([
+    delaySb.JustSaveItApi.enqueueOfflineSave({ url: "https://rmw.test/1", title: "1" }, "offline"),
+    delaySb.JustSaveItApi.enqueueOfflineSave({ url: "https://rmw.test/2", title: "2" }, "offline"),
+  ]);
+  assert.equal((await delaySb.JustSaveItApi.getOfflineQueue("u-c13-a")).length, 2, "Concurrent enqueueOfflineSave calls must not overwrite each other");
+
+  await Promise.all([
+    delaySb.JustSaveItApi.enqueueOfflineSave({ url: "https://leak-a.test/1", title: "LeakA" }, "offline"),
+    delaySb.JustSaveItApi.saveAuthSession({
+      access_token: "tok-c13-b-q",
+      refresh_token: "ref-c13-b-q",
+      user: { id: "u-c13-b", email: "c13b@t.com" },
+    }),
+  ]);
+  assert.equal((await delaySb.JustSaveItApi.getOfflineQueue("u-c13-b")).length, 0, "Cross-user enqueue must not leak into User B queue");
+
+  // syncNotifiedReminders after clearAuthSession must fail closed cleanly
+  const genBeforeRem = delaySb.JustSaveItApi.getSessionGeneration();
+  const clearBeforeRem = delaySb.JustSaveItApi.getClearEpoch();
+  await delaySb.JustSaveItApi.clearAuthSession();
+  const remSaved = await delaySb.JustSaveItApi.syncNotifiedReminders(
+    [{ id: "rem-1", item_id: "i-1", next_remind_at: new Date().toISOString(), is_enabled: true }],
+    { expectedGen: genBeforeRem, expectedClearEpoch: clearBeforeRem },
+  );
+  assert.equal(remSaved, false);
+  assert.equal(delayMap.get("jsi_notified_reminders"), undefined, "Stale reminder sync must not resurrect cleared notifications");
+
+  // Case E: Cycle 13 CHRIS HIGH-2 — loginWithAccessToken rejects stale completion on concurrent clear or newer login
+  let resolveSlowMe = null;
+  delaySb.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.endsWith("/api/auth/me")) {
+      const authHdr = String(init?.headers?.Authorization || "");
+      if (authHdr.includes("tok-slow-login-a")) {
+        return new Promise((r) => { resolveSlowMe = r; });
+      }
+      if (authHdr.includes("tok-fast-login-b")) {
+        return mkResp(200, { id: "u-login-b", email: "lb@t.com" });
+      }
+    }
+    return mkResp(200, {});
+  };
+  const slowLoginTask = delaySb.JustSaveItApi.loginWithAccessToken("tok-slow-login-a", "ref-slow-a", "https://just-save-it-api.onrender.com");
+  await new Promise((r) => setTimeout(r, 15));
+  await delaySb.JustSaveItApi.loginWithAccessToken("tok-fast-login-b", "ref-fast-b", "http://127.0.0.1:8000");
+  resolveSlowMe(mkResp(200, { id: "u-login-a", email: "la@t.com" }));
+  await assert.rejects(slowLoginTask, (err) => err && err.aborted === true);
+  assert.equal((await delaySb.JustSaveItApi.getSessionState()).user?.id, "u-login-b", "Newer login B must not be clobbered by slow login A");
+  assert.equal((await delaySb.JustSaveItApi.getSessionState()).backendUrl, "http://127.0.0.1:8000");
+
+  // Slow login raced by clearAuthSession must reject without resurrecting session
+  let resolveSlowClearMe = null;
+  delaySb.fetch = async () => new Promise((r) => { resolveSlowClearMe = r; });
+  const slowLoginClearTask = delaySb.JustSaveItApi.loginWithAccessToken("tok-slow-clear-a", "ref-sc-a");
+  await new Promise((r) => setTimeout(r, 15));
+  await delaySb.JustSaveItApi.clearAuthSession();
+  resolveSlowClearMe(mkResp(200, { id: "u-sc-a", email: "sca@t.com" }));
+  await assert.rejects(slowLoginClearTask, (err) => err && err.aborted === true);
+  assert.equal((await delaySb.JustSaveItApi.getSessionState()).accessToken, "", "Slow login racing clearAuthSession must not resurrect session");
 });

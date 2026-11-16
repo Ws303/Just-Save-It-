@@ -60,6 +60,7 @@ class AuthService:
         # In-memory store for local testing/dev when Supabase is not connected
         self._local_users: Dict[str, Dict[str, Any]] = {}
         self._local_tokens: Dict[str, List[Dict[str, Any]]] = {}
+        self._local_refresh_tokens: Dict[str, str] = {}
 
         # Prepopulate demo user (May) matching frontend seed
         demo_user_id = "11111111-1111-4111-8111-111111111111"
@@ -137,6 +138,11 @@ class AuthService:
 
     def _generate_refresh_token(self) -> str:
         return "jsi_ref_" + secrets.token_urlsafe(32)
+
+    def _issue_local_refresh_token(self, user_id: str) -> str:
+        token = self._generate_refresh_token()
+        self._local_refresh_tokens[token] = user_id
+        return token
 
     def _validate_redirect_url(self, redirect_to: str) -> str:
         """Ensure OAuth redirect_to is http(s) without userinfo and points to an allowed host."""
@@ -253,7 +259,7 @@ class AuthService:
         self._save_local_user(user_record)
 
         access_token = self._generate_jwt_token(new_id, email_clean, display_name)
-        refresh_token = self._generate_refresh_token()
+        refresh_token = self._issue_local_refresh_token(new_id)
         profile = UserProfileResponse(**{k: v for k, v in user_record.items() if k != "password_hash"})
 
         return AuthTokenResponse(
@@ -308,7 +314,7 @@ class AuthService:
             user_record.get("display_name"),
             user_record.get("tier", "free"),
         )
-        refresh_token = self._generate_refresh_token()
+        refresh_token = self._issue_local_refresh_token(user_record["id"])
         profile = UserProfileResponse(**{k: v for k, v in user_record.items() if k != "password_hash"})
 
         return AuthTokenResponse(
@@ -360,7 +366,7 @@ class AuthService:
             user_record.get("display_name"),
             user_record.get("tier", "free"),
         )
-        refresh_token = self._generate_refresh_token()
+        refresh_token = self._issue_local_refresh_token(user_record["id"])
         profile = UserProfileResponse(**{k: v for k, v in user_record.items() if k != "password_hash"})
 
         return MagicLinkResponse(
@@ -425,7 +431,7 @@ class AuthService:
         self._save_local_user(user_record)
 
         access_token = self._generate_jwt_token(user_id, email, display_name)
-        refresh_token = self._generate_refresh_token()
+        refresh_token = self._issue_local_refresh_token(user_id)
         profile = UserProfileResponse(**{k: v for k, v in user_record.items() if k != "password_hash"})
 
         return AuthTokenResponse(
@@ -501,16 +507,26 @@ class AuthService:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
         # Local fallback
-        user_id = str(uuid.uuid4())
         email = "google.user@example.com"
-        display_name = "Google User"
+        existing = self._find_local_user(email)
+        if not existing:
+            existing = {
+                "id": str(uuid.uuid4()),
+                "email": email,
+                "password_hash": None,
+                "display_name": "Google User",
+                "avatar_url": None,
+                "tier": "free",
+                "locale": "th",
+                "timezone": "Asia/Bangkok",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._save_local_user(existing)
+        user_id = existing["id"]
+        display_name = existing.get("display_name") or "Google User"
         access_token = self._generate_jwt_token(user_id, email, display_name)
-        refresh_token = self._generate_refresh_token()
-        profile = UserProfileResponse(
-            id=user_id,
-            email=email,
-            display_name=display_name,
-        )
+        refresh_token = self._issue_local_refresh_token(user_id)
+        profile = UserProfileResponse(**{k: v for k, v in existing.items() if k != "password_hash"})
         return AuthTokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,
@@ -543,18 +559,21 @@ class AuthService:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token.")
 
         # Local fallback renewal
-        demo_user = self._find_local_user("may@example.com")
-        user_id = demo_user["id"] if demo_user else str(uuid.uuid4())
-        email = demo_user["email"] if demo_user else "user@example.com"
-        name = demo_user.get("display_name") if demo_user else "User"
+        clean_refresh = str(refresh_token or "").strip()
+        user_id = self._local_refresh_tokens.pop(clean_refresh, None) if clean_refresh else None
+        if not user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token.")
+        local_user = self._find_local_user_by_id(user_id)
+        if not local_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token.")
 
-        new_access = self._generate_jwt_token(user_id, email, name)
-        new_refresh = self._generate_refresh_token()
-        profile = UserProfileResponse(
-            id=user_id,
-            email=email,
-            display_name=name,
-        )
+        email = local_user["email"]
+        name = local_user.get("display_name") or "User"
+        tier = local_user.get("tier", "free")
+
+        new_access = self._generate_jwt_token(user_id, email, name, tier)
+        new_refresh = self._issue_local_refresh_token(user_id)
+        profile = UserProfileResponse(**{k: v for k, v in local_user.items() if k != "password_hash"})
         return AuthTokenResponse(
             access_token=new_access,
             refresh_token=new_refresh,

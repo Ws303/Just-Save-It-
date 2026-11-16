@@ -165,7 +165,7 @@ def test_oauth_url_and_callback():
 
 
 def test_refresh_session():
-    """Test refreshing an access token using a refresh token."""
+    """Test refreshing an access token using a refresh token and rejecting bogus/rotated tokens."""
     login_resp = client.post("/api/auth/login", json={"email": "may@example.com", "password": "password123"})
     refresh_token = login_resp.json()["refresh_token"]
 
@@ -174,6 +174,25 @@ def test_refresh_session():
     ref_data = ref_resp.json()
     assert "access_token" in ref_data
     assert "refresh_token" in ref_data
+    assert ref_data["user"]["email"] == "may@example.com"
+
+    # Reusing rotated token or sending an arbitrary refresh_token must fail with 401 (no may@example.com fallback)
+    assert client.post("/api/auth/refresh", json={"refresh_token": refresh_token}).status_code == 401
+    assert client.post("/api/auth/refresh", json={"refresh_token": "bogus-attacker-token"}).status_code == 401
+
+    # Refreshing another registered local user must preserve that user's identity
+    reg_email = "refresh-other-user@example.com"
+    reg_resp = client.post(
+        "/api/auth/register",
+        json={"email": reg_email, "password": "Password123!", "display_name": "Other User"},
+    )
+    assert reg_resp.status_code == 201
+    reg_data = reg_resp.json()
+    other_ref = client.post("/api/auth/refresh", json={"refresh_token": reg_data["refresh_token"]})
+    assert other_ref.status_code == 200
+    other_payload = other_ref.json()
+    assert other_payload["user"]["id"] == reg_data["user"]["id"]
+    assert other_payload["user"]["email"] == reg_email
 
 
 def test_user_profile_crud_and_auth_guard():

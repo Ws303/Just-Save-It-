@@ -1,10 +1,13 @@
 import {
   classifyQueueFlushStatus,
+  beginAuthLogin,
   clearPkceVerifier,
   clearSession,
   enqueueOfflineItem,
   flushOfflineQueueWithSender,
   getAuthGeneration,
+  getClearEpoch,
+  isAuthEpochStale,
   loadCachedWorkspace,
   loadOfflineQueue,
   loadSession,
@@ -226,6 +229,7 @@ async function parseJsonSafe(resp: Response): Promise<JsonRecord | null> {
 }
 
 export async function loginWithPassword(email: string, password: string): Promise<ApiResult<StoredSession>> {
+  const authEpoch = beginAuthLogin();
   try {
     const resp = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
       method: "POST",
@@ -258,7 +262,13 @@ export async function loginWithPassword(email: string, password: string): Promis
           }
         : null,
     };
-    await saveSession(session);
+    if (isAuthEpochStale(authEpoch)) {
+      return { ok: false, status: 409, data: null, error: "ออกจากระบบหรือสลับบัญชีระหว่างเข้าสู่ระบบ" };
+    }
+    const saved = await saveSession(session, authEpoch);
+    if (!saved) {
+      return { ok: false, status: 409, data: null, error: "ออกจากระบบหรือสลับบัญชีระหว่างบันทึกเซสชัน" };
+    }
     return { ok: true, status: resp.status, data: session };
   } catch (err: unknown) {
     return { ok: false, status: 0, data: null, error: getErrorMessage(err, "เชื่อมต่อไม่ได้") };
@@ -270,6 +280,7 @@ export async function signupWithPassword(
   password: string,
   displayName?: string,
 ): Promise<ApiResult<JsonRecord>> {
+  const authEpoch = beginAuthLogin();
   try {
     const resp = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
       method: "POST",
@@ -293,17 +304,26 @@ export async function signupWithPassword(
     }
     const accessToken = typeof data?.access_token === "string" ? data.access_token : "";
     if (accessToken) {
+      if (isAuthEpochStale(authEpoch)) {
+        return { ok: false, status: 409, data: null, error: "ออกจากระบบหรือสลับบัญชีระหว่างสมัครสมาชิก" };
+      }
       const rawUser = data?.user as JsonRecord | undefined;
-      await saveSession({
-        access_token: accessToken,
-        refresh_token: typeof data?.refresh_token === "string" ? data.refresh_token : "",
-        expires_at: typeof data?.expires_at === "number" ? data.expires_at : undefined,
-        user: {
-          id: String(rawUser?.id || ""),
-          email: String(rawUser?.email || email.trim()),
-          display_name: displayName || email.split("@")[0],
+      const saved = await saveSession(
+        {
+          access_token: accessToken,
+          refresh_token: typeof data?.refresh_token === "string" ? data.refresh_token : "",
+          expires_at: typeof data?.expires_at === "number" ? data.expires_at : undefined,
+          user: {
+            id: String(rawUser?.id || ""),
+            email: String(rawUser?.email || email.trim()),
+            display_name: displayName || email.split("@")[0],
+          },
         },
-      });
+        authEpoch,
+      );
+      if (!saved) {
+        return { ok: false, status: 409, data: null, error: "ออกจากระบบหรือสลับบัญชีระหว่างบันทึกเซสชัน" };
+      }
     }
     return { ok: true, status: resp.status, data };
   } catch (err: unknown) {
@@ -346,6 +366,7 @@ export async function completeOAuthWithTokens(
     return existingPromise;
   }
 
+  const authEpoch = beginAuthLogin();
   const task = (async (): Promise<ApiResult<StoredSession>> => {
     let userObj: StoredSession["user"] = null;
     try {
@@ -372,12 +393,18 @@ export async function completeOAuthWithTokens(
     } catch {
       // Non-fatal: save token session and let /api/workspace hydrate profile
     }
+    if (isAuthEpochStale(authEpoch)) {
+      return { ok: false, status: 409, data: null, error: "ออกจากระบบหรือสลับบัญชีระหว่างยืนยันตัวตน" };
+    }
     const session: StoredSession = {
       access_token: cleanAccess,
       refresh_token: cleanRefresh,
       user: userObj,
     };
-    await saveSession(session);
+    const saved = await saveSession(session, authEpoch);
+    if (!saved) {
+      return { ok: false, status: 409, data: null, error: "ออกจากระบบหรือสลับบัญชีระหว่างบันทึกเซสชัน" };
+    }
     recordAuthDebugEvent("oauth_session_saved", userObj?.email || "token_ready");
     const res: ApiResult<StoredSession> = { ok: true, status: 200, data: session };
     _tokenCompletionResults.set(cleanAccess, { res, at: Date.now() });
@@ -413,6 +440,7 @@ export async function exchangeOAuthCode(code: string): Promise<ApiResult<StoredS
     return existingPromise;
   }
 
+  const authEpoch = beginAuthLogin();
   const task = (async (): Promise<ApiResult<StoredSession>> => {
     const verifier = await peekPkceVerifier();
     try {
@@ -441,6 +469,9 @@ export async function exchangeOAuthCode(code: string): Promise<ApiResult<StoredS
         recordAuthDebugEvent("pkce_exchange_fail", `HTTP ${resp.status}: ${errMsg}`);
         return { ok: false, status: resp.status, data: null, error: errMsg };
       }
+      if (isAuthEpochStale(authEpoch)) {
+        return { ok: false, status: 409, data: null, error: "ออกจากระบบหรือสลับบัญชีระหว่างแลกรหัส Google" };
+      }
       const rawUser = data?.user as JsonRecord | undefined;
       const rawMeta = rawUser?.user_metadata as JsonRecord | undefined;
       const session: StoredSession = {
@@ -457,7 +488,10 @@ export async function exchangeOAuthCode(code: string): Promise<ApiResult<StoredS
             }
           : null,
       };
-      await saveSession(session);
+      const saved = await saveSession(session, authEpoch);
+      if (!saved) {
+        return { ok: false, status: 409, data: null, error: "ออกจากระบบหรือสลับบัญชีระหว่างบันทึกเซสชัน" };
+      }
       recordAuthDebugEvent("pkce_exchange_ok", session.user?.email || "authenticated");
       const res: ApiResult<StoredSession> = { ok: true, status: resp.status, data: session };
       _codeExchangeResults.set(cleanCode, { res, at: Date.now() });
@@ -481,12 +515,15 @@ export async function exchangeOAuthCode(code: string): Promise<ApiResult<StoredS
 
 export async function refreshSession(): Promise<boolean> {
   const startGen = getAuthGeneration();
+  const startClearEpoch = getClearEpoch();
   if (_refreshInFlightPromise && _refreshInFlightGen === startGen) {
     return _refreshInFlightPromise;
   }
   const task = (async (): Promise<boolean> => {
     const current = await loadSession();
-    if (!current?.refresh_token || getAuthGeneration() !== startGen) return false;
+    if (!current?.refresh_token || getAuthGeneration() !== startGen || getClearEpoch() !== startClearEpoch) {
+      return false;
+    }
     try {
       const resp = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
         method: "POST",
@@ -496,13 +533,13 @@ export async function refreshSession(): Promise<boolean> {
         },
         body: JSON.stringify({ refresh_token: current.refresh_token }),
       });
-      if (getAuthGeneration() !== startGen) return false;
+      if (getAuthGeneration() !== startGen || getClearEpoch() !== startClearEpoch) return false;
       const data = await parseJsonSafe(resp);
       const accessToken = typeof data?.access_token === "string" ? data.access_token : "";
       if (!resp.ok || !accessToken) return false;
       const rawUser = data?.user as JsonRecord | undefined;
       const rawMeta = rawUser?.user_metadata as JsonRecord | undefined;
-      if (getAuthGeneration() !== startGen) return false;
+      if (getAuthGeneration() !== startGen || getClearEpoch() !== startClearEpoch) return false;
       const saved = await saveSession(
         {
           access_token: accessToken,
@@ -516,7 +553,11 @@ export async function refreshSession(): Promise<boolean> {
               }
             : current.user,
         },
-        { expectedGen: startGen },
+        {
+          expectedGen: startGen,
+          expectedRefreshToken: current.refresh_token,
+          expectedClearEpoch: startClearEpoch,
+        },
       );
       return saved;
     } catch {
@@ -974,15 +1015,33 @@ export async function exportWorkspaceJson(): Promise<ApiResult<JsonRecord>> {
 
 export async function deleteMyAccount(): Promise<ApiResult<JsonRecord>> {
   const startGen = getAuthGeneration();
+  const startClearEpoch = getClearEpoch();
   const res = await apiFetch<JsonRecord>("/api/auth/me", { method: "DELETE" });
-  if (res.ok && getAuthGeneration() === startGen) await clearSession();
+  if (res.ok && getAuthGeneration() === startGen && getClearEpoch() === startClearEpoch) {
+    await clearSession();
+  }
   return res;
 }
 
 export async function logoutAccount(): Promise<void> {
-  const startGen = getAuthGeneration();
-  await apiFetch("/api/auth/logout", { method: "POST", body: {} });
-  if (getAuthGeneration() !== startGen) {
+  const startClearEpoch = getClearEpoch();
+  const startSession = await loadSession().catch(() => null);
+  const startUid = resolveSessionUserId(startSession);
+  const startAccessToken = startSession?.access_token || "";
+  await apiFetch("/api/auth/logout", { method: "POST", body: {}, skipRetry: true });
+  if (getClearEpoch() !== startClearEpoch) {
+    return;
+  }
+  const latestSession = await loadSession().catch(() => null);
+  if (!latestSession) {
+    return;
+  }
+  const latestUid = resolveSessionUserId(latestSession);
+  if (
+    (startUid && latestUid && latestUid !== startUid) ||
+    (!startUid && latestUid) ||
+    (startAccessToken && latestSession.access_token && latestSession.access_token !== startAccessToken)
+  ) {
     return;
   }
   await clearSession();

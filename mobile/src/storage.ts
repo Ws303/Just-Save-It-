@@ -144,7 +144,19 @@ function toSecureStorageBackend(mod: unknown): StorageBackend | null {
   return null;
 }
 
+let _testStandardBackend: StorageBackend | null = null;
+let _testSecureBackend: StorageBackend | null = null;
+
+export function __setStorageBackendsForTests(
+  backends: { standard?: StorageBackend | null; secure?: StorageBackend | null } | null,
+): void {
+  _testStandardBackend = backends?.standard ?? null;
+  _testSecureBackend = backends?.secure ?? null;
+}
+
 async function getSecureSessionBackend(): Promise<StorageBackend> {
+  if (_testSecureBackend) return _testSecureBackend;
+  if (_testStandardBackend) return _testStandardBackend;
   if (!secureStoragePromise) {
     secureStoragePromise = import("expo-secure-store")
       .then((mod) => toSecureStorageBackend(mod))
@@ -166,6 +178,7 @@ function isStorageBackend(candidate: unknown): candidate is StorageBackend {
 }
 
 async function getStorageBackend(): Promise<StorageBackend> {
+  if (_testStandardBackend) return _testStandardBackend;
   if (!asyncStoragePromise) {
     asyncStoragePromise = import("@react-native-async-storage/async-storage")
       .then((mod) => {
@@ -195,7 +208,7 @@ async function writeJson(key: string, value: unknown): Promise<void> {
   await backend.setItem(key, JSON.stringify(value));
 }
 
-export async function loadSession(): Promise<StoredSession | null> {
+async function _loadSessionUnlocked(): Promise<StoredSession | null> {
   const secureBackend = await getSecureSessionBackend();
   const raw = await secureBackend.getItem(KEYS.session);
   if (raw) {
@@ -217,6 +230,18 @@ export async function loadSession(): Promise<StoredSession | null> {
     }
   }
   return null;
+}
+
+export async function loadSession(): Promise<StoredSession | null> {
+  const startGen = _authGeneration;
+  const startClearEpoch = _clearEpoch;
+  return runSerializedAuthStorage(async () => {
+    const sess = await _loadSessionUnlocked();
+    if (sess && _authGeneration === startGen && _clearEpoch === startClearEpoch && !_activeUserId) {
+      _activeUserId = resolveSessionUserId(sess);
+    }
+    return sess;
+  });
 }
 
 const B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -256,6 +281,8 @@ export function resolveSessionUserId(session: StoredSession | null | undefined):
 }
 
 let _authStorageQueue: Promise<unknown> = Promise.resolve();
+let _clearEpoch = 0;
+let _loginSeq = 0;
 
 function runSerializedAuthStorage<T>(fn: () => Promise<T>): Promise<T> {
   const next = _authStorageQueue.then(fn, fn);
@@ -263,21 +290,54 @@ function runSerializedAuthStorage<T>(fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
+export function getClearEpoch(): number {
+  return _clearEpoch;
+}
+
+export function beginAuthLogin(): { expectedClearEpoch: number; expectedLoginSeq: number } {
+  _loginSeq += 1;
+  return { expectedClearEpoch: _clearEpoch, expectedLoginSeq: _loginSeq };
+}
+
+export function isAuthEpochStale(epoch?: { expectedClearEpoch?: number; expectedLoginSeq?: number }): boolean {
+  if (!epoch) return false;
+  if (epoch.expectedClearEpoch !== undefined && _clearEpoch !== epoch.expectedClearEpoch) return true;
+  if (epoch.expectedLoginSeq !== undefined && _loginSeq !== epoch.expectedLoginSeq) return true;
+  return false;
+}
+
 export async function saveSession(
   session: StoredSession,
-  options?: { expectedGen?: number },
+  options?: {
+    expectedGen?: number;
+    expectedRefreshToken?: string;
+    expectedClearEpoch?: number;
+    expectedLoginSeq?: number;
+  },
 ): Promise<boolean> {
   let activeExpectedGen = options?.expectedGen;
+  const expectedRefreshToken = options?.expectedRefreshToken;
+  const expectedClearEpoch =
+    options?.expectedClearEpoch !== undefined ? options.expectedClearEpoch : _clearEpoch;
+  const expectedLoginSeq = options?.expectedLoginSeq;
   return runSerializedAuthStorage(async () => {
     const isStaleExpectedGen = () =>
-      activeExpectedGen !== undefined && _authGeneration !== activeExpectedGen;
+      (activeExpectedGen !== undefined && _authGeneration !== activeExpectedGen) ||
+      _clearEpoch !== expectedClearEpoch ||
+      (expectedLoginSeq !== undefined && _loginSeq !== expectedLoginSeq);
     if (isStaleExpectedGen()) return false;
-    const prev = await loadSession().catch(() => null);
+    const prev = await _loadSessionUnlocked().catch(() => null);
     if (isStaleExpectedGen()) return false;
+    if (expectedRefreshToken && prev?.refresh_token !== expectedRefreshToken) {
+      return false;
+    }
     const prevUid = resolveSessionUserId(prev) || _activeUserId;
     const prevHadSession = Boolean(prev?.access_token || prev?.refresh_token || prevUid);
     const nextUid = resolveSessionUserId(session);
     const nextHasSession = Boolean(nextUid || session?.access_token);
+    if (expectedRefreshToken && prevUid && nextUid && prevUid !== nextUid) {
+      return false;
+    }
     const fallbackBackend = await getStorageBackend();
     if (isStaleExpectedGen()) return false;
 
@@ -304,7 +364,7 @@ export async function saveSession(
     if (secureBackend !== fallbackBackend) {
       await fallbackBackend.removeItem(KEYS.session);
     }
-    if (activeExpectedGen !== undefined && _authGeneration !== activeExpectedGen) {
+    if (isStaleExpectedGen()) {
       if (_activeUserId === nextUid) {
         _activeUserId = "";
       }
@@ -330,6 +390,7 @@ export async function saveSession(
 }
 
 export async function clearSession(): Promise<void> {
+  _clearEpoch += 1;
   _authGeneration += 1;
   _activeUserId = "";
   _memWorkspaceCache = null;
@@ -384,54 +445,66 @@ export async function consumePkceVerifier(): Promise<string> {
   return value;
 }
 
+async function _setOfflineQueueUnlocked(queue: QueuedLinkPayload[]): Promise<void> {
+  await writeJson(KEYS.offlineQueue, queue);
+}
+
 export async function loadOfflineQueue(expectedUserId?: string): Promise<QueuedLinkPayload[]> {
-  const rows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
-  if (!Array.isArray(rows)) return [];
-  let uid = String(expectedUserId ?? "").trim();
-  if (expectedUserId === undefined) {
-    const session = await loadSession().catch(() => null);
-    uid = resolveSessionUserId(session) || _activeUserId;
-  }
-  if (!uid) {
-    return rows.filter((item) => !item?.user_id);
-  }
-  return rows.filter((item) => Boolean(item?.user_id) && String(item.user_id).trim() === uid);
+  return runSerializedAuthStorage(async () => {
+    const rows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
+    if (!Array.isArray(rows)) return [];
+    let uid = String(expectedUserId ?? "").trim();
+    if (expectedUserId === undefined) {
+      const session = await _loadSessionUnlocked().catch(() => null);
+      uid = resolveSessionUserId(session) || _activeUserId;
+    }
+    if (!uid) {
+      return rows.filter((item) => !item?.user_id);
+    }
+    return rows.filter((item) => Boolean(item?.user_id) && String(item.user_id).trim() === uid);
+  });
 }
 
 export async function setOfflineQueue(queue: QueuedLinkPayload[]): Promise<void> {
-  await writeJson(KEYS.offlineQueue, queue);
+  return runSerializedAuthStorage(() => _setOfflineQueueUnlocked(queue));
 }
 
 export async function enqueueOfflineItem(
   payload: Omit<QueuedLinkPayload, "client_id" | "queued_at"> & { client_id?: string; queued_at?: string },
 ): Promise<QueuedLinkPayload[]> {
   const startGen = _authGeneration;
-  const session = await loadSession().catch(() => null);
-  if (_authGeneration !== startGen) {
-    return [];
-  }
-  const uid = String(payload.user_id ?? (resolveSessionUserId(session) || _activeUserId)).trim();
-  const allRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
-  if (_authGeneration !== startGen) {
-    return [];
-  }
-  const safeAll = Array.isArray(allRows) ? allRows : [];
-  const foreignRows = uid
-    ? safeAll.filter((item) => Boolean(item?.user_id) && String(item.user_id).trim() !== uid)
-    : safeAll.filter((item) => Boolean(item?.user_id));
-  const ownCurrent = uid
-    ? safeAll.filter((item) => Boolean(item?.user_id) && String(item.user_id).trim() === uid)
-    : safeAll.filter((item) => !item?.user_id);
-  const entry: QueuedLinkPayload = {
-    ...payload,
-    user_id: uid || undefined,
-    client_id: payload.client_id || `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    queued_at: payload.queued_at || new Date().toISOString(),
-  };
-  const deduped = ownCurrent.filter((item) => item.url !== entry.url);
-  const next = [entry, ...deduped, ...foreignRows].slice(0, 100);
-  await setOfflineQueue(next);
-  return [entry, ...deduped].slice(0, 100);
+  const startClearEpoch = _clearEpoch;
+  return runSerializedAuthStorage(async () => {
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return [];
+    }
+    const session = await _loadSessionUnlocked().catch(() => null);
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return [];
+    }
+    const uid = String(payload.user_id ?? (resolveSessionUserId(session) || _activeUserId)).trim();
+    const allRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return [];
+    }
+    const safeAll = Array.isArray(allRows) ? allRows : [];
+    const foreignRows = uid
+      ? safeAll.filter((item) => Boolean(item?.user_id) && String(item.user_id).trim() !== uid)
+      : safeAll.filter((item) => Boolean(item?.user_id));
+    const ownCurrent = uid
+      ? safeAll.filter((item) => Boolean(item?.user_id) && String(item.user_id).trim() === uid)
+      : safeAll.filter((item) => !item?.user_id);
+    const entry: QueuedLinkPayload = {
+      ...payload,
+      user_id: uid || undefined,
+      client_id: payload.client_id || `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      queued_at: payload.queued_at || new Date().toISOString(),
+    };
+    const deduped = ownCurrent.filter((item) => item.url !== entry.url);
+    const next = [entry, ...deduped, ...foreignRows].slice(0, 100);
+    await _setOfflineQueueUnlocked(next);
+    return [entry, ...deduped].slice(0, 100);
+  });
 }
 
 export type OfflineFlushOutcome = boolean | "ok" | "retry" | "drop";
@@ -452,48 +525,71 @@ export async function flushOfflineQueueWithSender(
   sender: (item: QueuedLinkPayload) => Promise<OfflineFlushOutcome>,
 ): Promise<{ flushed: number; remaining: number; dropped: number; failed: QueuedLinkPayload[] }> {
   const startGen = _authGeneration;
-  const session = await loadSession().catch(() => null);
-  const currentUid = resolveSessionUserId(session) || _activeUserId;
-  const allRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
-  const safeAll = Array.isArray(allRows) ? allRows : [];
-  if (!safeAll.length) return { flushed: 0, remaining: 0, dropped: 0, failed: [] };
-
-  const foreignRemaining: QueuedLinkPayload[] = [];
-  const queue: QueuedLinkPayload[] = [];
-  const removedKeys = new Set<string>();
-  for (const entry of safeAll) {
-    const entryUid = String(entry?.user_id || "").trim();
-    if (!currentUid) {
-      if (!entryUid) queue.push(entry);
-      else foreignRemaining.push(entry);
-    } else if (!entryUid) {
-      removedKeys.add(getQueueEntryKey(entry));
-      continue; // Drop legacy unstamped entries when authenticated
-    } else if (entryUid !== currentUid) {
-      foreignRemaining.push(entry);
-    } else {
-      queue.push(entry);
+  const startClearEpoch = _clearEpoch;
+  const prep = await runSerializedAuthStorage<{
+    earlyResult?: { flushed: number; remaining: number; dropped: number; failed: QueuedLinkPayload[] };
+    currentUid?: string;
+    queue?: QueuedLinkPayload[];
+    removedKeys?: Set<string>;
+  }>(async () => {
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return { earlyResult: { flushed: 0, remaining: 0, dropped: 0, failed: [] } };
     }
-  }
+    const session = await _loadSessionUnlocked().catch(() => null);
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return { earlyResult: { flushed: 0, remaining: 0, dropped: 0, failed: [] } };
+    }
+    const currentUid = resolveSessionUserId(session) || _activeUserId;
+    const allRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return { earlyResult: { flushed: 0, remaining: 0, dropped: 0, failed: [] } };
+    }
+    const safeAll = Array.isArray(allRows) ? allRows : [];
+    if (!safeAll.length) {
+      return { earlyResult: { flushed: 0, remaining: 0, dropped: 0, failed: [] } };
+    }
 
-  if (!queue.length) {
-    if (foreignRemaining.length !== safeAll.length && _authGeneration === startGen) {
-      const latestRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
-      if (_authGeneration !== startGen) {
-        return { flushed: 0, remaining: 0, dropped: 0, failed: [] };
+    const foreignRemaining: QueuedLinkPayload[] = [];
+    const queue: QueuedLinkPayload[] = [];
+    const removedKeys = new Set<string>();
+    for (const entry of safeAll) {
+      const entryUid = String(entry?.user_id || "").trim();
+      if (!currentUid) {
+        if (!entryUid) queue.push(entry);
+        else foreignRemaining.push(entry);
+      } else if (!entryUid) {
+        removedKeys.add(getQueueEntryKey(entry));
+        continue; // Drop legacy unstamped entries when authenticated
+      } else if (entryUid !== currentUid) {
+        foreignRemaining.push(entry);
+      } else {
+        queue.push(entry);
       }
-      const safeLatest = Array.isArray(latestRows) ? latestRows : [];
-      await setOfflineQueue(safeLatest.filter((item) => !removedKeys.has(getQueueEntryKey(item))));
     }
-    return { flushed: 0, remaining: 0, dropped: 0, failed: [] };
+
+    if (!queue.length) {
+      if (foreignRemaining.length !== safeAll.length) {
+        await _setOfflineQueueUnlocked(safeAll.filter((item) => !removedKeys.has(getQueueEntryKey(item))));
+      }
+      return { earlyResult: { flushed: 0, remaining: 0, dropped: 0, failed: [] } };
+    }
+    return { currentUid, queue, removedKeys };
+  });
+
+  if (prep.earlyResult) {
+    return prep.earlyResult;
   }
+
+  const currentUid = prep.currentUid || "";
+  const queue = prep.queue || [];
+  const removedKeys = prep.removedKeys || new Set<string>();
 
   const remaining: QueuedLinkPayload[] = [];
   let flushed = 0;
   let dropped = 0;
   for (let i = 0; i < queue.length; i += 1) {
     const entry = queue[i];
-    if (_authGeneration !== startGen) {
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
       remaining.push(...queue.slice(i));
       break;
     }
@@ -512,117 +608,151 @@ export async function flushOfflineQueueWithSender(
       remaining.push(entry);
     }
   }
-  if (_authGeneration !== startGen) {
+
+  return runSerializedAuthStorage(async () => {
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return { flushed, remaining: remaining.length, dropped, failed: remaining };
+    }
+    const latestSession = await _loadSessionUnlocked().catch(() => null);
+    const latestUid = resolveSessionUserId(latestSession) || _activeUserId;
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch || latestUid !== currentUid) {
+      return { flushed, remaining: remaining.length, dropped, failed: remaining };
+    }
+    const latestRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return { flushed, remaining: remaining.length, dropped, failed: remaining };
+    }
+    const safeLatest = Array.isArray(latestRows) ? latestRows : [];
+    const nextQueue = safeLatest.filter((item) => {
+      const itemUid = String(item?.user_id || "").trim();
+      if (currentUid && !itemUid) return false;
+      return !removedKeys.has(getQueueEntryKey(item));
+    });
+    await _setOfflineQueueUnlocked(nextQueue);
     return { flushed, remaining: remaining.length, dropped, failed: remaining };
-  }
-  const latestRows = await readJson<QueuedLinkPayload[]>(KEYS.offlineQueue, []);
-  if (_authGeneration !== startGen) {
-    return { flushed, remaining: remaining.length, dropped, failed: remaining };
-  }
-  const safeLatest = Array.isArray(latestRows) ? latestRows : [];
-  const nextQueue = safeLatest.filter((item) => {
-    const itemUid = String(item?.user_id || "").trim();
-    if (currentUid && !itemUid) return false;
-    return !removedKeys.has(getQueueEntryKey(item));
   });
-  await setOfflineQueue(nextQueue);
-  return { flushed, remaining: remaining.length, dropped, failed: remaining };
 }
 
 export function getMemoryCachedWorkspace(): CachedWorkspace | null {
+  if (!_memWorkspaceCache) return null;
+  const cacheUid = String(_memWorkspaceCache.user_id || "").trim();
+  if (!cacheUid || !_activeUserId || cacheUid !== _activeUserId) {
+    return null;
+  }
   return _memWorkspaceCache;
 }
 
 export async function loadCachedWorkspace(): Promise<CachedWorkspace> {
-  const session = await loadSession().catch(() => null);
-  const currentUid = resolveSessionUserId(session) || _activeUserId;
-  const empty: CachedWorkspace = {
-    user_id: currentUid || undefined,
-    items: [],
-    folders: [],
-    reminders: [],
-    updated_at: "",
-  };
-  if (!currentUid) {
-    _memWorkspaceCache = null;
-    return empty;
-  }
-  if (_memWorkspaceCache) {
-    const cacheUid = String(_memWorkspaceCache.user_id || "").trim();
-    if (!cacheUid || cacheUid !== currentUid) {
-      _memWorkspaceCache = null;
-    } else {
-      return _memWorkspaceCache;
+  const startGen = _authGeneration;
+  const startClearEpoch = _clearEpoch;
+  return runSerializedAuthStorage(async () => {
+    const session = await _loadSessionUnlocked().catch(() => null);
+    const currentUid = resolveSessionUserId(session) || _activeUserId;
+    const empty: CachedWorkspace = {
+      user_id: currentUid || undefined,
+      items: [],
+      folders: [],
+      reminders: [],
+      updated_at: "",
+    };
+    if (!currentUid || _authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      if (!currentUid) _memWorkspaceCache = null;
+      return empty;
     }
-  }
-  const data = await readJson<CachedWorkspace>(KEYS.cache, empty);
-  const dataUid = String(data.user_id || "").trim();
-  if (!dataUid || dataUid !== currentUid) {
-    return empty;
-  }
-  if (data.updated_at || data.items.length > 0 || data.folders.length > 0) {
-    _memWorkspaceCache = data;
-  }
-  return data;
+    _activeUserId = currentUid;
+    if (_memWorkspaceCache) {
+      const cacheUid = String(_memWorkspaceCache.user_id || "").trim();
+      if (!cacheUid || cacheUid !== currentUid) {
+        _memWorkspaceCache = null;
+      } else {
+        return _memWorkspaceCache;
+      }
+    }
+    const data = await readJson<CachedWorkspace>(KEYS.cache, empty);
+    const dataUid = String(data.user_id || "").trim();
+    if (!dataUid || dataUid !== currentUid || _authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return empty;
+    }
+    if (data.updated_at || data.items.length > 0 || data.folders.length > 0) {
+      _memWorkspaceCache = data;
+    }
+    return data;
+  });
 }
 
 export async function saveCachedWorkspace(data: Omit<CachedWorkspace, "updated_at">): Promise<void> {
   const startGen = _authGeneration;
-  const session = await loadSession().catch(() => null);
-  if (_authGeneration !== startGen) {
-    return;
-  }
-  const liveUid = String(resolveSessionUserId(session) || _activeUserId).trim();
-  const requestedUid = String(data.user_id ?? "").trim();
-  if (requestedUid && requestedUid !== liveUid) {
-    return;
-  }
-  const currentUid = requestedUid || liveUid;
-  const stamped: CachedWorkspace = {
-    ...data,
-    user_id: currentUid || undefined,
-    updated_at: new Date().toISOString(),
-  };
-  const backend = await getStorageBackend();
-  if (_authGeneration !== startGen) {
-    return;
-  }
-  _memWorkspaceCache = stamped;
-  await backend.setItem(KEYS.cache, JSON.stringify(stamped));
+  const startClearEpoch = _clearEpoch;
+  return runSerializedAuthStorage(async () => {
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return;
+    }
+    const session = await _loadSessionUnlocked().catch(() => null);
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return;
+    }
+    const liveUid = String(resolveSessionUserId(session) || _activeUserId).trim();
+    if (!liveUid) {
+      return;
+    }
+    const requestedUid = String(data.user_id ?? "").trim();
+    if (requestedUid && requestedUid !== liveUid) {
+      return;
+    }
+    const currentUid = requestedUid || liveUid;
+    const stamped: CachedWorkspace = {
+      ...data,
+      user_id: currentUid,
+      updated_at: new Date().toISOString(),
+    };
+    const backend = await getStorageBackend();
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return;
+    }
+    _activeUserId = currentUid;
+    _memWorkspaceCache = stamped;
+    await backend.setItem(KEYS.cache, JSON.stringify(stamped));
+  });
 }
 
 export async function removeCachedLinkItem(itemId: string): Promise<void> {
   const startGen = _authGeneration;
+  const startClearEpoch = _clearEpoch;
   const targetId = String(itemId || "").trim();
   if (!targetId) return;
-  const session = await loadSession().catch(() => null);
-  const currentUid = resolveSessionUserId(session) || _activeUserId;
-  if (_authGeneration !== startGen || !currentUid) {
-    return;
-  }
-  if (_memWorkspaceCache && Array.isArray(_memWorkspaceCache.items)) {
-    const memUid = String(_memWorkspaceCache.user_id || "").trim();
-    if (memUid && memUid === currentUid) {
-      _memWorkspaceCache = {
-        ..._memWorkspaceCache,
-        items: _memWorkspaceCache.items.filter((it) => it.id !== targetId),
-      };
-    } else if (memUid && memUid !== currentUid) {
-      _memWorkspaceCache = null;
+  return runSerializedAuthStorage(async () => {
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return;
     }
-  }
-  const existing = await readJson<CachedWorkspace | null>(KEYS.cache, null);
-  if (_authGeneration !== startGen) {
-    return;
-  }
-  const existingUid = String(existing?.user_id || "").trim();
-  if (existing && Array.isArray(existing.items) && existingUid === currentUid) {
-    const next: CachedWorkspace = {
-      ...existing,
-      items: existing.items.filter((it) => it.id !== targetId),
-    };
-    await writeJson(KEYS.cache, next);
-  }
+    const session = await _loadSessionUnlocked().catch(() => null);
+    const currentUid = resolveSessionUserId(session) || _activeUserId;
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch || !currentUid) {
+      return;
+    }
+    if (_memWorkspaceCache && Array.isArray(_memWorkspaceCache.items)) {
+      const memUid = String(_memWorkspaceCache.user_id || "").trim();
+      if (memUid && memUid === currentUid) {
+        _memWorkspaceCache = {
+          ..._memWorkspaceCache,
+          items: _memWorkspaceCache.items.filter((it) => it.id !== targetId),
+        };
+      } else if (memUid && memUid !== currentUid) {
+        _memWorkspaceCache = null;
+      }
+    }
+    const existing = await readJson<CachedWorkspace | null>(KEYS.cache, null);
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return;
+    }
+    const existingUid = String(existing?.user_id || "").trim();
+    if (existing && Array.isArray(existing.items) && existingUid === currentUid) {
+      const next: CachedWorkspace = {
+        ...existing,
+        items: existing.items.filter((it) => it.id !== targetId),
+      };
+      await writeJson(KEYS.cache, next);
+    }
+  });
 }
 
 export interface AuthDebugEvent {

@@ -56,6 +56,8 @@ if (chrome.runtime.onStartup) {
 }
 
 async function runBackgroundSync() {
+  const startGen = JustSaveItApi.getSessionGeneration();
+  const startClearEpoch = JustSaveItApi.getClearEpoch ? JustSaveItApi.getClearEpoch() : 0;
   const session = await JustSaveItApi.getSessionState();
   if (!session.accessToken) return;
 
@@ -68,26 +70,26 @@ async function runBackgroundSync() {
     // Offline or temporarily unreachable; keep queued
   }
 
+  if (
+    JustSaveItApi.getSessionGeneration() !== startGen ||
+    (JustSaveItApi.getClearEpoch && JustSaveItApi.getClearEpoch() !== startClearEpoch)
+  ) {
+    return;
+  }
+
   try {
     const remRes = await JustSaveItApi.fetchReminders();
+    if (
+      JustSaveItApi.getSessionGeneration() !== startGen ||
+      (JustSaveItApi.getClearEpoch && JustSaveItApi.getClearEpoch() !== startClearEpoch)
+    ) {
+      return;
+    }
     const reminders = Array.isArray(remRes && remRes.reminders) ? remRes.reminders : Array.isArray(remRes) ? remRes : [];
-    const stored = await JustSaveItApi.getStorage([JustSaveItApi.STORAGE_KEYS.NOTIFIED_REMINDERS]);
-    const notifiedMap = stored[JustSaveItApi.STORAGE_KEYS.NOTIFIED_REMINDERS] || {};
-    const nowMs = Date.now();
-    const lookbackMs = 10 * 60 * 1000;
-    let changed = false;
-
-    for (const rem of reminders) {
-      if (!rem || rem.is_enabled === false || rem.is_completed) continue;
-      const dueStr = rem.next_remind_at || rem.remind_at;
-      if (!dueStr) continue;
-      const dueMs = new Date(dueStr).getTime();
-      if (Number.isNaN(dueMs)) continue;
-      if (dueMs <= nowMs + 60000 && dueMs >= nowMs - lookbackMs) {
-        const key = `${rem.id}:${dueStr}`;
-        if (notifiedMap[key]) continue;
-        notifiedMap[key] = nowMs;
-        changed = true;
+    await JustSaveItApi.syncNotifiedReminders(reminders, {
+      expectedGen: startGen,
+      expectedClearEpoch: startClearEpoch,
+      onNotify(rem) {
         if (chrome.notifications && typeof chrome.notifications.create === "function") {
           const itemId = rem.item_id || "";
           chrome.notifications.create(`jsi_rem::${itemId}::${rem.id}`, {
@@ -98,20 +100,8 @@ async function runBackgroundSync() {
             priority: 1,
           });
         }
-      }
-    }
-
-    const cutoffMs = nowMs - 24 * 60 * 60 * 1000;
-    for (const [k, ts] of Object.entries(notifiedMap)) {
-      if (typeof ts !== "number" || ts < cutoffMs) {
-        delete notifiedMap[k];
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      await JustSaveItApi.setStorage({ [JustSaveItApi.STORAGE_KEYS.NOTIFIED_REMINDERS]: notifiedMap });
-    }
+      },
+    });
   } catch (_err) {
     // Ignore transient network errors during background alarm
   }

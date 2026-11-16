@@ -1157,7 +1157,11 @@
             showBanner("เชื่อมต่อบัญชีจากหน้าเว็บ Sharely สำเร็จแล้ว!", "success");
             return;
           }
-        } catch (_err) {
+        } catch (err) {
+          if (err && err.aborted) {
+            showBanner(err.message || "สลับบัญชีหรือออกจากระบบระหว่างเชื่อมต่อ", "error");
+            return;
+          }
           // Next tab
         }
       }
@@ -1175,6 +1179,7 @@
     const isRegister = state.authMode === "register";
 
     els.authSubmitBtn.disabled = true;
+    const authEpoch = typeof api.beginAuthLogin === "function" ? api.beginAuthLogin() : {};
     try {
       const path = isRegister ? "/api/auth/register" : "/api/auth/login";
       const body = isRegister
@@ -1190,7 +1195,11 @@
         auth: false,
         body,
       });
-      await api.saveAuthSession(authResp);
+      const saved = await api.saveAuthSession(authResp, authEpoch);
+      if (!saved) {
+        showBanner("สลับบัญชีหรือออกจากระบบระหว่างเข้าสู่ระบบ กรุณาลองอีกครั้ง", "error");
+        return;
+      }
       enterSaverView({ user: authResp.user }, await api.getWorkspaceCache(), null);
     } catch (err) {
       showBanner(err.message || "ไม่สามารถเข้าสู่ระบบได้", "error");
@@ -1211,13 +1220,18 @@
       return;
     }
     els.demoLoginBtn.disabled = true;
+    const authEpoch = typeof api.beginAuthLogin === "function" ? api.beginAuthLogin() : {};
     try {
       const authResp = await api.apiRequest("/api/auth/login", {
         method: "POST",
         auth: false,
         body: { email: "may@example.com", password: "password123" },
       });
-      await api.saveAuthSession(authResp);
+      const saved = await api.saveAuthSession(authResp, authEpoch);
+      if (!saved) {
+        showBanner("สลับบัญชีหรือออกจากระบบระหว่างเข้าสู่ระบบ กรุณาลองอีกครั้ง", "error");
+        return;
+      }
       enterSaverView({ user: authResp.user }, await api.getWorkspaceCache(), null);
     } catch (err) {
       showBanner(

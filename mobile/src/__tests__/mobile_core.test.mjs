@@ -311,11 +311,21 @@ test("sha256Base64Url matches RFC 7636 Appendix B test vector and PKCE flow exch
 test("fetchWorkspace uses single /api/workspace call, supports 404 fallback, skips unauthenticated network calls, and isolates cache on logout", async () => {
   await clearSession();
   await saveCachedWorkspace({
+    items: [{ id: "unsigned-1", title: "Unsigned", normalized_url: "https://unsigned.test", domain: "unsigned.test", is_favorite: false, created_at: "2026-11-16T00:00:00Z" }],
+    folders: [],
+    reminders: [],
+  });
+  assert.equal(getMemoryCachedWorkspace(), null, "Signed-out saveCachedWorkspace must not populate memory cache");
+
+  await saveSession({ access_token: "tok-stale", refresh_token: "ref-stale", user: { id: "stale-user", email: "stale@example.com" } });
+  await saveCachedWorkspace({
     items: [{ id: "stale-1", title: "Stale", normalized_url: "https://stale.test", domain: "stale.test", is_favorite: false, created_at: "2026-11-16T00:00:00Z" }],
     folders: [],
     reminders: [],
   });
   assert.equal(getMemoryCachedWorkspace()?.items.length, 1);
+  await clearSession();
+  assert.equal(getMemoryCachedWorkspace(), null);
 
   const origFetch = globalThis.fetch;
   let fetchCalls = [];
@@ -1333,14 +1343,38 @@ test("Cycle 9 [HIGH-1, MED-1, MED-2, MED-3, MED-4]: partial 401 fallback, cursor
   }
 });
 
-test("Cycle 13: FIFO auth storage serialization prevents saveSession/clearSession interleaving", async () => {
-  const { loadSession } = await import("../storage.ts");
+test("Cycle 13: FIFO auth storage serialization, simulated IPC jitter, cache/queue isolation, login epoch fencing, expectedRefreshToken CAS, and logoutAccount skipRetry", async () => {
+  const { loadSession, __setStorageBackendsForTests } = await import("../storage.ts");
+  const { loginWithPassword, logoutAccount } = await import("../api.ts");
   const makeFakeJwtC13 = (sub) => {
     const body = btoa(JSON.stringify({ sub })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     return `eyJhbGciOiJIUzI1NiJ9.${body}.sig`;
   };
+  const origFetch = globalThis.fetch;
+  const stdMap = new Map();
+  const secMap = new Map();
+  let tick = 0;
+  const jitter = () => new Promise((r) => setTimeout(r, ((tick++ % 3) + 1) * 4));
+  const makeDelayedBackend = (map) => ({
+    async getItem(k) {
+      await jitter();
+      return map.has(k) ? map.get(k) : null;
+    },
+    async setItem(k, v) {
+      await jitter();
+      map.set(k, v);
+    },
+    async removeItem(k) {
+      await jitter();
+      map.delete(k);
+    },
+  });
 
   try {
+    __setStorageBackendsForTests({
+      standard: makeDelayedBackend(stdMap),
+      secure: makeDelayedBackend(secMap),
+    });
     await clearSession();
 
     // 1. Concurrent saveSession(B) + stale saveSession(A, { expectedGen }) -> User B and cache/queue stay intact
@@ -1349,6 +1383,13 @@ test("Cycle 13: FIFO auth storage serialization prevents saveSession/clearSessio
       refresh_token: "ref-c13-a1",
       user: { id: "mob-c13-a", email: "c13a@mob.test" },
     });
+    await saveCachedWorkspace({
+      user_id: "mob-c13-a",
+      items: [{ id: "leak-a-1", url: "https://a.test/1", title: "Secret A" }],
+      folders: [],
+      reminders: [],
+    });
+    await enqueueOfflineItem({ url: "https://a.test/q1", title: "QA1" });
     const genA = getAuthGeneration();
     const [okB, okStaleA] = await Promise.all([
       saveSession({
@@ -1368,9 +1409,32 @@ test("Cycle 13: FIFO auth storage serialization prevents saveSession/clearSessio
     assert.equal(okB, true);
     assert.equal(okStaleA, false, "Serialized stale saveSession(A) behind User B must abort cleanly");
     assert.equal((await loadSession())?.user?.id, "mob-c13-b");
+    assert.equal((await loadCachedWorkspace()).items.length, 0, "User A cache must be cleared cleanly");
+    assert.equal((await loadOfflineQueue()).length, 0, "User A queue must be cleared cleanly");
+    assert.equal(getMemoryCachedWorkspace(), null);
 
-    // 2. Concurrent saveSession(B) followed by clearSession() -> ends null cleanly
-    await Promise.all([
+    // Seed B cache & queue then verify stale same-user/foreign expectedGen never wipes B cache/queue
+    await saveCachedWorkspace({
+      user_id: "mob-c13-b",
+      items: [{ id: "keep-b-1", url: "https://b.test/1", title: "Keep B" }],
+      folders: [],
+      reminders: [],
+    });
+    await enqueueOfflineItem({ url: "https://b.test/q1", title: "QB1" });
+    const okStaleB = await saveSession(
+      {
+        access_token: makeFakeJwtC13("mob-c13-a"),
+        refresh_token: "ref-c13-a2x",
+        user: { id: "mob-c13-a", email: "c13a@mob.test" },
+      },
+      { expectedGen: genA },
+    );
+    assert.equal(okStaleB, false);
+    assert.equal((await loadCachedWorkspace()).items[0]?.id, "keep-b-1");
+    assert.equal((await loadOfflineQueue()).length, 1);
+
+    // 2. Concurrent saveSession(B) followed by clearSession() -> aborts save and wipes cache/queue cleanly
+    const [okSaveBeforeClear] = await Promise.all([
       saveSession({
         access_token: makeFakeJwtC13("mob-c13-b"),
         refresh_token: "ref-c13-b2",
@@ -1378,10 +1442,14 @@ test("Cycle 13: FIFO auth storage serialization prevents saveSession/clearSessio
       }),
       clearSession(),
     ]);
+    assert.equal(okSaveBeforeClear, false, "saveSession raced by synchronous clearSession must abort cleanly");
     assert.equal(await loadSession(), null, "Concurrent saveSession + clearSession must end cleared");
+    assert.equal(stdMap.get("jsi_mobile_cache"), undefined, "Cache key must be deleted after concurrent clearSession");
+    assert.equal(stdMap.get("jsi_mobile_offline_queue"), undefined, "Queue key must be deleted after concurrent clearSession");
+    assert.equal(getMemoryCachedWorkspace(), null);
 
     // 3. Concurrent clearSession() followed by saveSession(B) -> User B survives
-    await Promise.all([
+    const [, okBAfterClear] = await Promise.all([
       clearSession(),
       saveSession({
         access_token: makeFakeJwtC13("mob-c13-b"),
@@ -1389,6 +1457,7 @@ test("Cycle 13: FIFO auth storage serialization prevents saveSession/clearSessio
         user: { id: "mob-c13-b", email: "c13b@mob.test" },
       }),
     ]);
+    assert.equal(okBAfterClear, true);
     assert.equal((await loadSession())?.user?.id, "mob-c13-b", "Concurrent clearSession + saveSession(B) must keep User B");
 
     // 4. Stale User A submitted first under Promise.all followed immediately by User B -> User B finishes intact
@@ -1417,7 +1486,117 @@ test("Cycle 13: FIFO auth storage serialization prevents saveSession/clearSessio
     assert.equal(okA2, true);
     assert.equal(okB2, true);
     assert.equal((await loadSession())?.user?.id, "mob-c13-b");
-  } finally {
+
+    // 5. HIGH-1: concurrent enqueueOfflineItem RMW safety & saveCachedWorkspace vs clearSession / cross-user isolation
+    await Promise.all([
+      enqueueOfflineItem({ url: "https://rmw.mob/1", title: "R1" }),
+      enqueueOfflineItem({ url: "https://rmw.mob/2", title: "R2" }),
+    ]);
+    assert.equal((await loadOfflineQueue("mob-c13-b")).length, 2, "Concurrent enqueueOfflineItem calls must not lose items");
+
+    await Promise.all([
+      saveCachedWorkspace({
+        user_id: "mob-c13-b",
+        items: [{ id: "resurrect-check", url: "https://rc.mob", title: "RC" }],
+        folders: [],
+        reminders: [],
+      }),
+      clearSession(),
+    ]);
+    assert.equal(stdMap.get("jsi_mobile_cache"), undefined, "Concurrent saveCachedWorkspace + clearSession must not resurrect cache");
+    assert.equal(getMemoryCachedWorkspace(), null);
+
+    // 6. HIGH-2: slow loginWithPassword & completeOAuthWithTokens aborted cleanly by clearSession / newer login
+    let resolveSlowPwd = null;
+    globalThis.fetch = (url) => {
+      if (String(url).includes("/auth/v1/token?grant_type=password")) {
+        return new Promise((r) => { resolveSlowPwd = r; });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: async () => "{}" });
+    };
+    const pwdTask = loginWithPassword("slow@mob.test", "secret123");
+    await new Promise((r) => setTimeout(r, 15));
     await clearSession();
+    resolveSlowPwd({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        access_token: makeFakeJwtC13("mob-resurrect-pwd"),
+        refresh_token: "r-res",
+        user: { id: "mob-resurrect-pwd", email: "slow@mob.test" },
+      }),
+    });
+    const pwdRes = await pwdTask;
+    assert.equal(pwdRes.ok, false, "Slow loginWithPassword raced by clearSession must fail closed");
+    assert.equal(await loadSession(), null);
+
+    let resolveSlowOauthUser = null;
+    globalThis.fetch = () => new Promise((r) => { resolveSlowOauthUser = r; });
+    const oauthSlowTask = completeOAuthWithTokens(makeFakeJwtC13("mob-slow-oauth"), "ref-so");
+    await new Promise((r) => setTimeout(r, 15));
+    globalThis.fetch = async () => ({ ok: false, status: 401, text: async () => "{}" });
+    await loginWithPassword("b@mob.test", "pw");
+    resolveSlowOauthUser({ ok: true, status: 200, text: async () => '{"id":"mob-slow-oauth","email":"so@mob.test"}' });
+    const oauthSlowRes = await oauthSlowTask;
+    assert.equal(oauthSlowRes.ok, false, "Slow OAuth completion superseded by newer login must fail closed");
+
+    // 7. MEDIUM-1: refreshSession passes expectedRefreshToken so same-user re-login token is never overwritten
+    await clearSession();
+    await saveSession({
+      access_token: makeFakeJwtC13("mob-same-u"),
+      refresh_token: "ref-same-old",
+      user: { id: "mob-same-u", email: "same@mob.test" },
+    });
+    let resolveSlowRefSame = null;
+    globalThis.fetch = (url) => {
+      if (String(url).includes("grant_type=refresh_token")) {
+        return new Promise((r) => { resolveSlowRefSame = r; });
+      }
+      return Promise.resolve({ ok: true, status: 200, text: async () => "{}" });
+    };
+    const sameRefTask = refreshSession();
+    await new Promise((r) => setTimeout(r, 15));
+    await saveSession({
+      access_token: makeFakeJwtC13("mob-same-u"),
+      refresh_token: "ref-same-new",
+      user: { id: "mob-same-u", email: "same@mob.test" },
+    });
+    resolveSlowRefSame({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        access_token: makeFakeJwtC13("mob-same-u"),
+        refresh_token: "ref-same-stale-rotated",
+        user: { id: "mob-same-u", email: "same@mob.test" },
+      }),
+    });
+    assert.equal(await sameRefTask, false, "Stale refreshSession must abort behind newer same-user refresh_token");
+    assert.equal((await loadSession())?.refresh_token, "ref-same-new");
+
+    // 8. LOW-1: logoutAccount on opaque session uses skipRetry (zero refresh attempt) and clears cleanly on 401
+    await clearSession();
+    await saveSession({
+      access_token: "opaque-broken-token",
+      refresh_token: "ref-opaque-live",
+      user: null,
+    });
+    let refreshAttemptedDuringLogout = false;
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("grant_type=refresh_token")) {
+        refreshAttemptedDuringLogout = true;
+      }
+      if (u.includes("/api/auth/logout")) {
+        return { ok: false, status: 401, text: async () => '{"detail":"expired"}' };
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    };
+    await logoutAccount();
+    assert.equal(refreshAttemptedDuringLogout, false, "logoutAccount must pass skipRetry: true and never refresh during logout");
+    assert.equal(await loadSession(), null, "logoutAccount must clear opaque session even after 401");
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+    __setStorageBackendsForTests(null);
   }
 });
