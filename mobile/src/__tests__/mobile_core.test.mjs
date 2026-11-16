@@ -1594,6 +1594,68 @@ test("Cycle 13: FIFO auth storage serialization, simulated IPC jitter, cache/que
     await logoutAccount();
     assert.equal(refreshAttemptedDuringLogout, false, "logoutAccount must pass skipRetry: true and never refresh during logout");
     assert.equal(await loadSession(), null, "logoutAccount must clear opaque session even after 401");
+
+    // 9. Cycle 14 CHRIS HIGH-1: logoutAccount clears session after mid-flight same-user rotation,
+    // while preserving cross-user (identified -> opaque user:null & signed-out -> opaque user:null) switches
+    await clearSession();
+    const makeJwtSeq = (sub, seq) => {
+      const body = btoa(JSON.stringify({ sub, seq })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      return `eyJhbGciOiJIUzI1NiJ9.${body}.sig${seq}`;
+    };
+    const setupDeferredLogoutFetch = () => {
+      let resolveResp = null;
+      let notifyStarted = null;
+      const started = new Promise((r) => { notifyStarted = r; });
+      globalThis.fetch = (url) => {
+        if (String(url).includes("/api/auth/logout")) {
+          if (notifyStarted) notifyStarted();
+          return new Promise((r) => { resolveResp = r; });
+        }
+        return Promise.resolve({ ok: true, status: 200, text: async () => "{}" });
+      };
+      return { started, resolve: (res) => resolveResp(res) };
+    };
+
+    await saveSession({
+      access_token: makeJwtSeq("mob-rot-a", 1),
+      refresh_token: "ref-rot-1",
+      user: { id: "mob-rot-a", email: "rota@mob.test" },
+    });
+    const rotFetch = setupDeferredLogoutFetch();
+    const rotLogoutTask = logoutAccount();
+    await rotFetch.started;
+    await saveSession({
+      access_token: makeJwtSeq("mob-rot-a", 2),
+      refresh_token: "ref-rot-2",
+      user: { id: "mob-rot-a", email: "rota@mob.test" },
+    });
+    rotFetch.resolve({ ok: false, status: 401, text: async () => '{"detail":"old token rotated"}' });
+    await rotLogoutTask;
+    assert.equal(await loadSession(), null, "Same-user token rotation mid-logout must still clear session cleanly");
+
+    // Identified user switching mid-logout to opaque user:null B must preserve B
+    await saveSession({
+      access_token: makeFakeJwtC13("mob-id-a"),
+      refresh_token: "ref-ida",
+      user: { id: "mob-id-a", email: "ida@mob.test" },
+    });
+    const opaqueFetch = setupDeferredLogoutFetch();
+    const opaqueSwitchTask = logoutAccount();
+    await opaqueFetch.started;
+    await saveSession({ access_token: "opaque-switch-b", refresh_token: "ref-opb", user: null });
+    opaqueFetch.resolve({ ok: true, status: 200, text: async () => "{}" });
+    await opaqueSwitchTask;
+    assert.equal((await loadSession())?.access_token, "opaque-switch-b", "Identified -> opaque B mid-logout must preserve opaque User B");
+
+    // Signed-out logout racing opaque user:null B sign-in must preserve B
+    await clearSession();
+    const guestOpaqueFetch = setupDeferredLogoutFetch();
+    const guestOpaqueTask = logoutAccount();
+    await guestOpaqueFetch.started;
+    await saveSession({ access_token: "opaque-guest-b", refresh_token: "ref-ogb", user: null });
+    guestOpaqueFetch.resolve({ ok: false, status: 401, text: async () => "{}" });
+    await guestOpaqueTask;
+    assert.equal((await loadSession())?.access_token, "opaque-guest-b", "Signed-out -> opaque B mid-logout must preserve opaque User B");
   } finally {
     globalThis.fetch = origFetch;
     await clearSession();

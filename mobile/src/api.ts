@@ -1037,11 +1037,10 @@ export async function logoutAccount(): Promise<void> {
     return;
   }
   const latestUid = resolveSessionUserId(latestSession);
-  if (
-    (startUid && latestUid && latestUid !== startUid) ||
-    (!startUid && latestUid) ||
-    (startAccessToken && latestSession.access_token && latestSession.access_token !== startAccessToken)
-  ) {
+  const switchedUser = startUid
+    ? latestUid !== startUid
+    : Boolean(latestUid) || (latestSession.access_token || "") !== startAccessToken;
+  if (switchedUser) {
     return;
   }
   await clearSession();
