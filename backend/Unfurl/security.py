@@ -22,7 +22,7 @@ import urllib.parse
 from fastapi import Header, HTTPException, status
 import httpx
 
-from Ai.content_extractor import DEFAULT_TIMEOUT_SEC, USER_AGENT, validate_safe_url
+from Ai.content_extractor import DEFAULT_TIMEOUT_SEC, USER_AGENT, _host_matches, validate_safe_url
 
 try:
     from selectolax.lexbor import LexborHTMLParser as HTMLParser
@@ -258,6 +258,15 @@ def validate_embed_url(embed_type: Optional[str], embed_url: Optional[str]) -> O
     return candidate
 
 
+META_CRAWLER_USER_AGENT = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+_META_CRAWLER_DOMAINS = ("facebook.com", "fb.watch", "instagram.com", "fbsbx.com")
+
+
+def is_meta_crawler_ua_enabled() -> bool:
+    """Return True only when ALLOW_META_CRAWLER_UA is explicitly opted in via environment."""
+    return os.getenv("ALLOW_META_CRAWLER_UA", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
 async def stream_fetch_limited(
     url: str,
     max_bytes: int,
@@ -273,12 +282,14 @@ async def stream_fetch_limited(
 
     async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=False) as client:
         for _ in range(max_redirects + 1):
+            cur_host = (urllib.parse.urlparse(current_url).hostname or "").lower()
+            use_meta_ua = is_meta_crawler_ua_enabled() and _host_matches(cur_host, _META_CRAWLER_DOMAINS)
+            custom_meta_ua = os.getenv("META_CRAWLER_USER_AGENT", "").strip() or META_CRAWLER_USER_AGENT
             req_headers = {
-                "User-Agent": USER_AGENT,
+                "User-Agent": custom_meta_ua if use_meta_ua else USER_AGENT,
                 "Accept-Language": "th,en-US;q=0.9,en;q=0.8",
             }
-            cur_host = (urllib.parse.urlparse(current_url).hostname or "").lower()
-            if cur_host in ("youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be") or cur_host.endswith(".youtube.com"):
+            if _host_matches(cur_host, ("youtube.com", "youtu.be")):
                 req_headers["Cookie"] = "CONSENT=YES+cb; SOCS=CAISHAgBEhJnd3NfMjAyMzA4MTAtMF9SQzIaAmVuIAEaBgiAo_CmBg"
             async with client.stream("GET", current_url, headers=req_headers) as resp:
                 if resp.status_code in (301, 302, 303, 307, 308):

@@ -2033,3 +2033,321 @@ async def test_facebook_video_embed_redirect_and_private_detection(hermetic_isol
     assert fb_priv.platform == "facebook"
     assert fb_priv.preview_status == "private_or_restricted"
     assert fb_priv.embed_url is None
+
+
+@pytest.mark.asyncio
+async def test_meta_crawler_ua_ig_embed_fallback_and_fb_400_restricted(hermetic_isolation, monkeypatch):
+    """Fixes #2 & #5: Meta crawler UA applies per-hop to Meta domains only; IG falls back to /embed/captioned/; FB 400 & empty shell become private_or_restricted."""
+    from Ai.content_extractor import USER_AGENT
+    from Unfurl.security import META_CRAWLER_USER_AGENT
+
+    monkeypatch.delenv("META_OEMBED_ACCESS_TOKEN", raising=False)
+    seen_uas: List[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_uas.append((request.url.host, request.headers.get("User-Agent", "")))
+        host = request.url.host
+        path = request.url.path
+        if host == "www.instagram.com" and path == "/reels/ReelLogin123/":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><head><title>Instagram</title></head></html>",
+                request=request,
+            )
+        if host == "www.instagram.com" and path == "/reel/ReelLogin123/embed/captioned/":
+            embed_html = (
+                "<html><body><div class='Embed'>"
+                "<div class='Header'>"
+                "<a class='Avatar'><img src='https://scontent.cdninstagram.com/profile_pic.jpg'></a>"
+                "<span class='UsernameText'>chef_bkk</span>"
+                "</div>"
+                "<div class='Content'>"
+                "<img class='EmbeddedMediaImage' src='https://scontent.cdninstagram.com/reel_cover_real.jpg'>"
+                "</div>"
+                "<div class='Caption'>"
+                "<a class='CaptionUsername'>chef_bkk</a><br><br>Pad Kra Pao recipe 101"
+                "<div class='CaptionComments'><a>View all 99 comments</a></div>"
+                "</div>"
+                "<div class='HoverCard'><div class='HoverCardPhotos'>"
+                "<img src='https://scontent.cdninstagram.com/other_profile_photo.jpg'>"
+                "</div></div>"
+                "</div></body></html>"
+            )
+            return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, text=embed_html, request=request)
+        if host == "www.instagram.com" and path == "/reel/DeletedThai1/":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><head><title>Instagram</title></head></html>",
+                request=request,
+            )
+        if host == "www.instagram.com" and path == "/reel/DeletedThai1/embed/captioned/":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text="<html><body><div>ลิงก์ไปยังรูปภาพหรือวิดีโอนี้อาจเสียหายหรือโพสต์อาจถูกลบออกไปแล้ว</div></body></html>",
+                request=request,
+            )
+        if host == "www.facebook.com" and path == "/blocked/posts/400":
+            return httpx.Response(400, text="Bad Request", request=request)
+        if host == "www.facebook.com" and path == "/reel/999000111222":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><head><title>Facebook</title></head><body></body></html>",
+                request=request,
+            )
+        if host == "l.facebook.com":
+            return httpx.Response(
+                302,
+                headers={"location": "https://blog.example.com/post"},
+                request=request,
+            )
+        if host == "blog.example.com":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><head><title>External Blog</title></head></html>",
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+
+    # 1. IG /reels/CODE/ bare shell falls back to /reel/CODE/embed/captioned/, ignores Avatar/HoverCardPhotos, & collapses duplicate title to owner name
+    ig_res = await extract_unfurl_metadata("https://www.instagram.com/reels/ReelLogin123/")
+    assert ig_res.platform == "instagram"
+    assert ig_res.content_type == "video"
+    assert ig_res.preview_status == "ok"
+    assert ig_res.embed_url == "https://www.instagram.com/reel/ReelLogin123/embed"
+    assert ig_res.title == "@chef_bkk"
+    assert ig_res.description == "Pad Kra Pao recipe 101"
+    assert "View all 99 comments" not in (ig_res.description or "")
+    assert ig_res.media_items == ["https://scontent.cdninstagram.com/reel_cover_real.jpg"]
+
+    # 2. Broken IG embed in Thai -> private_or_restricted + embed cleared
+    ig_del = await extract_unfurl_metadata("https://www.instagram.com/reel/DeletedThai1/")
+    assert ig_del.preview_status == "private_or_restricted"
+    assert ig_del.embed_url is None
+
+    # 3. Facebook HTTP 400 and bare Facebook shell -> private_or_restricted + embed cleared
+    fb_400 = await extract_unfurl_metadata("https://www.facebook.com/blocked/posts/400")
+    assert fb_400.platform == "facebook"
+    assert fb_400.preview_status == "private_or_restricted"
+    assert fb_400.embed_url is None
+
+    fb_shell = await extract_unfurl_metadata("https://www.facebook.com/reel/999000111222")
+    assert fb_shell.platform == "facebook"
+    assert fb_shell.preview_status == "private_or_restricted"
+    assert fb_shell.embed_url is None
+
+    # 4. Default (ALLOW_META_CRAWLER_UA=false) sends standard USER_AGENT; opt-in (ALLOW_META_CRAWLER_UA=true) sends META_CRAWLER_USER_AGENT on Meta hops only
+    seen_uas.clear()
+    ext_default = await extract_unfurl_metadata("https://l.facebook.com/l.php?u=https%3A%2F%2Fblog.example.com%2Fpost")
+    assert ext_default.title == "External Blog"
+    assert ("l.facebook.com", USER_AGENT) in seen_uas
+    assert ("blog.example.com", USER_AGENT) in seen_uas
+
+    monkeypatch.setenv("ALLOW_META_CRAWLER_UA", "true")
+    seen_uas.clear()
+    ext_opt_in = await extract_unfurl_metadata("https://l.facebook.com/l.php?u=https%3A%2F%2Fblog.example.com%2Fpost")
+    assert ext_opt_in.title == "External Blog"
+    assert ("l.facebook.com", META_CRAWLER_USER_AGENT) in seen_uas
+    assert ("blog.example.com", USER_AGENT) in seen_uas
+
+
+@pytest.mark.asyncio
+async def test_enrich_item_preserves_existing_extension_media_on_empty_or_single_unfurl(
+    hermetic_isolation, mock_db, monkeypatch
+):
+    """Fix #1: enrich_item preserves Extension DOM Assist media when server unfurl returns 0 images or fewer Meta images."""
+    monkeypatch.delenv("META_OEMBED_ACCESS_TOKEN", raising=False)
+    jpeg_bytes = make_gradient_noise_jpeg_bytes(900, 600)
+
+    # Case A: IG post saved with 3 DOM Assist images; server gets HTTP 403 -> images kept & Cover #1 uploaded to WebP
+    ig_url = "https://www.instagram.com/p/ExtAlbum3/"
+    ig_hash = compute_url_hash(ig_url)
+    dom_imgs_a = [
+        "https://scontent.cdninstagram.com/slide1.jpg",
+        "https://scontent.cdninstagram.com/slide2.jpg",
+        "https://scontent.cdninstagram.com/slide3.jpg",
+    ]
+    mock_db.tables["items"].append(
+        {
+            "id": "item-ext-ig-a",
+            "owner_id": "usr-ext",
+            "url": ig_url,
+            "canonical_url": ig_url,
+            "url_hash": ig_hash,
+            "title": "Saved Carousel from Extension",
+            "description": "DOM caption",
+            "image_url": dom_imgs_a[0],
+            "media_items": list(dom_imgs_a),
+            "platform": "instagram",
+            "enrich_status": "pending",
+        }
+    )
+
+    def handler_a(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "www.instagram.com":
+            return httpx.Response(403, text="Forbidden", request=request)
+        if str(request.url) == dom_imgs_a[0]:
+            return httpx.Response(200, headers={"content-type": "image/jpeg"}, content=jpeg_bytes, request=request)
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler_a)
+    out_a = await enrich_item(mock_db, "item-ext-ig-a")
+    expected_webp_a = f"https://storage.example.com/storage/v1/object/public/thumbnails/thumbnails/{ig_hash}.webp"
+    assert out_a["item"]["image_url"] == expected_webp_a
+    assert out_a["item"]["media_items"] == [expected_webp_a, dom_imgs_a[1], dom_imgs_a[2]]
+    assert out_a["item"]["enrich_error"] is None
+
+    # Case B: FB post saved with 4 DOM Assist images; server returns only 1 og:image -> all 4 preserved
+    fb_url = "https://www.facebook.com/page/posts/album4"
+    fb_hash = compute_url_hash(fb_url)
+    dom_imgs_b = [f"https://scontent.xx.fbcdn.net/p{i}.jpg" for i in range(1, 5)]
+    og_fb_cover = "https://scontent.xx.fbcdn.net/og_cover.jpg"
+    mock_db.tables["items"].append(
+        {
+            "id": "item-ext-fb-b",
+            "owner_id": "usr-ext",
+            "url": fb_url,
+            "canonical_url": fb_url,
+            "url_hash": fb_hash,
+            "title": fb_url,
+            "image_url": None,
+            "media_items": list(dom_imgs_b),
+            "platform": "facebook",
+            "enrich_status": "pending",
+        }
+    )
+
+    def handler_b(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "www.facebook.com":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    "<html><head>"
+                    '<meta property="og:title" content="FB Page Album">'
+                    '<meta property="og:description" content="Four photos">'
+                    f'<meta property="og:image" content="{og_fb_cover}">'
+                    "</head></html>"
+                ),
+                request=request,
+            )
+        if str(request.url) == og_fb_cover:
+            return httpx.Response(200, headers={"content-type": "image/jpeg"}, content=jpeg_bytes, request=request)
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler_b)
+    out_b = await enrich_item(mock_db, "item-ext-fb-b")
+    expected_webp_b = f"https://storage.example.com/storage/v1/object/public/thumbnails/thumbnails/{fb_hash}.webp"
+    assert out_b["item"]["title"] == "FB Page Album"
+    assert out_b["item"]["image_url"] == expected_webp_b
+    assert out_b["item"]["media_items"] == [expected_webp_b, dom_imgs_b[1], dom_imgs_b[2], dom_imgs_b[3]]
+
+    # Case C: Same-user cached donor with 0 images must not wipe Extension DOM Assist images on new item,
+    # while Cross-user social donor (usr-a) must NEVER leak to usr-b!
+    cache_url = "https://www.instagram.com/p/EmptyDonorCase/"
+    cache_hash = compute_url_hash(cache_url)
+    mock_db.tables["items"].extend(
+        [
+            {
+                "id": "item-donor-private-usr-a",
+                "owner_id": "usr-a",
+                "url": cache_url,
+                "canonical_url": cache_url,
+                "url_hash": cache_hash,
+                "title": "Private DOM Title from User A",
+                "description": "Secret friends-only caption from User A",
+                "image_url": "https://scontent.cdninstagram.com/secret_a.jpg",
+                "media_items": ["https://scontent.cdninstagram.com/secret_a.jpg"],
+                "platform": "instagram",
+                "enrich_status": "unfurled",
+                "unfurled_at": datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                "id": "item-donor-empty-usr-b",
+                "owner_id": "usr-b",
+                "url": cache_url,
+                "canonical_url": cache_url,
+                "url_hash": cache_hash,
+                "title": "User B Earlier Title",
+                "image_url": None,
+                "media_items": [],
+                "platform": "instagram",
+                "enrich_status": "unfurled",
+                "unfurled_at": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+            },
+            {
+                "id": "item-target-ext",
+                "owner_id": "usr-b",
+                "url": cache_url,
+                "canonical_url": cache_url,
+                "url_hash": cache_hash,
+                "title": "Target Ext",
+                "image_url": "https://scontent.cdninstagram.com/kept1.jpg",
+                "media_items": [
+                    "https://scontent.cdninstagram.com/kept1.jpg",
+                    "https://scontent.cdninstagram.com/kept2.jpg",
+                ],
+                "platform": "instagram",
+                "enrich_status": "pending",
+            },
+        ]
+    )
+    out_c = await enrich_item(mock_db, "item-target-ext", force_refresh=False)
+    assert out_c["cached"] is True
+    # Must NOT have leaked User A's secret caption or image!
+    assert out_c["item"].get("description") != "Secret friends-only caption from User A"
+    assert out_c["item"]["image_url"] == "https://scontent.cdninstagram.com/kept1.jpg"
+    assert out_c["item"]["media_items"] == [
+        "https://scontent.cdninstagram.com/kept1.jpg",
+        "https://scontent.cdninstagram.com/kept2.jpg",
+    ]
+
+
+def test_social_engagement_stripping_and_duplicate_title_collapse():
+    """Part 1: Strips view/reaction/like/comment counts on FB/IG/TikTok and collapses duplicate title to post owner name."""
+    # 1. Facebook video with view/share counts and identical title/description
+    fb_res = UnfurlResult(
+        url="https://www.facebook.com/watch/?v=10155278547321729",
+        canonical_url="https://www.facebook.com/watch/?v=10155278547321729",
+        url_hash=compute_url_hash("https://www.facebook.com/watch/?v=10155278547321729"),
+        title="ยอดดู 75 ล้าน ครั้ง · แชร์ 1.4 แสน ครั้ง | Today, we remember what was on our minds in 2016. | Mark Zuckerberg | Facebook",
+        description="Today, we remember what was on our minds in 2016.",
+        platform="facebook",
+        content_type="video",
+    ).finalized()
+    assert fb_res.title == "Mark Zuckerberg"
+    assert fb_res.description == "Today, we remember what was on our minds in 2016."
+    assert "ยอดดู" not in (fb_res.title or "")
+
+    # 2. Instagram post with 60M likes/4M comments prefix and duplicate caption
+    ig_res = UnfurlResult(
+        url="https://www.instagram.com/p/BsOGulcndj-/",
+        canonical_url="https://www.instagram.com/p/BsOGulcndj-/",
+        url_hash=compute_url_hash("https://www.instagram.com/p/BsOGulcndj-/"),
+        title='Just An Egg 🥚 บน Instagram: "Let’s set a world record together and get the most liked post"',
+        description='60M likes, 4M comments - world_record_egg บน January 4, 2019: "Let’s set a world record together and get the most liked post on Instagram!"',
+        platform="instagram",
+        content_type="post",
+    ).finalized()
+    assert ig_res.title == "Just An Egg 🥚 (@world_record_egg)"
+    assert ig_res.description == "Let’s set a world record together and get the most liked post on Instagram!"
+    assert "60M likes" not in (ig_res.description or "")
+
+    # 3. TikTok video with truncated title caption duplicating full description caption
+    tt_res = UnfurlResult(
+        url="https://www.tiktok.com/@scout2015/video/6718335390845095173",
+        canonical_url="https://www.tiktok.com/@scout2015/video/6718335390845095173",
+        url_hash=compute_url_hash("https://www.tiktok.com/@scout2015/video/6718335390845095173"),
+        title="Scout, Suki & Stella: Scramble up ur name & I’ll try to guess it",
+        description="@scout2015 — Scramble up ur name & I’ll try to guess it #foryoupage #petsoftiktok",
+        platform="tiktok",
+        content_type="video",
+    ).finalized()
+    assert tt_res.title == "Scout, Suki & Stella (@scout2015)"
+    assert tt_res.description == "Scramble up ur name & I’ll try to guess it #foryoupage #petsoftiktok"

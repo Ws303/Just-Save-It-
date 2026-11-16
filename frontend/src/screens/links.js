@@ -56,6 +56,214 @@ function getPreviewMediaImages(item) {
     .filter(Boolean);
 }
 
+const FB_STATS_SEG_RE =
+  /(?:\d|แสน|ล้าน|พัน|หมื่น).*(?:ยอดดู|รับชม|ความรู้สึก|ถูกใจ|ความคิดเห็น|คอมเมนต์|แชร์|ผู้ติดตาม|คนกำลังพูดถึง|views?|reactions?|likes?|comments?|shares?|followers?)|(?:ยอดดู|รับชม|ความรู้สึก|ถูกใจ|ความคิดเห็น|คอมเมนต์|แชร์|ผู้ติดตาม|views?|reactions?|likes?|comments?|shares?).*(?:\d|แสน|ล้าน|พัน|หมื่น)/i;
+const FB_INLINE_STATS_TH_RE =
+  /(?:(?<=\.\s)|^)(?:ผู้ติดตาม|ถูกใจ)\s*[\d,.]+\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*คน(?:\s*·\s*[\d,.]+\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*คน[^\s.]*)*\.?\s*/gi;
+const FB_INLINE_STATS_EN_RE =
+  /(?:(?<=\.\s)|^)[\d,.]+[KMBkmb]?\s+(?:likes?|followers?)(?:\s*·\s*[\d,.]+[KMBkmb]?\s+(?:talking about this|were here|followers?))*\.?\s*/gi;
+const IG_OG_TITLE_RE = /^(.+?)\s+(?:on|บน)\s+Instagram:\s*["“”]?([\s\S]+?)["“”]?\s*$/i;
+const IG_OG_DESC_RE =
+  /^(?:[\d,.]+[KMBkmb]?\s*(?:likes?|comments?)|(?:ถูกใจ|ความคิดเห็น)\s*[^,-]+)(?:[\s,·•]+(?:[\d,.]+[KMBkmb]?\s*(?:likes?|comments?)|(?:ถูกใจ|ความคิดเห็น)\s*[^,-]+))*\s*-\s*([A-Za-z0-9._]+)(?:\s+(?:on|บน|เมื่อ)\s+[^:]+)?:\s*["“”]?([\s\S]*?)["“”]?\s*$/i;
+const IG_PROFILE_STATS_RE =
+  /^(?:ผู้ติดตาม\s*[^-]+|[\d,.]+[KMBkmb]?\s*Followers,\s*[\d,.]+[KMBkmb]?\s*Following,\s*[\d,.]+[KMBkmb]?\s*Posts)\s*-\s*/i;
+const TT_META_DESC_RE =
+  /^(?:[\d,.]+[KMBkmb]?\s*Likes?(?:,\s*[\d,.]+[KMBkmb]?\s*Comments?)?\.?\s*|ถูกใจ\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*ครั้ง(?:,\s*ความคิดเห็น\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*รายการ)?\.?\s*)(?:TikTok video from\s+([^:]+):\s*["“”]?([\s\S]+?)["“”]?\s*$|วิดีโอ\s*TikTok\s*จาก\s+([^:]+):\s*["“”]?([\s\S]+?)["“”]?\s*$)?/i;
+
+function extractSocialUrlAuthor(rawUrl, platformLower) {
+  try {
+    const parsed = new URL(String(rawUrl || "").trim());
+    const segs = (parsed.pathname || "").split("/").filter(Boolean);
+    if (!segs.length) return "";
+    const first = segs[0];
+    if (platformLower.includes("tiktok") && first.startsWith("@")) return first;
+    if (
+      platformLower.includes("instagram") &&
+      !["p", "reel", "reels", "tv", "stories", "explore", "share", "accounts"].includes(first.toLowerCase())
+    ) {
+      return first.startsWith("@") ? first : `@${first}`;
+    }
+    if (
+      platformLower.includes("facebook") &&
+      ![
+        "watch",
+        "reel",
+        "reels",
+        "share",
+        "plugins",
+        "photo",
+        "photo.php",
+        "permalink.php",
+        "story.php",
+        "videos",
+        "groups",
+        "events",
+        "login",
+      ].includes(first.toLowerCase())
+    ) {
+      return first;
+    }
+  } catch {}
+  return "";
+}
+
+function normalizeCompareCaption(str) {
+  return String(str || "")
+    .trim()
+    .replace(/^[\s"'“”‘’]+|[\s"'“”‘’….\-]+$/g, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function combineAuthorDisplay(displayAuthor, handleAuthor) {
+  const disp = String(displayAuthor || "").trim();
+  const hnd = String(handleAuthor || "").trim();
+  if (disp && hnd) {
+    const normDisp = disp.replace(/^@/, "").toLowerCase();
+    const normHnd = hnd.replace(/^@/, "").toLowerCase();
+    if (normDisp === normHnd || normDisp.includes(normHnd)) return disp;
+    return `${disp} (${hnd.startsWith("@") ? hnd : `@${hnd}`})`;
+  }
+  return disp || hnd || "";
+}
+
+/**
+ * Strip view/reaction/comment counts from FB/IG/TikTok metadata and collapse duplicate Title into post owner name.
+ */
+export function formatPostDetailTitleAndDesc(item) {
+  const rawTitle = String(item?.title || "").trim();
+  const rawDesc = String(item?.description || "").trim();
+  const rawUrl = String(item?.url || "").trim();
+  const platLower = String(item?.platform || "").toLowerCase();
+  const isFb = platLower.includes("facebook") || rawUrl.includes("facebook.com") || rawUrl.includes("fb.watch");
+  const isIg = platLower.includes("instagram") || rawUrl.includes("instagram.com");
+  const isTt = platLower.includes("tiktok") || rawUrl.includes("tiktok.com");
+
+  if (!isFb && !isIg && !isTt) {
+    const sameNonSocial =
+      rawDesc && normalizeCompareCaption(rawDesc) === normalizeCompareCaption(rawTitle);
+    return {
+      displayTitle: rawTitle || rawUrl,
+      displayDesc: sameNonSocial ? "" : rawDesc,
+    };
+  }
+
+  let t = rawTitle;
+  let d = rawDesc;
+  let displayAuthor = "";
+  let handleAuthor = "";
+
+  if (isFb) {
+    if (t.includes("|")) {
+      const parts = t
+        .split("|")
+        .map((p) => p.trim())
+        .filter(Boolean);
+      while (parts.length > 1 && FB_STATS_SEG_RE.test(parts[0])) {
+        parts.shift();
+      }
+      if (parts.length > 1 && parts[parts.length - 1].toLowerCase() === "facebook") {
+        parts.pop();
+      }
+      if (parts.length >= 2) {
+        displayAuthor = parts[parts.length - 1];
+        t = parts.slice(0, -1).join(" | ").trim() || displayAuthor;
+      } else if (parts.length === 1) {
+        t = parts[0];
+      }
+    }
+    if (d) {
+      if (d.includes("|")) {
+        const dParts = d
+          .split("|")
+          .map((p) => p.trim())
+          .filter(Boolean);
+        while (dParts.length > 1 && FB_STATS_SEG_RE.test(dParts[0])) {
+          dParts.shift();
+        }
+        d = dParts.join(" | ").trim();
+      }
+      d = d.replace(FB_INLINE_STATS_TH_RE, "").replace(FB_INLINE_STATS_EN_RE, "").trim();
+      if (t && d.startsWith(`${t}. `)) {
+        d = d.slice(t.length + 2).trim();
+      }
+    }
+  } else if (isIg) {
+    const mTitle = t.match(IG_OG_TITLE_RE);
+    if (mTitle) {
+      displayAuthor = mTitle[1].trim();
+      const cap = mTitle[2].trim();
+      t = cap ? `${displayAuthor}: ${cap}` : displayAuthor;
+    }
+    if (d) {
+      const mDesc = d.match(IG_OG_DESC_RE);
+      if (mDesc) {
+        handleAuthor = `@${mDesc[1].trim().replace(/^@/, "")}`;
+        d = mDesc[2].trim();
+      } else {
+        d = d.replace(IG_PROFILE_STATS_RE, "").trim();
+      }
+    }
+  } else if (isTt && d) {
+    const mTt = d.match(TT_META_DESC_RE);
+    if (mTt && (mTt[1] || mTt[3])) {
+      displayAuthor = (mTt[1] || mTt[3] || "").trim();
+      d = (mTt[2] || mTt[4] || "").trim();
+    } else {
+      d = d
+        .replace(
+          /^(?:[\d,.]+[KMBkmb]?\s*Likes?(?:,\s*[\d,.]+[KMBkmb]?\s*Comments?)?\.?\s*|ถูกใจ\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*ครั้ง(?:,\s*ความคิดเห็น\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*รายการ)?\.?\s*)/i,
+          ""
+        )
+        .trim();
+    }
+  }
+
+  let tCore = t;
+  let dCore = d;
+  const mTc = t.match(/^([^:\n|]{1,50}):\s+([\s\S]+)$/);
+  if (mTc && !/^https?$/i.test(mTc[1].trim())) {
+    if (!displayAuthor) displayAuthor = mTc[1].trim();
+    tCore = mTc[2].trim();
+  }
+  const mDc = d.match(/^(@[A-Za-z0-9._-]+)\s+[—–-]\s+([\s\S]+)$/);
+  if (mDc) {
+    if (!handleAuthor) handleAuthor = mDc[1].trim();
+    dCore = mDc[2].trim();
+  } else {
+    const mDc2 = d.match(/^([^:\n|—]{1,50})\s+—\s+([\s\S]+)$/);
+    if (mDc2) {
+      if (!displayAuthor) displayAuthor = mDc2[1].trim();
+      dCore = mDc2[2].trim();
+    }
+  }
+
+  const normT = normalizeCompareCaption(tCore);
+  const normD = normalizeCompareCaption(dCore);
+  const isDup =
+    Boolean(normT && normD) &&
+    (normT === normD || (normT.length >= 12 && (normD.startsWith(normT) || normT.startsWith(normD))));
+
+  if (isDup) {
+    const bestCaption = dCore && dCore.length >= tCore.length ? dCore : tCore;
+    const urlAuthor = extractSocialUrlAuthor(rawUrl, isFb ? "facebook" : isIg ? "instagram" : "tiktok");
+    const ownerLabel =
+      combineAuthorDisplay(displayAuthor, handleAuthor) ||
+      urlAuthor ||
+      item?.site_name ||
+      (isIg ? "Instagram" : isFb ? "Facebook" : "TikTok");
+    return {
+      displayTitle: ownerLabel,
+      displayDesc: bestCaption,
+    };
+  }
+
+  return {
+    displayTitle: t || rawTitle || rawUrl,
+    displayDesc: d && normalizeCompareCaption(d) !== normalizeCompareCaption(t) ? d : "",
+  };
+}
+
 /**
  * Derive fallback video embed URL and thumbnail locally when raw URL is a supported video platform
  * (e.g., before backend unfurl enrichment completes).
@@ -66,7 +274,10 @@ export function deriveVideoEmbedInfo(item) {
   let embedUrl = explicitEmbed;
   let thumbUrl = "";
   let platform = item?.platform || "";
-  let isVertical = false;
+  let isVertical = Boolean(
+    explicitEmbed &&
+      (explicitEmbed.includes("tiktok.com/") || /instagram\.com\/(?:reel|tv)\//i.test(explicitEmbed))
+  );
 
   if (rawUrl) {
     try {
@@ -101,6 +312,16 @@ export function deriveVideoEmbedInfo(item) {
           embedUrl = embedUrl || `https://www.tiktok.com/embed/v2/${tm[1]}`;
           platform = platform || "TikTok";
         }
+      } else if (host.includes("instagram.com")) {
+        const igMatch = parsed.pathname.match(/\/(p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i);
+        if (igMatch) {
+          const kind = igMatch[1].toLowerCase() === "reels" ? "reel" : igMatch[1].toLowerCase();
+          if (kind === "reel" || kind === "tv") isVertical = true;
+          if (!embedUrl && kind === "reel") {
+            embedUrl = `https://www.instagram.com/reel/${igMatch[2]}/embed`;
+          }
+          platform = platform || "Instagram";
+        }
       } else if (host.includes("facebook.com") || host === "fb.watch") {
         const pathLower = (parsed.pathname || "").toLowerCase();
         const isFbVideo =
@@ -121,6 +342,12 @@ export function deriveVideoEmbedInfo(item) {
 function withAutoplayParam(embedUrl) {
   try {
     const u = new URL(embedUrl);
+    if (u.hostname.includes("tiktok.com")) {
+      const vidMatch = u.pathname.match(/\/(?:embed\/v2|player\/v1)\/(\d+)/);
+      if (vidMatch) {
+        return `https://www.tiktok.com/player/v1/${vidMatch[1]}?autoplay=1&music_info=0&description=0&rel=0`;
+      }
+    }
     if (
       u.hostname.includes("youtube.com") ||
       u.hostname.includes("youtube-nocookie.com") ||
@@ -137,8 +364,7 @@ function withAutoplayParam(embedUrl) {
 }
 
 /**
- * Spec 1A: Rich Preview rendered strictly inside the 358x186px (15px radius) container.
- * No extra rows are added outside this container.
+ * Spec 1A: Rich Preview rendered inside the preview container, adapting aspect ratio to video/post dimensions.
  */
 export function renderRichPreviewBox(item, uiState = {}, options = {}) {
   const baseBoxClass = options.desktop ? "figma-rich-preview-box is-desktop" : "figma-rich-preview-box";
@@ -181,8 +407,11 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
         </div>
       `;
     }
+    const posterBoxClass = derivedVideo.isVertical
+      ? `${baseBoxClass} has-media is-vertical-video`
+      : `${baseBoxClass} has-media`;
     return `
-      <div class="${baseBoxClass} has-media" data-node-id="319:6103">
+      <div class="${posterBoxClass}" data-node-id="319:6103">
         ${
           singleCover
             ? `<img class="figma-preview-img" src="${escHtml(singleCover)}" alt="${escHtml(item?.title || "")}" />`
@@ -407,6 +636,7 @@ export function renderLinkDetailScreen(state) {
   const isSeen = item.status === "read";
   const backTarget = state.ui.prevScreen === "folderDetail" ? "folderDetail" : "home";
   const sourceLabel = folder?.name ? folder.name : "บันทึกล่าสุด";
+  const { displayTitle, displayDesc } = formatPostDetailTitleAndDesc(item);
 
   return `
     <div class="figma-detail-page" data-node-id="319:6090">
@@ -438,15 +668,15 @@ export function renderLinkDetailScreen(state) {
             target="_blank"
             rel="noopener noreferrer"
           >
-            <span>${escHtml(item.title)}</span>
+            <span>${escHtml(displayTitle)}</span>
             <span class="figma-detail-ext-icon">${icons.externalLink(18)}</span>
           </a>
           <p class="figma-detail-post-meta">
             ${escHtml(item.platform || "Web")} · ${escHtml(item.savedAgo || "เมื่อสักครู่")} · ${escHtml(folder?.name || "ทั่วไป")}
           </p>
           ${
-            item.description && String(item.description).trim() && String(item.description).trim() !== String(item.title || "").trim()
-              ? `<p class="figma-detail-post-desc">${escHtml(item.description)}</p>`
+            displayDesc
+              ? `<p class="figma-detail-post-desc">${escHtml(displayDesc)}</p>`
               : ""
           }
         </div>
@@ -560,6 +790,7 @@ export function renderSavedPreviewScreen(state) {
   const idx = Math.max(0, Math.min(state.ui.previewIndex || 0, pool.length - 1));
   const item = pool[idx];
   const folder = item ? getFolderById(item.folderId) : null;
+  const { displayTitle, displayDesc } = item ? formatPostDetailTitleAndDesc(item) : { displayTitle: "", displayDesc: "" };
 
   return `
     <div class="figma-detail-page">
@@ -579,11 +810,11 @@ export function renderSavedPreviewScreen(state) {
           ${renderRichPreviewBox(item, state.ui)}
           <div class="figma-detail-post-info">
             <h2 class="figma-detail-post-title-link" style="text-decoration:none;cursor:pointer;" data-open-link="${escHtml(item.id)}">
-              ${escHtml(item.title)}
+              ${escHtml(displayTitle)}
             </h2>
             ${
-              item.description && String(item.description).trim() && String(item.description).trim() !== String(item.title || "").trim()
-                ? `<p class="figma-detail-post-desc">${escHtml(item.description)}</p>`
+              displayDesc
+                ? `<p class="figma-detail-post-desc">${escHtml(displayDesc)}</p>`
                 : ""
             }
             <p class="figma-detail-post-meta">${escHtml(item.platform)} · โฟลเดอร์${escHtml(folder?.name || "ทั่วไป")}</p>

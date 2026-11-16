@@ -294,4 +294,46 @@ test("Facebook video embed, 5-image carousel, and private post fallback render p
     ],
   });
   assert.match(carouselHtml, /1\/5/);
+
+  // Vertical video poster keeps is-vertical-video before play, and TikTok uses clean /player/v1/ iframe
+  const { formatPostDetailTitleAndDesc } = await import("../src/screens/links.js");
+  const ttPosterHtml = renderRichPreviewBox(
+    {
+      id: "tt-1",
+      url: "https://www.tiktok.com/@scout2015/video/6718335390845095173",
+      platform: "tiktok",
+      image_url: "https://cdn.example.com/tt-cover.jpg",
+    },
+    { videoPlaying: false }
+  );
+  assert.match(ttPosterHtml, /has-media is-vertical-video/);
+
+  const ttPlayHtml = renderRichPreviewBox(
+    {
+      id: "tt-1",
+      url: "https://www.tiktok.com/@scout2015/video/6718335390845095173",
+      platform: "tiktok",
+    },
+    { videoPlaying: true }
+  );
+  assert.match(ttPlayHtml, /tiktok\.com\/player\/v1\/6718335390845095173\?autoplay=1&(?:amp;)?music_info=0&(?:amp;)?description=0/);
+
+  // Social engagement noise stripped & duplicate title collapses to post owner name
+  const fbClean = formatPostDetailTitleAndDesc({
+    url: "https://www.facebook.com/watch/?v=10155278547321729",
+    platform: "facebook",
+    title: "ยอดดู 75 ล้าน ครั้ง · แชร์ 1.4 แสน ครั้ง | Today, we remember what was on our minds in 2016. | Mark Zuckerberg | Facebook",
+    description: "Today, we remember what was on our minds in 2016.",
+  });
+  assert.equal(fbClean.displayTitle, "Mark Zuckerberg");
+  assert.equal(fbClean.displayDesc, "Today, we remember what was on our minds in 2016.");
+
+  const igClean = formatPostDetailTitleAndDesc({
+    url: "https://www.instagram.com/p/BsOGulcndj-/",
+    platform: "instagram",
+    title: 'Just An Egg 🥚 บน Instagram: "Let’s set a world record together and get the most liked post"',
+    description: '60M likes, 4M comments - world_record_egg บน January 4, 2019: "Let’s set a world record together and get the most liked post on Instagram!"',
+  });
+  assert.equal(igClean.displayTitle, "Just An Egg 🥚 (@world_record_egg)");
+  assert.equal(igClean.displayDesc, "Let’s set a world record together and get the most liked post on Instagram!");
 });

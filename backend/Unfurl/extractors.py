@@ -92,7 +92,7 @@ _TIKTOK_ID_RE = re.compile(r"/(?:video|photo)/(\d+)")
 _VIMEO_ID_RE = re.compile(r"vimeo\.com/(?:video/|channels/[^/]+/)?(\d+)")
 _SPOTIFY_RE = re.compile(r"/(?:intl-[a-z-]+/)?(track|album|playlist|episode|show|artist)/([A-Za-z0-9]+)")
 _X_STATUS_RE = re.compile(r"/(?:status|statuses)/(\d+)")
-_IG_CODE_RE = re.compile(r"/(p|reel|tv)/([A-Za-z0-9_-]+)")
+_IG_CODE_RE = re.compile(r"/(p|reels?|tv)/([A-Za-z0-9_-]+)")
 _FB_VIDEO_PATH_RE = re.compile(r"(?:^|/)(?:watch|videos|reel|reels|share/[vr])(?:/|$)", re.IGNORECASE)
 _SHORT_SHARE_HOSTS = ("fb.watch", "vt.tiktok.com", "vm.tiktok.com", "l.facebook.com", "lm.facebook.com")
 
@@ -100,7 +100,9 @@ _LOGIN_WALL_MARKERS = (
     "log into facebook",
     "log in to facebook",
     "log in or sign up to view",
+    "login • instagram",
     "เข้าสู่ระบบ facebook",
+    "เข้าสู่ระบบ instagram",
     "เข้าสู่ระบบเพื่อดู",
     "you must log in to continue",
 )
@@ -112,8 +114,14 @@ _PRIVATE_UNAVAILABLE_MARKERS = (
     "private video",
     "this account is private",
     "sorry, this content isn't available",
+    "the link to this photo or video may be broken",
+    "the post may have been removed",
     "เนื้อหานี้ไม่พร้อมใช้งาน",
     "ไม่สามารถใช้งานเนื้อหานี้ได้",
+    "ลิงก์ไปยังรูปภาพหรือวิดีโอนี้อาจเสียหาย",
+    "โพสต์อาจถูกลบออกไปแล้ว",
+    "บัญชีนี้เป็นส่วนตัว",
+    "หน้านี้ไม่พร้อมใช้งาน",
 )
 
 
@@ -151,12 +159,232 @@ class UnfurlResult:
         self.title = clean_text_field(self.title, unescape_html=True)
         self.description = clean_text_field(self.description, unescape_html=True)
         self.site_name = clean_text_field(self.site_name, unescape_html=True)
+        if self.platform in ("facebook", "instagram", "tiktok"):
+            self.title, self.description = _sanitize_social_title_and_description(
+                self.title,
+                self.description,
+                self.platform,
+                self.canonical_url or self.url,
+            )
         self.favicon_url = sanitize_external_url(self.favicon_url)
         if self.content_type not in _VALID_CONTENT_TYPES:
             self.content_type = "link"
         if self.preview_status not in ("ok", "private_or_restricted", "no_media"):
             self.preview_status = "ok"
         return self
+
+
+_FB_STATS_SEGMENT_RE = re.compile(
+    r"(?:\d|แสน|ล้าน|พัน|หมื่น).*(?:ยอดดู|รับชม|ความรู้สึก|ถูกใจ|ความคิดเห็น|คอมเมนต์|แชร์|ผู้ติดตาม|คนกำลังพูดถึง|views?|reactions?|likes?|comments?|shares?|followers?)"
+    r"|(?:ยอดดู|รับชม|ความรู้สึก|ถูกใจ|ความคิดเห็น|คอมเมนต์|แชร์|ผู้ติดตาม|views?|reactions?|likes?|comments?|shares?).*(?:\d|แสน|ล้าน|พัน|หมื่น)",
+    re.IGNORECASE,
+)
+_FB_INLINE_PAGE_STATS_TH_RE = re.compile(
+    r"(?:(?<=\.\s)|^)(?:ผู้ติดตาม|ถูกใจ)\s*[\d,.]+\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*คน(?:\s*·\s*[\d,.]+\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*คน[^\s.]*)*\.?\s*",
+    re.IGNORECASE,
+)
+_FB_INLINE_PAGE_STATS_EN_RE = re.compile(
+    r"(?:(?<=\.\s)|^)[\d,.]+[KMBkmb]?\s+(?:likes?|followers?)(?:\s*·\s*[\d,.]+[KMBkmb]?\s+(?:talking about this|were here|followers?))*\.?\s*",
+    re.IGNORECASE,
+)
+_IG_OG_TITLE_RE = re.compile(
+    r"^(.+?)\s+(?:on|บน)\s+Instagram:\s*[\"“”]?([\s\S]+?)[\"“”]?\s*$",
+    re.IGNORECASE,
+)
+_IG_OG_DESC_RE = re.compile(
+    r"^(?:[\d,.]+[KMBkmb]?\s*(?:likes?|comments?)|(?:ถูกใจ|ความคิดเห็น)\s*[^,-]+)"
+    r"(?:[\s,·•]+(?:[\d,.]+[KMBkmb]?\s*(?:likes?|comments?)|(?:ถูกใจ|ความคิดเห็น)\s*[^,-]+))*"
+    r"\s*-\s*([A-Za-z0-9._]+)(?:\s+(?:on|บน|เมื่อ)\s+[^:]+)?:\s*[\"“”]?([\s\S]*?)[\"“”]?\s*$",
+    re.IGNORECASE,
+)
+_IG_PROFILE_STATS_DESC_RE = re.compile(
+    r"^(?:ผู้ติดตาม\s*[^-]+|[\d,.]+[KMBkmb]?\s*Followers,\s*[\d,.]+[KMBkmb]?\s*Following,\s*[\d,.]+[KMBkmb]?\s*Posts)\s*-\s*",
+    re.IGNORECASE,
+)
+_TT_META_DESC_RE = re.compile(
+    r"^(?:[\d,.]+[KMBkmb]?\s*Likes?(?:,\s*[\d,.]+[KMBkmb]?\s*Comments?)?\.?\s*"
+    r"|ถูกใจ\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*ครั้ง(?:,\s*ความคิดเห็น\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*รายการ)?\.?\s*)"
+    r"(?:TikTok video from\s+([^:]+):\s*[\"“”]?([\s\S]+?)[\"“”]?\s*$"
+    r"|วิดีโอ\s*TikTok\s*จาก\s+([^:]+):\s*[\"“”]?([\s\S]+?)[\"“”]?\s*$)?",
+    re.IGNORECASE,
+)
+
+
+def _extract_author_from_social_url(url: str, platform: str) -> Optional[str]:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        segments = [seg for seg in (parsed.path or "").split("/") if seg]
+    except Exception:
+        return None
+    if not segments:
+        return None
+    first = segments[0]
+    if platform == "tiktok" and first.startswith("@"):
+        return first
+    if platform == "instagram" and first.lower() not in ("p", "reel", "reels", "tv", " stories", "explore", "share", "accounts"):
+        return first if first.startswith("@") else f"@{first}"
+    if platform == "facebook" and first.lower() not in (
+        "watch",
+        "reel",
+        "reels",
+        "share",
+        "plugins",
+        "photo",
+        "photo.php",
+        "permalink.php",
+        "story.php",
+        " videos",
+        "videos",
+        "groups",
+        "events",
+        "login",
+    ):
+        return first
+    return None
+
+
+def _normalize_compare_text(val: Optional[str]) -> str:
+    if not val:
+        return ""
+    cleaned = re.sub(r"^[\s\"'“”‘’]+|[\s\"'“”‘’….\-]+$", "", val.strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).lower()
+    return cleaned
+
+
+def _combine_author_labels(display_author: Optional[str], handle_author: Optional[str]) -> Optional[str]:
+    disp = (display_author or "").strip()
+    hnd = (handle_author or "").strip()
+    if disp and hnd:
+        norm_disp = disp.lstrip("@").lower()
+        norm_hnd = hnd.lstrip("@").lower()
+        if norm_disp == norm_hnd or norm_hnd in norm_disp:
+            return disp
+        hnd_fmt = hnd if hnd.startswith("@") else f"@{hnd}"
+        return f"{disp} ({hnd_fmt})"
+    return disp or hnd or None
+
+
+def _sanitize_social_title_and_description(
+    title: Optional[str],
+    description: Optional[str],
+    platform: str,
+    canon_url: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Strip view/reaction/comment counts and collapse duplicate title into post owner name."""
+    t = (title or "").strip() or None
+    d = (description or "").strip() or None
+    display_author: Optional[str] = None
+    handle_author: Optional[str] = None
+
+    if platform == "facebook":
+        if t and "|" in t:
+            parts = [p.strip() for p in t.split("|") if p.strip()]
+            while len(parts) > 1 and _FB_STATS_SEGMENT_RE.search(parts[0]):
+                parts.pop(0)
+            if len(parts) > 1 and parts[-1].lower() == "facebook":
+                parts.pop()
+            if len(parts) >= 2:
+                display_author = parts[-1]
+                t = " | ".join(parts[:-1]).strip() or display_author
+            elif len(parts) == 1:
+                t = parts[0]
+        elif t and _FB_STATS_SEGMENT_RE.search(t) and len(t) < 80:
+            t = None
+
+        if d:
+            if "|" in d:
+                d_parts = [p.strip() for p in d.split("|") if p.strip()]
+                while len(d_parts) > 1 and _FB_STATS_SEGMENT_RE.search(d_parts[0]):
+                    d_parts.pop(0)
+                d = " | ".join(d_parts).strip()
+            d = _FB_INLINE_PAGE_STATS_TH_RE.sub("", d)
+            d = _FB_INLINE_PAGE_STATS_EN_RE.sub("", d)
+            if t and d.startswith(f"{t}. "):
+                d = d[len(t) + 2 :].strip()
+            elif t and d.startswith(f"{t} "):
+                d = d[len(t) :].lstrip(" .-·•").strip()
+
+    elif platform == "instagram":
+        if t:
+            m_title = _IG_OG_TITLE_RE.match(t)
+            if m_title:
+                display_author = m_title.group(1).strip()
+                t_cap = m_title.group(2).strip()
+                t = f"{display_author}: {t_cap}" if t_cap else display_author
+        if d:
+            m_desc = _IG_OG_DESC_RE.match(d)
+            if m_desc:
+                ig_user = m_desc.group(1).strip()
+                handle_author = f"@{ig_user.lstrip('@')}"
+                d_cap = m_desc.group(2).strip()
+                d = d_cap if d_cap else None
+            else:
+                d = _IG_PROFILE_STATS_DESC_RE.sub("", d).strip() or None
+
+    elif platform == "tiktok":
+        if d:
+            m_tt = _TT_META_DESC_RE.match(d)
+            if m_tt and (m_tt.group(1) or m_tt.group(3)):
+                tt_author = (m_tt.group(1) or m_tt.group(3) or "").strip()
+                tt_cap = (m_tt.group(2) or m_tt.group(4) or "").strip()
+                if tt_author and not display_author:
+                    display_author = tt_author
+                if tt_cap:
+                    d = tt_cap
+            else:
+                d = re.sub(
+                    r"^(?:[\d,.]+[KMBkmb]?\s*Likes?(?:,\s*[\d,.]+[KMBkmb]?\s*Comments?)?\.?\s*"
+                    r"|ถูกใจ\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*ครั้ง(?:,\s*ความคิดเห็น\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*รายการ)?\.?\s*)",
+                    "",
+                    d,
+                    flags=re.IGNORECASE,
+                ).strip() or None
+
+    # Extract embedded author prefixes such as "Author: caption" or "@user — caption"
+    t_core = t
+    d_core = d
+    if t:
+        m_tc = re.match(r"^([^:\n|]{1,50}):\s+([\s\S]+)$", t)
+        if m_tc and not m_tc.group(1).strip().lower().startswith(("http", "https")):
+            if not display_author:
+                display_author = m_tc.group(1).strip()
+            t_core = m_tc.group(2).strip()
+    if d:
+        m_dc = re.match(r"^(@[A-Za-z0-9._-]+)\s+[—–-]\s+([\s\S]+)$", d)
+        if m_dc:
+            if not handle_author:
+                handle_author = m_dc.group(1).strip()
+            d_core = m_dc.group(2).strip()
+        else:
+            m_dc2 = re.match(r"^([^:\n|—]{1,50})\s+—\s+([\s\S]+)$", d)
+            if m_dc2:
+                if not display_author:
+                    display_author = m_dc2.group(1).strip()
+                d_core = m_dc2.group(2).strip()
+
+    norm_t = _normalize_compare_text(t_core)
+    norm_d = _normalize_compare_text(d_core)
+    is_dup = False
+    if norm_t and norm_d:
+        if norm_t == norm_d:
+            is_dup = True
+        elif len(norm_t) >= 12 and (norm_d.startswith(norm_t) or norm_t.startswith(norm_d)):
+            is_dup = True
+
+    if is_dup:
+        best_caption = d_core if (d_core and len(d_core) >= len(t_core or "")) else t_core
+        url_author = _extract_author_from_social_url(canon_url, platform)
+        owner_label = (
+            _combine_author_labels(display_author, handle_author)
+            or url_author
+            or ("Instagram" if platform == "instagram" else "Facebook" if platform == "facebook" else "TikTok")
+        )
+        t = owner_label
+        d = best_caption
+
+    return (clean_text_field(t, unescape_html=True) if t else None), (
+        clean_text_field(d, unescape_html=True) if d else None
+    )
 
 
 def _has_marker(text: Optional[str], markers: Tuple[str, ...]) -> bool:
@@ -184,7 +412,7 @@ def _is_short_or_share_url(url: str) -> bool:
     path = (parsed.path or "").lower()
     if _host_matches(host, _SHORT_SHARE_HOSTS):
         return True
-    if _host_matches(host, ("facebook.com",)) and path.startswith("/share/"):
+    if _host_matches(host, ("facebook.com", "instagram.com")) and path.startswith("/share/"):
         return True
     return False
 
@@ -197,10 +425,20 @@ async def _resolve_short_share_url(canon_url: str) -> str:
         _, _, _, final_url = await _fetch_limited_response(canon_url, max_bytes=32768)
         if final_url and _is_safe_http_literal(final_url):
             resolved_canon = canonicalize_url(final_url)
-            resolved_host = (urllib.parse.urlparse(resolved_canon).hostname or "").lower()
-            resolved_path = (urllib.parse.urlparse(resolved_canon).path or "").lower()
-            # Do not replace the original URL if Facebook bounced the bot to /login
-            if "/login" not in resolved_path and resolved_host:
+            parsed_res = urllib.parse.urlparse(resolved_canon)
+            resolved_host = (parsed_res.hostname or "").lower()
+            resolved_path = (parsed_res.path or "").lower()
+            # If Facebook bounced to /login/?next=<real_url>, extract the underlying post/reel URL
+            if "/login" in resolved_path:
+                next_vals = urllib.parse.parse_qs(parsed_res.query or "").get("next") or []
+                if next_vals:
+                    next_candidate = urllib.parse.unquote(next_vals[0]).strip()
+                    if _is_safe_http_literal(next_candidate):
+                        next_canon = canonicalize_url(next_candidate)
+                        next_parsed = urllib.parse.urlparse(next_canon)
+                        if "/login" not in (next_parsed.path or "").lower() and next_parsed.hostname:
+                            return next_canon
+            elif resolved_host:
                 return resolved_canon
     except Exception as exc:
         logger.debug("Short/share redirect resolve skipped for %s: %s", redact_secrets_in_text(canon_url), redact_secrets_in_text(exc))
@@ -358,12 +596,34 @@ def _extract_meta_content(tree: Any, attr_name: str, attr_val: str) -> Optional[
     return clean_text_field(val, unescape_html=True) if val else None
 
 
+def _scrub_generic_platform_title(title: Optional[str], final_url: str) -> Optional[str]:
+    if not title:
+        return None
+    stripped = title.strip()
+    lowered = stripped.lower()
+    parsed_final_host = (urllib.parse.urlparse(final_url).hostname or "").lower()
+    if stripped in ("YouTube", "- YouTube") and (
+        _host_matches(parsed_final_host, ("youtube.com", "youtu.be")) or _YOUTUBE_ID_RE.search(final_url)
+    ):
+        return None
+    if lowered in ("tiktok", "tiktok - make your day") and (
+        _host_matches(parsed_final_host, ("tiktok.com",)) or _TIKTOK_ID_RE.search(final_url)
+    ):
+        return None
+    if lowered == "instagram" and (
+        _host_matches(parsed_final_host, ("instagram.com",)) or _IG_CODE_RE.search(final_url)
+    ):
+        return None
+    return title
+
+
 def _parse_html_metadata(html_text: str, final_url: str) -> Dict[str, Any]:
     """Extract title, description, site_name, favicon, content_type, and <=5 images via selectolax."""
     title: Optional[str] = None
     description: Optional[str] = None
     site_name: Optional[str] = None
     favicon_url: Optional[str] = None
+    og_url: Optional[str] = None
     content_type: str = "link"
     image_candidates: List[Tuple[str, Optional[int], Optional[int]]] = []
 
@@ -384,14 +644,8 @@ def _parse_html_metadata(html_text: str, final_url: str) -> Dict[str, Any]:
                 title = clean_text_field(h1_node.text(strip=True), unescape_html=True)
 
         parsed_final_host = (urllib.parse.urlparse(final_url).hostname or "").lower()
-        if title and title.strip() in ("YouTube", "- YouTube") and (
-            _host_matches(parsed_final_host, ("youtube.com", "youtu.be")) or _YOUTUBE_ID_RE.search(final_url)
-        ):
-            title = None
-        if title and title.strip().lower() in ("tiktok", "tiktok - make your day") and (
-            _host_matches(parsed_final_host, ("tiktok.com",)) or _TIKTOK_ID_RE.search(final_url)
-        ):
-            title = None
+        title = _scrub_generic_platform_title(title, final_url)
+        og_url = sanitize_external_url(_extract_meta_content(tree, "property", "og:url"))
 
         description = (
             _extract_meta_content(tree, "property", "og:description")
@@ -532,7 +786,10 @@ def _parse_html_metadata(html_text: str, final_url: str) -> Dict[str, Any]:
             meta = trafilatura.extract_metadata(html_text)
             if meta is not None:
                 if not title and getattr(meta, "title", None):
-                    title = clean_text_field(meta.title, unescape_html=True)
+                    title = _scrub_generic_platform_title(
+                        clean_text_field(meta.title, unescape_html=True),
+                        final_url,
+                    )
                 if not description and getattr(meta, "description", None):
                     description = clean_text_field(meta.description, unescape_html=True)
                 if not site_name and getattr(meta, "sitename", None):
@@ -549,6 +806,7 @@ def _parse_html_metadata(html_text: str, final_url: str) -> Dict[str, Any]:
         "description": description,
         "site_name": site_name,
         "favicon_url": favicon_url,
+        "og_url": og_url,
         "content_type": content_type,
         "media_items": media_items,
     }
@@ -1008,6 +1266,81 @@ async def _extract_x(canon_url: str, url_hash: str) -> UnfurlResult:
     ).finalized()
 
 
+def _has_ancestor_class(node: Any, blocked_tokens: Tuple[str, ...]) -> bool:
+    parent = getattr(node, "parent", None)
+    while parent is not None:
+        cls_attr = (parent.attributes.get("class") or "").lower()
+        if any(tok in cls_attr for tok in blocked_tokens):
+            return True
+        parent = parent.parent
+    return False
+
+
+def _parse_instagram_embed_captioned(html_text: str, base_url: str) -> Dict[str, Any]:
+    """Extract author, caption, media, and unavailable state from Instagram /embed/captioned/ HTML."""
+    author: Optional[str] = None
+    caption: Optional[str] = None
+    media_items: List[str] = []
+    is_private = False
+
+    if HTMLParser is None or not html_text:
+        return {"author": None, "caption": None, "media_items": [], "is_private": False}
+
+    tree = HTMLParser(html_text)
+    user_node = tree.css_first(".Header .UsernameText") or tree.css_first(".UsernameText")
+    if user_node is not None:
+        author = clean_text_field(user_node.text(strip=True), unescape_html=True)
+
+    cap_node = tree.css_first(".Caption")
+    if cap_node is not None:
+        for rm_node in cap_node.css(".CaptionUsername, .CaptionComments"):
+            rm_node.decompose()
+        caption = clean_text_field(cap_node.text(separator=" ", strip=True), unescape_html=True)
+
+    candidates: List[Tuple[str, Optional[int], Optional[int]]] = []
+    for img_node in tree.css("img.EmbeddedMediaImage, .Content video[poster], .EmbeddedMedia video[poster]"):
+        if _has_ancestor_class(img_node, ("hovercard", "header", "avatar")):
+            continue
+        attrs = img_node.attributes
+        src = attrs.get("poster") or attrs.get("src") or attrs.get("data-src")
+        if not src and attrs.get("srcset"):
+            src = attrs["srcset"].split(",")[0].strip().split(" ")[0]
+        if src:
+            candidates.append((src, _parse_dim_int(attrs.get("width")), _parse_dim_int(attrs.get("height"))))
+
+    media_items = filter_and_cap_images(candidates, base_url=base_url, max_images=MAX_MEDIA_ITEMS)
+
+    if not author and not caption and not media_items:
+        for junk_node in tree.css("script, style"):
+            junk_node.decompose()
+        root_node = tree.body or tree.root
+        vis_text = clean_text_field(root_node.text(separator=" ", strip=True), unescape_html=True) if root_node else None
+        if _has_marker(vis_text, _PRIVATE_UNAVAILABLE_MARKERS):
+            is_private = True
+
+    return {
+        "author": author,
+        "caption": caption,
+        "media_items": media_items,
+        "is_private": is_private,
+    }
+
+
+async def _fetch_instagram_embed_captioned(kind: str, code: str) -> Dict[str, Any]:
+    embed_captioned_url = f"https://www.instagram.com/{kind}/{code}/embed/captioned/"
+    try:
+        status_code, content_type, raw_bytes, final_url = await _fetch_limited_response(embed_captioned_url)
+        if status_code >= 300:
+            return {"is_private": status_code in (401, 403)}
+        if "/login" in (urllib.parse.urlparse(final_url).path or "").lower():
+            return {}
+        html_text = decode_html_bytes(raw_bytes, content_type=content_type)
+        return _parse_instagram_embed_captioned(html_text, final_url or embed_captioned_url)
+    except Exception as exc:
+        logger.debug("Instagram embed/captioned fallback failed for %s/%s: %s", kind, code, redact_secrets_in_text(exc))
+        return {}
+
+
 async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> UnfurlResult:
     token = os.getenv("META_OEMBED_ACCESS_TOKEN", "").strip()
     if token and "your_meta" in token.lower():
@@ -1022,13 +1355,18 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
     preview_status = "ok"
 
     oembed_succeeded = False
+    ig_kind: Optional[str] = None
+    ig_code: Optional[str] = None
+    is_fb_video = False
+    is_unresolved_share = False
     if platform == "instagram":
         ig_match = _IG_CODE_RE.search(urllib.parse.urlparse(canon_url).path or "")
         if ig_match:
-            kind, code = ig_match.group(1), ig_match.group(2)
-            if kind == "reel":
+            raw_kind, ig_code = ig_match.group(1), ig_match.group(2)
+            ig_kind = "reel" if raw_kind == "reels" else raw_kind
+            if ig_kind == "reel":
                 content_type = "video"
-            embed_url = validate_embed_url("instagram", f"https://www.instagram.com/{kind}/{code}/embed")
+            embed_url = validate_embed_url("instagram", f"https://www.instagram.com/{ig_kind}/{ig_code}/embed")
         if token:
             oembed_url = (
                 f"https://graph.facebook.com/v18.0/instagram_oembed"
@@ -1044,17 +1382,21 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
                     images.append(oembed["thumbnail_url"])
     else:
         is_fb_video = _is_facebook_video_url(canon_url)
+        fb_path_lower = (urllib.parse.urlparse(canon_url).path or "").lower()
+        is_unresolved_share = fb_path_lower.startswith("/share/")
         if is_fb_video:
             content_type = "video"
-            embed_url = validate_embed_url(
-                "facebook",
-                f"https://www.facebook.com/plugins/video.php?href={encoded}&show_text=false",
-            )
-        else:
-            embed_url = validate_embed_url(
-                "facebook",
-                f"https://www.facebook.com/plugins/post.php?href={encoded}",
-            )
+        if not is_unresolved_share:
+            if is_fb_video:
+                embed_url = validate_embed_url(
+                    "facebook",
+                    f"https://www.facebook.com/plugins/video.php?href={encoded}&show_text=false",
+                )
+            else:
+                embed_url = validate_embed_url(
+                    "facebook",
+                    f"https://www.facebook.com/plugins/post.php?href={encoded}",
+                )
         if token:
             oembed_endpoint = "oembed_video" if is_fb_video else "oembed_post"
             oembed_url = (
@@ -1077,7 +1419,9 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
             html_meta = await _fetch_generic_html_meta(canon_url)
             meta_title = html_meta.get("title")
             meta_desc = html_meta.get("description")
+            meta_images = html_meta.get("media_items") or []
             meta_final_url = str(html_meta.get("final_url") or "")
+            meta_og_url = html_meta.get("og_url")
             is_strict_private = _has_marker(meta_title, _PRIVATE_UNAVAILABLE_MARKERS) or _has_marker(
                 meta_desc, _PRIVATE_UNAVAILABLE_MARKERS
             )
@@ -1086,9 +1430,20 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
                 or _has_marker(meta_title, _LOGIN_WALL_MARKERS)
                 or _has_marker(meta_desc, _LOGIN_WALL_MARKERS)
             )
-            if is_strict_private:
-                preview_status = "private_or_restricted"
-                embed_url = None
+            is_empty_fb_shell = (
+                platform == "facebook"
+                and not oembed_succeeded
+                and not is_strict_private
+                and not is_login_wall
+                and (meta_title or "").strip().lower() in ("facebook", "facebook - log in or sign up", "")
+                and not meta_desc
+                and not meta_images
+                and (urllib.parse.urlparse(canon_url).path or "/") not in ("", "/")
+            )
+            if is_strict_private or is_empty_fb_shell:
+                if not oembed_succeeded:
+                    preview_status = "private_or_restricted"
+                    embed_url = None
             elif is_login_wall:
                 # Meta bounced server scraper to login wall; scrub junk text.
                 if not embed_url:
@@ -1096,14 +1451,64 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
             else:
                 title = title or meta_title
                 description = description or meta_desc
-                images.extend(html_meta.get("media_items") or [])
+                images.extend(meta_images)
+                if platform == "facebook" and is_unresolved_share and not embed_url and meta_og_url:
+                    og_parsed = urllib.parse.urlparse(meta_og_url)
+                    og_host = (og_parsed.hostname or "").lower()
+                    og_path = (og_parsed.path or "").lower()
+                    if _host_matches(og_host, ("facebook.com",)) and "/login" not in og_path and not og_path.startswith("/share/"):
+                        resolved_is_video = is_fb_video or _is_facebook_video_url(meta_og_url)
+                        if resolved_is_video:
+                            content_type = "video"
+                        og_encoded = urllib.parse.quote(meta_og_url, safe="")
+                        plugin_ep = "video.php?href=" if resolved_is_video else "post.php?href="
+                        suffix = "&show_text=false" if resolved_is_video else ""
+                        embed_url = validate_embed_url(
+                            "facebook",
+                            f"https://www.facebook.com/plugins/{plugin_ep}{og_encoded}{suffix}",
+                        )
         except Exception as exc:
             err_msg = str(exc)
-            if any(code in err_msg for code in ("HTTP 401", "HTTP 403")):
-                preview_status = "private_or_restricted"
-                embed_url = None
+            if any(code in err_msg for code in ("HTTP 401", "HTTP 403")) or (
+                platform == "facebook" and "HTTP 400" in err_msg
+            ):
+                if not oembed_succeeded:
+                    preview_status = "private_or_restricted"
+                    embed_url = None
             elif not oembed_succeeded and not title and not embed_url:
                 raise
+
+    if (
+        platform == "instagram"
+        and ig_kind
+        and ig_code
+        and preview_status != "private_or_restricted"
+        and (not title or not images or not description)
+    ):
+        embed_meta = await _fetch_instagram_embed_captioned(ig_kind, ig_code)
+        if embed_meta.get("is_private") and not oembed_succeeded and not title and not description and not images:
+            preview_status = "private_or_restricted"
+            embed_url = None
+        else:
+            eb_author = embed_meta.get("author")
+            eb_caption = embed_meta.get("caption")
+            eb_images = embed_meta.get("media_items") or []
+            if not title:
+                if eb_author and eb_caption:
+                    title = f"@{eb_author}: {eb_caption[:90]}"
+                elif eb_caption:
+                    title = eb_caption[:100]
+                elif eb_author:
+                    title = f"@{eb_author} on Instagram"
+            if not description:
+                if eb_author and eb_caption:
+                    description = f"@{eb_author} — {eb_caption}"
+                elif eb_caption:
+                    description = eb_caption
+                elif eb_author:
+                    description = f"โพสต์จาก @{eb_author}"
+            if eb_images:
+                images.extend(eb_images)
 
     return UnfurlResult(
         url=canon_url,

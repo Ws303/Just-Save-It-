@@ -3,7 +3,8 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import urllib.parse
 
 from fastapi import HTTPException, status
 
@@ -23,7 +24,7 @@ from .security import (
     sanitize_external_url,
     validate_embed_url,
 )
-from .webp_storage import StorageUploaderFn, process_and_upload_cover
+from .webp_storage import StorageUploaderFn, build_cover_storage_path, process_and_upload_cover
 
 logger = logging.getLogger("just_save_it.unfurl.service")
 
@@ -41,8 +42,9 @@ def find_recent_unfurl_cache(
     exclude_item_id: Optional[str] = None,
     ttl_days: int = UNFURL_CACHE_TTL_DAYS,
     now_utc: Optional[datetime] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Return freshest unfurled item with matching url_hash within ttl_days (cross-user)."""
+    """Return freshest unfurled item with matching url_hash within ttl_days (isolating private/social rows per user)."""
     query = db.table("items").select("*").eq("url_hash", url_hash)
     if callable(getattr(query, "in_", None)):
         query = query.in_("enrich_status", ["unfurled", "done"])
@@ -65,7 +67,20 @@ def find_recent_unfurl_cache(
             continue
         if row.get("enrich_status") not in ("unfurled", "done"):
             continue
+        if row.get("enrich_error"):
+            continue
         row_plat = str(row.get("platform") or "").lower()
+        row_url = str(row.get("canonical_url") or row.get("url") or "").lower()
+        is_meta_social = (
+            row_plat in ("instagram", "facebook")
+            or "instagram.com" in row_url
+            or "facebook.com" in row_url
+            or "fb.watch" in row_url
+        )
+        if is_meta_social:
+            row_owner = str(row.get("owner_id") or "").strip()
+            if not user_id or not row_owner or row_owner != str(user_id).strip():
+                continue
         row_desc = str(row.get("description") or "").strip()
         if row_plat == "youtube" and (not row_desc or row_desc.startswith("By ")):
             continue
@@ -79,13 +94,21 @@ def find_recent_unfurl_cache(
     return best_row
 
 
-def _sanitize_cached_payload(donor: Dict[str, Any], base_url: str) -> Dict[str, Any]:
-    raw_media = donor.get("media_items") or []
+def _extract_clean_media(row: Dict[str, Any], base_url: str) -> Tuple[Optional[str], List[str]]:
+    raw_media = row.get("media_items") or []
     if not isinstance(raw_media, list):
         raw_media = []
+    norm_media: List[str] = []
+    for entry in raw_media:
+        if isinstance(entry, str):
+            norm_media.append(entry)
+        elif isinstance(entry, dict):
+            cand = entry.get("media_url") or entry.get("url") or entry.get("thumbnail_url")
+            if isinstance(cand, str):
+                norm_media.append(cand)
 
-    capped_media = filter_and_cap_images(raw_media, base_url=base_url, max_images=MAX_MEDIA_ITEMS)
-    raw_cover = donor.get("image_url")
+    capped_media = filter_and_cap_images(norm_media, base_url=base_url, max_images=MAX_MEDIA_ITEMS)
+    raw_cover = row.get("image_url")
     cover_candidate = sanitize_external_url(raw_cover) if isinstance(raw_cover, str) else None
     if cover_candidate and not is_junk_image_url(cover_candidate):
         cover_clean: Optional[str] = cover_candidate
@@ -93,6 +116,49 @@ def _sanitize_cached_payload(donor: Dict[str, Any], base_url: str) -> Dict[str, 
             capped_media = [cover_clean, *[u for u in capped_media if u != cover_clean]][:MAX_MEDIA_ITEMS]
     else:
         cover_clean = capped_media[0] if capped_media else None
+    return cover_clean, capped_media
+
+
+def _is_already_stored_cover(image_url: Optional[str], url_hash: str) -> bool:
+    if not image_url or not url_hash:
+        return False
+    try:
+        target_suffix = f"/{build_cover_storage_path(url_hash)}"
+        parsed = urllib.parse.urlparse(image_url)
+        return (parsed.path or "").endswith(target_suffix)
+    except ValueError:
+        return False
+
+
+def _resolve_media_with_existing(
+    candidate_cover: Optional[str],
+    candidate_media: List[str],
+    existing_cover: Optional[str],
+    existing_media: List[str],
+    platform: str,
+    *,
+    force_refresh: bool = False,
+) -> Tuple[Optional[str], List[str], bool]:
+    """Preserve existing non-junk images when unfurl finds none, or keep Meta multi-image DOM galleries."""
+    if not candidate_cover and not candidate_media and (existing_cover or existing_media):
+        return existing_cover, list(existing_media), True
+    if (
+        platform in ("instagram", "facebook")
+        and not force_refresh
+        and len(existing_media) > len(candidate_media)
+    ):
+        lead = candidate_cover or existing_cover
+        merged = (
+            [lead, *[u for u in existing_media[1:] if u != lead]][:MAX_MEDIA_ITEMS]
+            if lead
+            else list(existing_media)
+        )
+        return lead, merged, False
+    return candidate_cover, list(candidate_media), False
+
+
+def _sanitize_cached_payload(donor: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+    cover_clean, capped_media = _extract_clean_media(donor, base_url=base_url)
 
     embed_type = str(donor.get("embed_type") or "none")
     embed_url = validate_embed_url(embed_type, donor.get("embed_url"))
@@ -123,6 +189,7 @@ async def preview_url_readonly(
     db: Any,
     raw_url: str,
     force_refresh: bool = False,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return read-only preview for a URL (30/min rate-limited at router) with 0 DB/Storage writes."""
     canon_url = canonicalize_url(raw_url)
@@ -134,7 +201,7 @@ async def preview_url_readonly(
     url_hash = compute_url_hash(canon_url)
 
     if not force_refresh and db is not None:
-        donor = find_recent_unfurl_cache(db, url_hash)
+        donor = find_recent_unfurl_cache(db, url_hash, user_id=user_id)
         if donor is not None:
             cached_data = _sanitize_cached_payload(donor, base_url=canon_url)
             return {
@@ -240,21 +307,32 @@ async def enrich_item(
 
     old_desc = str(item.get("description") or "").strip()
     old_plat = str(item.get("platform") or "").lower()
+    existing_cover, existing_media = _extract_clean_media(item, base_url=canon_url)
     canon_lower = canon_url.lower()
     needs_yt_full_desc = (
         old_plat == "youtube" or "youtube.com" in canon_lower or "youtu.be" in canon_lower
     ) and old_desc.startswith("By ")
 
-    # 1. Cross-user 7-day cache check
+    # 1. Cross-user 7-day cache check (same-user isolated for social platforms)
+    owner_id = str(item.get("owner_id") or "").strip() or None
     if not force_refresh:
-        donor = find_recent_unfurl_cache(db, url_hash, exclude_item_id=item_id)
+        donor = find_recent_unfurl_cache(db, url_hash, exclude_item_id=item_id, user_id=owner_id)
         if donor is not None:
             cached_data = _sanitize_cached_payload(donor, base_url=canon_url)
+            cached_plat = str(cached_data.get("platform") or old_plat or "").lower()
+            cached_cover, cached_media, _ = _resolve_media_with_existing(
+                cached_data["image_url"],
+                cached_data["media_items"],
+                existing_cover,
+                existing_media,
+                cached_plat,
+                force_refresh=False,
+            )
             updates: Dict[str, Any] = {
                 "canonical_url": canon_url,
                 "url_hash": url_hash,
-                "image_url": cached_data["image_url"],
-                "media_items": cached_data["media_items"],
+                "image_url": cached_cover,
+                "media_items": cached_media,
                 "embed_type": cached_data["embed_type"],
                 "embed_url": cached_data["embed_url"],
                 "site_name": cached_data["site_name"],
@@ -268,7 +346,6 @@ async def enrich_item(
             }
             if _should_replace_title(item, force_refresh=False) and cached_data["title"]:
                 updates["title"] = cached_data["title"]
-            cached_plat = str(cached_data.get("platform") or old_plat or "").lower()
             if _should_replace_description(old_desc, cached_data["description"], cached_plat):
                 updates["description"] = cached_data["description"]
 
@@ -288,22 +365,37 @@ async def enrich_item(
             canon_url,
             fetch_full_description=bool(force_refresh or needs_yt_full_desc or needs_tiktok_full_desc),
         )
-        final_cover, uploaded_to_storage = await process_and_upload_cover(
+        cover_source, media_source, preserved_from_existing = _resolve_media_with_existing(
             result.image_url,
-            url_hash=url_hash,
-            db=db,
-            storage_uploader=storage_uploader,
+            result.media_items,
+            existing_cover,
+            existing_media,
+            str(result.platform or old_plat or "").lower(),
+            force_refresh=force_refresh,
         )
 
-        final_media = list(result.media_items)
+        if preserved_from_existing and _is_already_stored_cover(cover_source, url_hash):
+            final_cover, uploaded_to_storage = cover_source, False
+        else:
+            final_cover, uploaded_to_storage = await process_and_upload_cover(
+                cover_source,
+                url_hash=url_hash,
+                db=db,
+                storage_uploader=storage_uploader,
+            )
+
+        final_media = list(media_source)
         if final_cover:
             exclude_urls = {final_cover}
-            if uploaded_to_storage and result.image_url:
-                exclude_urls.add(result.image_url)
+            if uploaded_to_storage and cover_source:
+                exclude_urls.add(cover_source)
             final_media = [final_cover, *[u for u in final_media if u not in exclude_urls]][:MAX_MEDIA_ITEMS]
+        elif final_media:
+            final_cover = final_media[0]
 
         safe_embed_url = validate_embed_url(result.embed_type, result.embed_url)
         safe_embed_type = result.embed_type if safe_embed_url else "none"
+        has_media = bool(final_cover or final_media)
 
         updates = {
             "canonical_url": result.canonical_url,
@@ -318,7 +410,7 @@ async def enrich_item(
             "platform": result.platform or item.get("platform"),
             "enrich_status": next_enrich_status,
             "enrich_error": "private_or_restricted"
-            if result.preview_status == "private_or_restricted"
+            if result.preview_status == "private_or_restricted" and not has_media
             else None,
             "unfurled_at": now_iso,
             "updated_at": now_iso,

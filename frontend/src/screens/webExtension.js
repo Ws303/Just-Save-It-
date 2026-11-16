@@ -9,7 +9,7 @@ import { renderNotificationsFullScreen } from "./home.js";
 import { renderLinkCard, renderAdvancedFilterToggle, renderAdvancedFilterDrawer } from "./common.js";
 import { renderAiPanelBody } from "./ai.js";
 import { renderProfileBody, renderDisplayBody, renderSecurityBody, renderHelpBody } from "./profile.js";
-import { renderLinkDetailModals, renderRichPreviewBox, renderSavedPreviewScreen } from "./links.js";
+import { formatPostDetailTitleAndDesc, renderLinkDetailModals, renderRichPreviewBox, renderSavedPreviewScreen } from "./links.js";
 
 function renderDesktopFolderThumb(folder, allLinks = [], isWatchLater = false) {
   const linkThumbs = (allLinks || [])
@@ -167,6 +167,9 @@ function renderDesktopLinkDetail(state) {
         <div class="pc-detail-media-card">
           ${renderRichPreviewBox(item, ui, { desktop: true })}
 
+          ${(() => {
+            const { displayTitle, displayDesc } = formatPostDetailTitleAndDesc(item);
+            return `
           <div class="figma-detail-post-info">
             <a
               class="figma-detail-post-title-link"
@@ -175,18 +178,19 @@ function renderDesktopLinkDetail(state) {
               target="_blank"
               rel="noopener noreferrer"
             >
-              <span>${escHtml(item.title)}</span>
+              <span>${escHtml(displayTitle)}</span>
               <span class="figma-detail-ext-icon">${icons.externalLink(18)}</span>
             </a>
             <p class="figma-detail-post-meta">
               ${escHtml(item.platform || "Web")} · ${escHtml(folderLabel)} · ${escHtml(item.savedAgo || "เมื่อสักครู่")}
             </p>
             ${
-              item.description && String(item.description).trim() && String(item.description).trim() !== String(item.title || "").trim()
-                ? `<p class="figma-detail-post-desc">${escHtml(item.description)}</p>`
+              displayDesc
+                ? `<p class="figma-detail-post-desc">${escHtml(displayDesc)}</p>`
                 : ""
             }
-          </div>
+          </div>`;
+          })()}
 
           <a
             class="figma-detail-open-btn"

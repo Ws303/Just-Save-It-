@@ -88,7 +88,7 @@ async def preview_url_endpoint(
 ) -> Dict[str, Any]:
     """Read-only instant link preview (30 req/min/user, no DB or Storage writes)."""
     preview_rate_limiter.enforce(user_id)
-    return await preview_url_readonly(db, raw_url=req.url, force_refresh=req.force_refresh)
+    return await preview_url_readonly(db, raw_url=req.url, force_refresh=req.force_refresh, user_id=user_id)
 
 
 @router.post("/api/items/{item_id}/refresh-preview")
