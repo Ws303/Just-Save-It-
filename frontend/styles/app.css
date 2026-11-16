@@ -3783,6 +3783,12 @@ a {
   height: 186px;
 }
 
+.figma-rich-preview-box.is-playing.is-vertical-video {
+  height: 460px;
+  max-height: 62vh;
+  background: #0d1017;
+}
+
 .figma-rich-preview-box.is-fallback {
   display: flex;
   flex-direction: column;
@@ -3791,6 +3797,15 @@ a {
   gap: 6px;
   text-align: center;
   padding: 16px;
+}
+
+.figma-rich-preview-box.is-fallback.is-private {
+  background: #fdf2f4;
+  border: 1px solid #f4cfd7;
+}
+
+.figma-rich-preview-box.is-fallback.is-private .figma-preview-fallback-title {
+  color: #a62639;
 }
 
 .figma-preview-fallback-title {

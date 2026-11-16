@@ -60,6 +60,7 @@ class PreviewResponse(BaseModel):
     favicon_url: Optional[str] = None
     content_type: Optional[str] = "link"
     platform: str = "web"
+    preview_status: str = "ok"
     cached: bool = False
 
 

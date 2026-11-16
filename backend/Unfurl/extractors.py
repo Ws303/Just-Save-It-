@@ -93,6 +93,28 @@ _VIMEO_ID_RE = re.compile(r"vimeo\.com/(?:video/|channels/[^/]+/)?(\d+)")
 _SPOTIFY_RE = re.compile(r"/(?:intl-[a-z-]+/)?(track|album|playlist|episode|show|artist)/([A-Za-z0-9]+)")
 _X_STATUS_RE = re.compile(r"/(?:status|statuses)/(\d+)")
 _IG_CODE_RE = re.compile(r"/(p|reel|tv)/([A-Za-z0-9_-]+)")
+_FB_VIDEO_PATH_RE = re.compile(r"(?:^|/)(?:watch|videos|reel|reels|share/[vr])(?:/|$)", re.IGNORECASE)
+_SHORT_SHARE_HOSTS = ("fb.watch", "vt.tiktok.com", "vm.tiktok.com", "l.facebook.com", "lm.facebook.com")
+
+_LOGIN_WALL_MARKERS = (
+    "log into facebook",
+    "log in to facebook",
+    "log in or sign up to view",
+    "เข้าสู่ระบบ facebook",
+    "เข้าสู่ระบบเพื่อดู",
+    "you must log in to continue",
+)
+
+_PRIVATE_UNAVAILABLE_MARKERS = (
+    "this content isn't available right now",
+    "this page isn't available",
+    "this video is private",
+    "private video",
+    "this account is private",
+    "sorry, this content isn't available",
+    "เนื้อหานี้ไม่พร้อมใช้งาน",
+    "ไม่สามารถใช้งานเนื้อหานี้ได้",
+)
 
 
 @dataclass
@@ -110,6 +132,7 @@ class UnfurlResult:
     favicon_url: Optional[str] = None
     content_type: Optional[str] = "link"
     platform: str = "web"
+    preview_status: str = "ok"
 
     def finalized(self) -> "UnfurlResult":
         """Enforce final embed allowlist, <=5 image cap, and Unicode hygiene invariants."""
@@ -131,7 +154,57 @@ class UnfurlResult:
         self.favicon_url = sanitize_external_url(self.favicon_url)
         if self.content_type not in _VALID_CONTENT_TYPES:
             self.content_type = "link"
+        if self.preview_status not in ("ok", "private_or_restricted", "no_media"):
+            self.preview_status = "ok"
         return self
+
+
+def _has_marker(text: Optional[str], markers: Tuple[str, ...]) -> bool:
+    if not text:
+        return False
+    lowered = text.strip().lower()
+    return any(m in lowered for m in markers)
+
+
+def _is_facebook_video_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if _host_matches(host, ("fb.watch",)):
+        return True
+    path = parsed.path or ""
+    if _FB_VIDEO_PATH_RE.search(path):
+        return True
+    qs = urllib.parse.parse_qs(parsed.query or "")
+    return bool(qs.get("v"))
+
+
+def _is_short_or_share_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").lower()
+    if _host_matches(host, _SHORT_SHARE_HOSTS):
+        return True
+    if _host_matches(host, ("facebook.com",)) and path.startswith("/share/"):
+        return True
+    return False
+
+
+async def _resolve_short_share_url(canon_url: str) -> str:
+    """Resolve short/share redirects (e.g., vt.tiktok.com, fb.watch, facebook.com/share/*) safely."""
+    if not _is_short_or_share_url(canon_url):
+        return canon_url
+    try:
+        _, _, _, final_url = await _fetch_limited_response(canon_url, max_bytes=32768)
+        if final_url and _is_safe_http_literal(final_url):
+            resolved_canon = canonicalize_url(final_url)
+            resolved_host = (urllib.parse.urlparse(resolved_canon).hostname or "").lower()
+            resolved_path = (urllib.parse.urlparse(resolved_canon).path or "").lower()
+            # Do not replace the original URL if Facebook bounced the bot to /login
+            if "/login" not in resolved_path and resolved_host:
+                return resolved_canon
+    except Exception as exc:
+        logger.debug("Short/share redirect resolve skipped for %s: %s", redact_secrets_in_text(canon_url), redact_secrets_in_text(exc))
+    return canon_url
 
 
 def _is_safe_http_literal(url: str) -> bool:
@@ -448,10 +521,13 @@ async def _fetch_generic_html_meta(url: str) -> Dict[str, Any]:
             "favicon_url": None,
             "content_type": "link",
             "media_items": images,
+            "final_url": final_url,
         }
 
     html_text = decode_html_bytes(raw_bytes, content_type=content_type)
-    return _parse_html_metadata(html_text, final_url)
+    parsed = _parse_html_metadata(html_text, final_url)
+    parsed["final_url"] = final_url
+    return parsed
 
 
 def _detect_platform(hostname: str) -> str:
@@ -895,6 +971,7 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
     images: List[str] = []
     embed_url = None
     content_type = "post"
+    preview_status = "ok"
 
     oembed_succeeded = False
     if platform == "instagram":
@@ -913,32 +990,71 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
             if isinstance(oembed, dict):
                 oembed_succeeded = True
                 title = oembed.get("title") or oembed.get("author_name")
+                if oembed.get("title") and oembed.get("author_name"):
+                    description = f"{oembed['author_name']} — {oembed['title']}"
                 if oembed.get("thumbnail_url"):
                     images.append(oembed["thumbnail_url"])
     else:
-        embed_url = validate_embed_url(
-            "facebook", f"https://www.facebook.com/plugins/post.php?href={encoded}"
-        )
+        is_fb_video = _is_facebook_video_url(canon_url)
+        if is_fb_video:
+            content_type = "video"
+            embed_url = validate_embed_url(
+                "facebook",
+                f"https://www.facebook.com/plugins/video.php?href={encoded}&show_text=false",
+            )
+        else:
+            embed_url = validate_embed_url(
+                "facebook",
+                f"https://www.facebook.com/plugins/post.php?href={encoded}",
+            )
         if token:
+            oembed_endpoint = "oembed_video" if is_fb_video else "oembed_post"
             oembed_url = (
-                f"https://graph.facebook.com/v18.0/oembed_post"
+                f"https://graph.facebook.com/v18.0/{oembed_endpoint}"
                 f"?url={encoded}&access_token={urllib.parse.quote(token, safe='')}"
             )
             oembed = await _fetch_json_safely(oembed_url)
             if isinstance(oembed, dict):
                 oembed_succeeded = True
                 title = oembed.get("author_name") or oembed.get("title")
+                if oembed.get("title") and oembed.get("title") != title:
+                    description = oembed.get("title")
+                elif oembed.get("author_name"):
+                    description = f"โพสต์จาก {oembed['author_name']}"
                 if oembed.get("thumbnail_url"):
                     images.append(oembed["thumbnail_url"])
 
-    if not title or not images:
+    if not title or not images or not description:
         try:
             html_meta = await _fetch_generic_html_meta(canon_url)
-            title = title or html_meta.get("title")
-            description = description or html_meta.get("description")
-            images.extend(html_meta.get("media_items") or [])
-        except Exception:
-            if not oembed_succeeded and not title:
+            meta_title = html_meta.get("title")
+            meta_desc = html_meta.get("description")
+            meta_final_url = str(html_meta.get("final_url") or "")
+            is_strict_private = _has_marker(meta_title, _PRIVATE_UNAVAILABLE_MARKERS) or _has_marker(
+                meta_desc, _PRIVATE_UNAVAILABLE_MARKERS
+            )
+            is_login_wall = (
+                "/login" in (urllib.parse.urlparse(meta_final_url).path or "").lower()
+                or _has_marker(meta_title, _LOGIN_WALL_MARKERS)
+                or _has_marker(meta_desc, _LOGIN_WALL_MARKERS)
+            )
+            if is_strict_private:
+                preview_status = "private_or_restricted"
+                embed_url = None
+            elif is_login_wall:
+                # Meta bounced server scraper to login wall; scrub junk text.
+                if not embed_url:
+                    preview_status = "private_or_restricted"
+            else:
+                title = title or meta_title
+                description = description or meta_desc
+                images.extend(html_meta.get("media_items") or [])
+        except Exception as exc:
+            err_msg = str(exc)
+            if any(code in err_msg for code in ("HTTP 401", "HTTP 403")):
+                preview_status = "private_or_restricted"
+                embed_url = None
+            elif not oembed_succeeded and not title and not embed_url:
                 raise
 
     return UnfurlResult(
@@ -958,6 +1074,7 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
         ),
         content_type=content_type,
         platform=platform,
+        preview_status=preview_status,
     ).finalized()
 
 
@@ -969,6 +1086,7 @@ async def extract_unfurl_metadata(
     """Extract zero-token rich preview metadata from a public URL across supported platforms."""
     canon_url = canonicalize_url(raw_url)
     await asyncio.to_thread(validate_safe_url, canon_url)
+    canon_url = await _resolve_short_share_url(canon_url)
     url_hash = compute_url_hash(canon_url)
 
     hostname = (urllib.parse.urlparse(canon_url).hostname or "").lower()
@@ -997,18 +1115,37 @@ async def extract_unfurl_metadata(
     if platform in ("instagram", "facebook"):
         return await _extract_meta_social(canon_url, url_hash, platform)
 
-    meta = await _fetch_generic_html_meta(canon_url)
+    try:
+        meta = await _fetch_generic_html_meta(canon_url)
+    except Exception as exc:
+        if any(code in str(exc) for code in ("HTTP 401", "HTTP 403")):
+            return UnfurlResult(
+                url=raw_url.strip(),
+                canonical_url=canon_url,
+                url_hash=url_hash,
+                title=canon_url,
+                preview_status="private_or_restricted",
+                platform="web",
+            ).finalized()
+        raise
+
+    meta_title = meta.get("title")
+    meta_desc = meta.get("description")
+    is_private = _has_marker(meta_title, _PRIVATE_UNAVAILABLE_MARKERS) or _has_marker(
+        meta_desc, _PRIVATE_UNAVAILABLE_MARKERS
+    )
     return UnfurlResult(
         url=raw_url.strip(),
         canonical_url=canon_url,
         url_hash=url_hash,
-        title=meta.get("title") or canon_url,
-        description=meta.get("description"),
-        media_items=meta.get("media_items") or [],
+        title=canon_url if is_private else (meta_title or canon_url),
+        description=None if is_private else meta_desc,
+        media_items=[] if is_private else (meta.get("media_items") or []),
         embed_type="none",
         embed_url=None,
         site_name=meta.get("site_name"),
         favicon_url=meta.get("favicon_url"),
         content_type=meta.get("content_type") or "link",
         platform="web",
+        preview_status="private_or_restricted" if is_private else "ok",
     ).finalized()

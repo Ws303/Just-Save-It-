@@ -308,6 +308,10 @@ export function mapBackendItemToUi(item, reminderMap = {}) {
     media_items: mediaItems,
     embed_url: item.embed_url || null,
     embed_type: item.embed_type || "none",
+    previewStatus:
+      item.preview_status ||
+      item.previewStatus ||
+      (item.enrich_error === "private_or_restricted" ? "private_or_restricted" : "ok"),
     savedAgo: item.savedAgo || "เมื่อสักครู่",
     savedAt: item.saved_at || null,
     status: mapBackendStatusToUi(item.status),
@@ -850,6 +854,8 @@ export const apiClient = {
       coverUrl,
       media_items: mediaItems,
       embed_url: embedUrl,
+      embed_type: embedType,
+      previewStatus: payload.preview_status || previewData.preview_status || "ok",
       savedAgo: "เมื่อสักครู่",
       status: mapBackendStatusToUi(resolvedStatus),
       favorite: isFav,

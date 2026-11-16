@@ -2446,9 +2446,13 @@ function applyPendingDeepLinks() {
       apiClient.previewUrl(draft.url).then((pv) => {
         if (pv?.ok && pv.data && store.state.ui.activeSheet?.type === "saveLink") {
           store.state.ui.activeSheet.draft.title = pv.data.title || store.state.ui.activeSheet.draft.title;
+          store.state.ui.activeSheet.draft.description = pv.data.description || store.state.ui.activeSheet.draft.description || "";
           store.state.ui.activeSheet.draft.platform = pv.data.platform || store.state.ui.activeSheet.draft.platform;
           store.state.ui.activeSheet.draft.coverUrl = pv.data.image_url || store.state.ui.activeSheet.draft.coverUrl;
           store.state.ui.activeSheet.draft.media_items = pv.data.media_items || [];
+          store.state.ui.activeSheet.draft.embed_url = pv.data.embed_url || store.state.ui.activeSheet.draft.embed_url || null;
+          store.state.ui.activeSheet.draft.embed_type = pv.data.embed_type || store.state.ui.activeSheet.draft.embed_type || "none";
+          store.state.ui.activeSheet.draft.preview_status = pv.data.preview_status || "ok";
           store.emit();
         }
       }).catch(() => {});

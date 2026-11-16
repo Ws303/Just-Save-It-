@@ -254,3 +254,44 @@ test("resolveRuntimeApiConfig defaults safely on localhost vs cloud and rejects 
   assert.equal(mixedContentCfg.baseUrl, "https://app.sharely.io");
   assert.equal(mixedContentCfg.isLocalHost, false);
 });
+
+test("Facebook video embed, 5-image carousel, and private post fallback render properly", async () => {
+  const { deriveVideoEmbedInfo, renderRichPreviewBox } = await import("../src/screens/links.js");
+
+  const fbReel = deriveVideoEmbedInfo({
+    url: "https://www.facebook.com/reel/1234567890",
+    platform: "facebook",
+  });
+  assert.match(fbReel.embedUrl || "", /^https:\/\/www\.facebook\.com\/plugins\/video\.php\?href=/);
+  assert.equal(fbReel.isVertical, true);
+
+  const playingHtml = renderRichPreviewBox(
+    { id: "fb-1", url: "https://www.facebook.com/reel/1234567890", platform: "facebook", title: "FB Reel" },
+    { videoPlaying: true }
+  );
+  assert.match(playingHtml, /is-playing is-vertical-video/);
+  assert.match(playingHtml, /plugins\/video\.php/);
+
+  const privateHtml = renderRichPreviewBox({
+    id: "fb-priv",
+    url: "https://www.facebook.com/user/posts/999",
+    platform: "facebook",
+    previewStatus: "private_or_restricted",
+  });
+  assert.match(privateHtml, /is-private/);
+  assert.match(privateHtml, /ไม่สามารถแสดงตัวอย่างได้/);
+  assert.match(privateHtml, /Private/);
+
+  const carouselHtml = renderRichPreviewBox({
+    id: "ig-5",
+    url: "https://www.instagram.com/p/abc/",
+    media_items: [
+      "https://cdn.example.com/1.jpg",
+      "https://cdn.example.com/2.jpg",
+      "https://cdn.example.com/3.jpg",
+      "https://cdn.example.com/4.jpg",
+      "https://cdn.example.com/5.jpg",
+    ],
+  });
+  assert.match(carouselHtml, /1\/5/);
+});

@@ -66,6 +66,7 @@ export function deriveVideoEmbedInfo(item) {
   let embedUrl = explicitEmbed;
   let thumbUrl = "";
   let platform = item?.platform || "";
+  let isVertical = false;
 
   if (rawUrl) {
     try {
@@ -81,6 +82,7 @@ export function deriveVideoEmbedInfo(item) {
           const m = parsed.pathname.match(/^\/(?:embed|shorts|live)\/([A-Za-z0-9_-]{6,})/);
           if (m) ytId = m[1];
         }
+        if (parsed.pathname.startsWith("/shorts/")) isVertical = true;
         if (/^[A-Za-z0-9_-]{6,}$/.test(ytId)) {
           embedUrl = embedUrl || `https://www.youtube.com/embed/${ytId}`;
           thumbUrl = `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`;
@@ -93,21 +95,38 @@ export function deriveVideoEmbedInfo(item) {
           platform = platform || "Vimeo";
         }
       } else if (host.includes("tiktok.com")) {
+        isVertical = true;
         const tm = parsed.pathname.match(/\/video\/(\d+)/);
         if (tm) {
           embedUrl = embedUrl || `https://www.tiktok.com/embed/v2/${tm[1]}`;
           platform = platform || "TikTok";
         }
+      } else if (host.includes("facebook.com") || host === "fb.watch") {
+        const pathLower = (parsed.pathname || "").toLowerCase();
+        const isFbVideo =
+          host === "fb.watch" ||
+          /\/(?:watch|videos|reel|reels)\b/.test(pathLower) ||
+          Boolean(parsed.searchParams.get("v"));
+        if (/\/reel\b/.test(pathLower)) isVertical = true;
+        if (isFbVideo && !embedUrl && host !== "fb.watch" && !pathLower.startsWith("/share/")) {
+          embedUrl = `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(rawUrl)}&show_text=false`;
+          platform = platform || "Facebook";
+        }
       }
     } catch {}
   }
-  return { embedUrl: resolveAllowlistedEmbedUrl(embedUrl), thumbUrl, platform };
+  return { embedUrl: resolveAllowlistedEmbedUrl(embedUrl), thumbUrl, platform, isVertical };
 }
 
 function withAutoplayParam(embedUrl) {
   try {
     const u = new URL(embedUrl);
-    if (u.hostname.includes("youtube.com") || u.hostname.includes("youtube-nocookie.com") || u.hostname.includes("vimeo.com")) {
+    if (
+      u.hostname.includes("youtube.com") ||
+      u.hostname.includes("youtube-nocookie.com") ||
+      u.hostname.includes("vimeo.com") ||
+      (u.hostname.includes("facebook.com") && u.pathname.includes("/plugins/video.php"))
+    ) {
       u.searchParams.set("autoplay", "1");
       u.searchParams.set("playsinline", "1");
     }
@@ -122,18 +141,25 @@ function withAutoplayParam(embedUrl) {
  * No extra rows are added outside this container.
  */
 export function renderRichPreviewBox(item, uiState = {}, options = {}) {
-  const boxClass = options.desktop ? "figma-rich-preview-box is-desktop" : "figma-rich-preview-box";
+  const baseBoxClass = options.desktop ? "figma-rich-preview-box is-desktop" : "figma-rich-preview-box";
   const derivedVideo = deriveVideoEmbedInfo(item);
   const safeEmbedUrl = derivedVideo.embedUrl;
   const mediaImages = getPreviewMediaImages(item);
   const singleCover = resolveMediaThumbUrl(item) || mediaImages[0] || derivedVideo.thumbUrl || "";
+  const isPrivate =
+    item?.previewStatus === "private_or_restricted" ||
+    item?.preview_status === "private_or_restricted" ||
+    item?.enrich_error === "private_or_restricted";
 
   // Case 1: Interactive video iframe on allowlisted domain
   if (safeEmbedUrl) {
     if (uiState.videoPlaying) {
       const activeSrc = withAutoplayParam(safeEmbedUrl);
+      const playingClass = derivedVideo.isVertical
+        ? `${baseBoxClass} is-playing is-vertical-video`
+        : `${baseBoxClass} is-playing`;
       return `
-        <div class="${boxClass}" data-node-id="319:6103">
+        <div class="${playingClass}" data-node-id="319:6103">
           <iframe
             class="figma-preview-iframe"
             src="${escHtml(activeSrc)}"
@@ -156,7 +182,7 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
       `;
     }
     return `
-      <div class="${boxClass} has-media" data-node-id="319:6103">
+      <div class="${baseBoxClass} has-media" data-node-id="319:6103">
         ${
           singleCover
             ? `<img class="figma-preview-img" src="${escHtml(singleCover)}" alt="${escHtml(item?.title || "")}" />`
@@ -182,7 +208,7 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
     const activeIdx = ((rawIdx % total) + total) % total;
     const currentSrc = mediaImages[activeIdx];
     return `
-      <div class="${boxClass} has-media" data-node-id="319:6103">
+      <div class="${baseBoxClass} has-media" data-node-id="319:6103">
         <img class="figma-preview-img" src="${escHtml(currentSrc)}" alt="${escHtml(item?.title || "")}" />
         <button
           type="button"
@@ -221,15 +247,24 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
   // Case 3: Single cover image
   if (singleCover) {
     return `
-      <div class="${boxClass} has-media" data-node-id="319:6103">
+      <div class="${baseBoxClass} has-media" data-node-id="319:6103">
         <img class="figma-preview-img" src="${escHtml(singleCover)}" alt="${escHtml(item?.title || "")}" />
       </div>
     `;
   }
 
-  // Case 4: Exact Figma fallback card (#f0ecfa) when no cover/media
+  // Case 4: Private/restricted post or exact Figma fallback card (#f0ecfa) when no cover/media
+  if (isPrivate) {
+    return `
+      <div class="${baseBoxClass} is-fallback is-private" data-node-id="319:6103">
+        <p class="figma-preview-fallback-title">ไม่สามารถแสดงตัวอย่างได้</p>
+        <p class="figma-preview-fallback-sub">โพสต์นี้เป็นแบบส่วนตัว (Private) หรือถูกจำกัดสิทธิ์การเข้าถึง กรุณากดเปิดลิงก์ต้นฉบับเพื่อดูเนื้อหา</p>
+      </div>
+    `;
+  }
+
   return `
-    <div class="${boxClass} is-fallback" data-node-id="319:6103">
+    <div class="${baseBoxClass} is-fallback" data-node-id="319:6103">
       <p class="figma-preview-fallback-title">ไม่มีตัวอย่างลิงก์</p>
       <p class="figma-preview-fallback-sub">เปิดลิงก์ต้นฉบับเพื่อดูเนื้อหา</p>
     </div>
@@ -546,6 +581,11 @@ export function renderSavedPreviewScreen(state) {
             <h2 class="figma-detail-post-title-link" style="text-decoration:none;cursor:pointer;" data-open-link="${escHtml(item.id)}">
               ${escHtml(item.title)}
             </h2>
+            ${
+              item.description && String(item.description).trim() && String(item.description).trim() !== String(item.title || "").trim()
+                ? `<p class="figma-detail-post-desc">${escHtml(item.description)}</p>`
+                : ""
+            }
             <p class="figma-detail-post-meta">${escHtml(item.platform)} · โฟลเดอร์${escHtml(folder?.name || "ทั่วไป")}</p>
           </div>
 

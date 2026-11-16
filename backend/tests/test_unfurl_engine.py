@@ -1978,3 +1978,58 @@ def test_c4_preview_url_redacts_secrets_in_error(hermetic_isolation, mock_db, te
     assert "topsecret123" not in detail
     assert "secret_jwt_token_999" not in detail
     assert "[REDACTED]" in detail
+
+
+@pytest.mark.asyncio
+async def test_facebook_video_embed_redirect_and_private_detection(hermetic_isolation, monkeypatch):
+    """Facebook video/reel URLs use plugins/video.php, short URLs resolve redirects, and private posts report private_or_restricted."""
+    monkeypatch.delenv("META_OEMBED_ACCESS_TOKEN", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "fb.watch":
+            return httpx.Response(
+                302,
+                headers={"location": "https://www.facebook.com/myPage/videos/987654321/"},
+                request=request,
+            )
+        if request.url.host == "www.facebook.com" and "/videos/987654321" in request.url.path:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text=(
+                    "<html><head>"
+                    '<meta property="og:title" content="Public FB Video" />'
+                    '<meta property="og:description" content="Full video caption here" />'
+                    '<meta property="og:image" content="https://scontent.xx.fbcdn.net/cover_fb.jpg" />'
+                    "</head></html>"
+                ),
+                request=request,
+            )
+        if request.url.host == "www.facebook.com" and "/private-post" in request.url.path:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text=(
+                    "<html><head>"
+                    "<title>This content isn't available right now</title>"
+                    "</head></html>"
+                ),
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+
+    fb_vid = await extract_unfurl_metadata("https://fb.watch/abc123/")
+    assert fb_vid.platform == "facebook"
+    assert fb_vid.content_type == "video"
+    assert fb_vid.preview_status == "ok"
+    assert fb_vid.embed_url is not None
+    assert fb_vid.embed_url.startswith("https://www.facebook.com/plugins/video.php?href=")
+    assert fb_vid.description == "Full video caption here"
+    assert fb_vid.image_url == "https://scontent.xx.fbcdn.net/cover_fb.jpg"
+
+    fb_priv = await extract_unfurl_metadata("https://www.facebook.com/someone/posts/private-post")
+    assert fb_priv.platform == "facebook"
+    assert fb_priv.preview_status == "private_or_restricted"
+    assert fb_priv.embed_url is None

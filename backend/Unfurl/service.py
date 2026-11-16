@@ -151,11 +151,14 @@ async def preview_url_readonly(
                 "favicon_url": cached_data["favicon_url"],
                 "content_type": cached_data["content_type"] or "link",
                 "platform": cached_data["platform"] or "web",
+                "preview_status": "private_or_restricted"
+                if cached_data.get("enrich_error") == "private_or_restricted"
+                else "ok",
                 "cached": True,
             }
 
     try:
-        result = await extract_unfurl_metadata(canon_url, fetch_full_description=force_refresh)
+        result = await extract_unfurl_metadata(canon_url, fetch_full_description=True)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -181,6 +184,7 @@ async def preview_url_readonly(
         "favicon_url": result.favicon_url,
         "content_type": result.content_type or "link",
         "platform": result.platform,
+        "preview_status": result.preview_status,
         "cached": False,
     }
 
@@ -279,8 +283,10 @@ async def enrich_item(
 
     # 2. Live 0-token extraction + Cover #1 WebP upload
     try:
+        needs_tiktok_full_desc = old_plat == "tiktok" and (not old_desc or old_desc.startswith("@"))
         result = await extract_unfurl_metadata(
-            canon_url, fetch_full_description=bool(force_refresh or needs_yt_full_desc)
+            canon_url,
+            fetch_full_description=bool(force_refresh or needs_yt_full_desc or needs_tiktok_full_desc),
         )
         final_cover, uploaded_to_storage = await process_and_upload_cover(
             result.image_url,
@@ -311,7 +317,9 @@ async def enrich_item(
             "content_type": result.content_type or item.get("content_type"),
             "platform": result.platform or item.get("platform"),
             "enrich_status": next_enrich_status,
-            "enrich_error": None,
+            "enrich_error": "private_or_restricted"
+            if result.preview_status == "private_or_restricted"
+            else None,
             "unfurled_at": now_iso,
             "updated_at": now_iso,
         }
