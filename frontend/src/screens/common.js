@@ -3,6 +3,7 @@
  */
 import { icons, escHtml, safeImgUrl, resolveMediaThumbUrl } from "../components/icons.js";
 import { getFolderById } from "../state/store.js";
+import { formatCardDisplayTitle } from "./links.js";
 
 export function renderBottomNav(activeTab) {
   const tabs = [
@@ -156,6 +157,7 @@ export function renderLinkCard(item, { folderContextId = null, selected = false,
   const statusLabel = isRead ? "ดูแล้ว" : "ยังไม่ได้ดู";
   const safeId = escHtml(item.id);
   const thumbImg = resolveItemThumbnail(item);
+  const cardTitle = formatCardDisplayTitle(item);
 
   if (variant === "figma-home") {
     return `
@@ -165,7 +167,7 @@ export function renderLinkCard(item, { folderContextId = null, selected = false,
         </div>
         <div class="figma-link-main" data-open-link="${safeId}">
           <div class="figma-link-platform">${escHtml(item.platform || "Web")}</div>
-          <div class="figma-link-title">${escHtml(item.title)}</div>
+          <div class="figma-link-title">${escHtml(cardTitle)}</div>
           <div class="figma-link-meta">${escHtml(folder?.name || "ยังไม่จัดหมวด")} · ${statusLabel}</div>
         </div>
         ${renderCardActions({
@@ -191,7 +193,7 @@ export function renderLinkCard(item, { folderContextId = null, selected = false,
         <div class="pc-link-thumb">${thumbImg ? `<img src="${escHtml(thumbImg)}" alt="" />` : `<span>${escHtml(code)}</span>`}</div>
         <div class="pc-link-info">
           <span class="pc-link-platform">${escHtml(item.platform || "Web")}</span>
-          <strong class="pc-link-title">${escHtml(item.title)}</strong>
+          <strong class="pc-link-title">${escHtml(cardTitle)}</strong>
           <span class="pc-link-meta">${escHtml(folder?.name || "ทั่วไป")} · ${statusLabel}</span>
         </div>
         ${renderCardActions({
@@ -231,7 +233,7 @@ export function renderLinkCard(item, { folderContextId = null, selected = false,
           ${isPinned ? `<span style="font-size:10px;font-weight:700;background:#111;color:#fff;padding:1px 6px;border-radius:4px;">📌 ปักหมุด</span>` : ""}
           ${isRecentlyShared ? `<span class="new-incoming-pill">✨ เพิ่งแชร์เข้ามา</span>` : ""}
         </div>
-        <p class="link-title">${escHtml(item.title)}</p>
+        <p class="link-title">${escHtml(cardTitle)}</p>
         <p class="link-sub">
           <span>${escHtml(folderLabel)} · ${statusLabel}</span>
           ${item.aiSummary ? `<span class="ai-badge-pill">AI</span>` : ""}

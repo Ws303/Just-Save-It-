@@ -609,6 +609,149 @@
     return typeof url === "string" && /^https?:\/\//i.test(url.trim());
   }
 
+  function isGenericPlatformTitle(title, rawUrl = "") {
+    const stripped = String(title || "").trim();
+    if (!stripped) return true;
+    const lowered = stripped.toLowerCase();
+    if (/^https?:\/\//i.test(stripped)) return true;
+    if (rawUrl) {
+      const urlTrim = String(rawUrl).trim().toLowerCase();
+      if (lowered === urlTrim) return true;
+      try {
+        const host = new URL(rawUrl).hostname.toLowerCase();
+        if (host && (lowered === host || lowered === host.replace(/^www\./, ""))) return true;
+      } catch (_err) {
+        // Ignore invalid URL
+      }
+    }
+    const noBadge = stripped.replace(/^\(\d+\+?\)\s+/, "").trim().toLowerCase();
+    const genericSet = new Set([
+      "instagram",
+      "log in • instagram",
+      "login • instagram",
+      "เข้าสู่ระบบ • instagram",
+      "เข้าสู่ระบบ instagram",
+      "instagram photo",
+      "instagram video",
+      "instagram reel",
+      "instagram reels",
+      "facebook",
+      "facebook - log in or sign up",
+      "log into facebook",
+      "log in to facebook",
+      "เข้าสู่ระบบ facebook",
+      "watch",
+      "facebook watch",
+      "reels",
+      "tiktok",
+      "tiktok - make your day",
+      "watch trending videos for you",
+      "watch trending videos for you | tiktok",
+      "youtube",
+      "- youtube",
+      "home - youtube",
+      "shorts - youtube",
+      "x",
+      "twitter",
+      "home / x",
+      "log in to x / x",
+      "reddit",
+      "reddit - dive into anything",
+      "vimeo",
+      "spotify",
+      "threads",
+    ]);
+    if (genericSet.has(lowered) || genericSet.has(noBadge)) return true;
+    if (/^@?[a-z0-9._]+\s+(?:on|บน)\s+instagram$/i.test(noBadge)) return true;
+    if (/^(?:watch trending|discover|make your day|tiktok)\b.*\|\s*tiktok$/i.test(noBadge)) return true;
+    return false;
+  }
+
+  function getSocialPostLinkWarning(rawUrl) {
+    if (!isSaveableHttpUrl(rawUrl)) return null;
+    try {
+      const parsed = new URL(rawUrl.trim());
+      const host = parsed.hostname.toLowerCase();
+      const path = parsed.pathname || "/";
+      const params = parsed.searchParams;
+
+      if (host === "fb.watch" || host.endsWith(".fb.watch")) {
+        if (path.replace(/^\/+|\/+$/g, "").length > 0) return null;
+        return {
+          platform: "Facebook",
+          example: "https://www.facebook.com/share/p/...",
+          message:
+            "หน้านี้ไม่ใช่ลิงก์โพสต์ Facebook โดยตรง — กรุณากดปุ่ม 'แชร์ (Share) > คัดลอกลิงก์' จากโพสต์หรือคลิป แล้วนำมาวางในช่อง URL",
+        };
+      }
+      if (host === "facebook.com" || host.endsWith(".facebook.com") || host === "fb.com" || host.endsWith(".fb.com")) {
+        const hasPostParam = Boolean(
+          params.get("story_fbid") || params.get("fbid") || params.get("v") || params.get("multi_permalinks")
+        );
+        const isDirectPostPath =
+          /^\/share\/(?:[pvr]\/)?[A-Za-z0-9_-]+/i.test(path) ||
+          /\/(?:posts|videos|photos|permalink)\/[^/]+/i.test(path) ||
+          /^\/(?:reel|reels)\/[^/]+/i.test(path) ||
+          /^\/(?:permalink|story|photo)\.php/i.test(path) ||
+          /^\/watch\/live\/?/i.test(path) ||
+          /pfbid[A-Za-z0-9]+/i.test(path);
+        if (hasPostParam || isDirectPostPath) {
+          return null;
+        }
+        return {
+          platform: "Facebook",
+          example: "https://www.facebook.com/share/p/...",
+          message:
+            "หน้านี้เป็นหน้าฟีดหรือหน้าเพจของ Facebook ไม่ใช่ลิงก์โพสต์โดยตรง — กรุณากดปุ่ม 'แชร์ (Share) > คัดลอกลิงก์' จากโพสต์หรือคลิปที่ต้องการ แล้วนำมาวางในช่อง URL ด้านล่าง",
+        };
+      }
+
+      if (host === "instagram.com" || host.endsWith(".instagram.com") || host === "instagr.am") {
+        const isIgPostPath =
+          /^\/(?:[^/]+\/)?(?:p|reel|reels|tv|share)\/[A-Za-z0-9_-]+/i.test(path) ||
+          /^\/stories\/[^/]+\/\d+/i.test(path);
+        if (isIgPostPath) {
+          return null;
+        }
+        return {
+          platform: "Instagram",
+          example: "https://www.instagram.com/p/... หรือ /reel/...",
+          message:
+            "หน้านี้เป็นหน้าฟีดหรือโปรไฟล์ของ Instagram ไม่ใช่ลิงก์โพสต์โดยตรง — กรุณากดปุ่ม 'แชร์ (Share) > คัดลอกลิงก์' จากโพสต์หรือ Reel ที่ต้องการ แล้วนำมาวางในช่อง URL ด้านล่าง",
+        };
+      }
+
+      if (host === "vt.tiktok.com" || host === "vm.tiktok.com") {
+        if (path.replace(/^\/+|\/+$/g, "").length > 0) return null;
+        return {
+          platform: "TikTok",
+          example: "https://vt.tiktok.com/...",
+          message:
+            "หน้านี้ไม่ใช่ลิงก์คลิป TikTok โดยตรง — กรุณากดปุ่ม 'แชร์ (Share) > คัดลอกลิงก์' จากคลิปที่ต้องการ แล้วนำมาวางในช่อง URL ด้านล่าง",
+        };
+      }
+      if (host === "tiktok.com" || host.endsWith(".tiktok.com")) {
+        const hasTtParam = Boolean(params.get("item_id") || params.get("share_item_id"));
+        const isTtPostPath =
+          /^\/@[^/]+\/(?:video|photo)\/\d+/i.test(path) ||
+          /^\/(?:t|v)\/[A-Za-z0-9_-]+/i.test(path) ||
+          /^\/embed\//i.test(path);
+        if (hasTtParam || isTtPostPath) {
+          return null;
+        }
+        return {
+          platform: "TikTok",
+          example: "https://www.tiktok.com/@user/video/... หรือ https://vt.tiktok.com/...",
+          message:
+            "หน้านี้เป็นหน้าฟีดหรือโปรไฟล์ของ TikTok ไม่ใช่ลิงก์คลิปโดยตรง — กรุณากดปุ่ม 'แชร์ (Share) > คัดลอกลิงก์' จากคลิปที่ต้องการ แล้วนำมาวางในช่อง URL ด้านล่าง",
+        };
+      }
+    } catch (_err) {
+      return null;
+    }
+    return null;
+  }
+
   async function getOfflineQueue(expectedUserId = "") {
     return runSerializedAuthMutation(async () => {
       const res = await getStorage([STORAGE_KEYS.OFFLINE_QUEUE, STORAGE_KEYS.USER, STORAGE_KEYS.ACCESS_TOKEN]);
@@ -918,6 +1061,8 @@
     formatAiSummaryResponse,
     runDomAssist,
     isSaveableHttpUrl,
+    isGenericPlatformTitle,
+    getSocialPostLinkWarning,
     getOfflineQueue,
     enqueueOfflineSave,
     flushOfflineQueue,

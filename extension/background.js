@@ -171,6 +171,18 @@ async function quickSaveUrl({ url, tabId = null, fallbackTitle = "", selectionTe
     setActionBadge("URL", "#61666b");
     return;
   }
+  if (
+    typeof JustSaveItApi.getSocialPostLinkWarning === "function" &&
+    JustSaveItApi.getSocialPostLinkWarning(url)
+  ) {
+    setActionBadge("LINK", "#d97706");
+    try {
+      await chrome.action.openPopup();
+    } catch (_err) {
+      // openPopup may require direct user gesture
+    }
+    return;
+  }
 
   const startGen = typeof JustSaveItApi.getSessionGeneration === "function" ? JustSaveItApi.getSessionGeneration() : 0;
   const session = await JustSaveItApi.getSessionState();
@@ -204,9 +216,16 @@ async function quickSaveUrl({ url, tabId = null, fallbackTitle = "", selectionTe
     return;
   }
 
+  const cleanFallbackTitle =
+    fallbackTitle &&
+    (typeof JustSaveItApi.isGenericPlatformTitle !== "function" ||
+      !JustSaveItApi.isGenericPlatformTitle(fallbackTitle, url))
+      ? fallbackTitle
+      : undefined;
+
   const payload = {
     url: url.trim(),
-    title: (domMeta && domMeta.url === url && domMeta.title) || fallbackTitle || undefined,
+    title: (domMeta && domMeta.url === url && domMeta.title) || cleanFallbackTitle,
     description: (domMeta && domMeta.url === url && domMeta.description) || undefined,
     note: (selectionText || (domMeta && domMeta.selected_text) || "").trim() || undefined,
     media_items:

@@ -230,6 +230,14 @@
             </div>
           </div>
 
+          <!-- Non-post Social Feed Warning (visible when browsing FB/IG/TikTok feed instead of a direct post link) -->
+          <div id="socialFeedWarningCard" class="social-feed-warning hidden">
+            <strong id="socialFeedWarningTitle" class="social-feed-warning-title">⚠️ กรุณาใช้ลิงก์แชร์ของโพสต์</strong>
+            <p id="socialFeedWarningText" class="social-feed-warning-text">
+              หน้านี้เป็นหน้าฟีดหลัก ไม่ใช่ลิงก์โพสต์โดยตรง — กรุณากดปุ่ม 'แชร์ (Share) &gt; คัดลอกลิงก์' จากโพสต์หรือคลิปที่ต้องการ แล้วนำมาวางในช่อง URL ด้านล่าง
+            </p>
+          </div>
+
           <!-- Hidden-by-default URL & Status Drawer (expandable on demand) -->
           <div id="urlEditRow" class="url-edit-drawer hidden">
             <div class="inline-row">
@@ -286,12 +294,7 @@
             placeholder="เพิ่มโน้ต (ไม่บังคับ)"
           />
 
-          <!-- Primary Cherry Pill Submit Button -->
-          <button id="saveItemBtn" type="submit" class="figma-sheet-submit-btn">
-            บันทึก
-          </button>
-
-          <!-- Instant Optimistic Save Confirmation + AI Summary CTA -->
+          <!-- Instant Optimistic Save Confirmation + AI Summary CTA (placed above Save button so visible without scrolling) -->
           <section id="savedResultCard" class="saved-inline-card hidden">
             <div class="label-row">
               <strong id="savedTitleLabel" class="success-title">✓ บันทึกลิงก์แล้ว</strong>
@@ -300,6 +303,11 @@
             <p id="savedMetaText" class="hint"></p>
             <div id="aiResultBox" class="ai-box hidden"></div>
           </section>
+
+          <!-- Primary Cherry Pill Submit Button -->
+          <button id="saveItemBtn" type="submit" class="figma-sheet-submit-btn">
+            บันทึก
+          </button>
         </form>
       </section>
 

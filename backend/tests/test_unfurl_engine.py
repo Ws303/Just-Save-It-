@@ -318,6 +318,8 @@ def hermetic_isolation(monkeypatch):
         "ENV",
         "ALLOW_DEV_WEBHOOK_BYPASS",
         "ALLOW_DEV_AUTH_BYPASS",
+        "ALLOW_META_CRAWLER_UA",
+        "META_CRAWLER_USER_AGENT",
         "META_OEMBED_ACCESS_TOKEN",
         "SUPABASE_JWT_SECRET",
         "SUPABASE_URL",
@@ -2115,13 +2117,13 @@ async def test_meta_crawler_ua_ig_embed_fallback_and_fb_400_restricted(hermetic_
 
     hermetic_isolation.set_handler(handler)
 
-    # 1. IG /reels/CODE/ bare shell falls back to /reel/CODE/embed/captioned/, ignores Avatar/HoverCardPhotos, & collapses duplicate title to owner name
+    # 1. IG /reels/CODE/ bare shell falls back to /reel/CODE/embed/captioned/, ignores Avatar/HoverCardPhotos, & sets title to opening sentence of caption
     ig_res = await extract_unfurl_metadata("https://www.instagram.com/reels/ReelLogin123/")
     assert ig_res.platform == "instagram"
     assert ig_res.content_type == "video"
     assert ig_res.preview_status == "ok"
     assert ig_res.embed_url == "https://www.instagram.com/reel/ReelLogin123/embed"
-    assert ig_res.title == "@chef_bkk"
+    assert ig_res.title == "Pad Kra Pao recipe 101"
     assert ig_res.description == "Pad Kra Pao recipe 101"
     assert "View all 99 comments" not in (ig_res.description or "")
     assert ig_res.media_items == ["https://scontent.cdninstagram.com/reel_cover_real.jpg"]
@@ -2310,22 +2312,22 @@ async def test_enrich_item_preserves_existing_extension_media_on_empty_or_single
 
 
 def test_social_engagement_stripping_and_duplicate_title_collapse():
-    """Part 1: Strips view/reaction/like/comment counts on FB/IG/TikTok and collapses duplicate title to post owner name."""
-    # 1. Facebook video with view/share counts and identical title/description
+    """Part 1: Strips view/reaction/like/comment counts on FB/IG/TikTok and sets title to short 1-line opening sentence of caption."""
+    # 1. Facebook video with view/share counts and multi-sentence caption -> opening sentence as title
     fb_res = UnfurlResult(
         url="https://www.facebook.com/watch/?v=10155278547321729",
         canonical_url="https://www.facebook.com/watch/?v=10155278547321729",
         url_hash=compute_url_hash("https://www.facebook.com/watch/?v=10155278547321729"),
         title="ยอดดู 75 ล้าน ครั้ง · แชร์ 1.4 แสน ครั้ง | Today, we remember what was on our minds in 2016. | Mark Zuckerberg | Facebook",
-        description="Today, we remember what was on our minds in 2016.",
+        description="Today, we remember what was on our minds in 2016. Looking back at all the moments we shared together.",
         platform="facebook",
         content_type="video",
     ).finalized()
-    assert fb_res.title == "Mark Zuckerberg"
-    assert fb_res.description == "Today, we remember what was on our minds in 2016."
+    assert fb_res.title == "Today, we remember what was on our minds in 2016."
+    assert fb_res.description == "Today, we remember what was on our minds in 2016. Looking back at all the moments we shared together."
     assert "ยอดดู" not in (fb_res.title or "")
 
-    # 2. Instagram post with 60M likes/4M comments prefix and duplicate caption
+    # 2. Instagram post with 60M likes/4M comments prefix and long caption -> short opening sentence as title
     ig_res = UnfurlResult(
         url="https://www.instagram.com/p/BsOGulcndj-/",
         canonical_url="https://www.instagram.com/p/BsOGulcndj-/",
@@ -2335,7 +2337,7 @@ def test_social_engagement_stripping_and_duplicate_title_collapse():
         platform="instagram",
         content_type="post",
     ).finalized()
-    assert ig_res.title == "Just An Egg 🥚 (@world_record_egg)"
+    assert ig_res.title == "Let’s set a world record together and get the most liked…"
     assert ig_res.description == "Let’s set a world record together and get the most liked post on Instagram!"
     assert "60M likes" not in (ig_res.description or "")
 
@@ -2345,9 +2347,504 @@ def test_social_engagement_stripping_and_duplicate_title_collapse():
         canonical_url="https://www.tiktok.com/@scout2015/video/6718335390845095173",
         url_hash=compute_url_hash("https://www.tiktok.com/@scout2015/video/6718335390845095173"),
         title="Scout, Suki & Stella: Scramble up ur name & I’ll try to guess it",
-        description="@scout2015 — Scramble up ur name & I’ll try to guess it #foryoupage #petsoftiktok",
+        description="@scout2015 — Scramble up ur name & I’ll try to guess it! #foryoupage #petsoftiktok",
         platform="tiktok",
         content_type="video",
     ).finalized()
-    assert tt_res.title == "Scout, Suki & Stella (@scout2015)"
-    assert tt_res.description == "Scramble up ur name & I’ll try to guess it #foryoupage #petsoftiktok"
+    assert tt_res.title == "Scramble up ur name & I’ll try to guess it!"
+    assert tt_res.description == "Scramble up ur name & I’ll try to guess it! #foryoupage #petsoftiktok"
+
+
+@pytest.mark.asyncio
+async def test_facebook_plugin_post_extracts_full_caption_and_multi_photos(hermetic_isolation, monkeypatch):
+    """Facebook plugins/post.php and Comet JSON expand truncated og:description (...) and collect up to 5 post photos."""
+    monkeypatch.delenv("META_OEMBED_ACCESS_TOKEN", raising=False)
+    seen_plugin_headers: Dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "www.facebook.com" and request.url.path == "/page/posts/12345":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    "<html><head>"
+                    '<meta property="og:title" content="Cafe Hopping BKK">'
+                    '<meta property="og:description" content="First paragraph is truncated here...">'
+                    '<meta property="og:image" content="https://scontent.xx.fbcdn.net/cover1.jpg">'
+                    "</head></html>"
+                ),
+                request=request,
+            )
+        if request.url.host == "www.facebook.com" and request.url.path == "/plugins/post.php":
+            seen_plugin_headers["sec_fetch_dest"] = request.headers.get("Sec-Fetch-Dest", "")
+            plugin_html = (
+                "<html><body>"
+                '<div data-testid="post_message">'
+                "<p>First paragraph is understan<span class='text_exposed_hide'>...</span>"
+                "<span class='text_exposed_show'>dable and completely expanded.</span></p>"
+                "<p>Second paragraph with full details!</p>"
+                "</div>"
+                '<div class="mtm">'
+                '<img src="https://scontent.xx.fbcdn.net/p50x50/avatar.jpg" width="40" height="40">'
+                '<img src="https://scontent.xx.fbcdn.net/photo2.jpg" width="800" height="600">'
+                '<img src="https://scontent.xx.fbcdn.net/photo3.jpg" width="800" height="600">'
+                "</div>"
+                "</body></html>"
+            )
+            return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, text=plugin_html, request=request)
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+
+    res = await extract_unfurl_metadata("https://www.facebook.com/page/posts/12345")
+    assert seen_plugin_headers.get("sec_fetch_dest") == "iframe"
+    assert res.title == "First paragraph is understandable and completely expanded."
+    assert res.description == "First paragraph is understandable and completely expanded.\n\nSecond paragraph with full details!"
+    assert res.media_items == [
+        "https://scontent.xx.fbcdn.net/cover1.jpg",
+        "https://scontent.xx.fbcdn.net/photo2.jpg",
+        "https://scontent.xx.fbcdn.net/photo3.jpg",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ig_single_photo_dedups_cropped_og_and_srcset_and_strips_trailing_quote_dot(
+    hermetic_isolation, monkeypatch
+):
+    """Single-photo IG posts pick uncropped srcset over trailing cropped variants, drop cross-CDN duplicates, and clean trailing quote-dot."""
+    monkeypatch.delenv("META_OEMBED_ACCESS_TOKEN", raising=False)
+
+    asset_name = "675803457_18579207407021094_3857042213012979541_n.jpg"
+    cropped_og = f"https://scontent.cdninstagram.com/v/t51.82787-15/{asset_name}?stp=c240.0.720.720a_dst-jpg_e35_s640x640_tt6&_nc_ht=scontent.cdninstagram.com"
+    uncropped_1080 = f"https://instagram.fbkk28-1.fna.fbcdn.net/v/t51.82787-15/{asset_name}?stp=dst-jpg_e15_tt6&_nc_ht=instagram.fbkk28-1.fna.fbcdn.net"
+    cropped_1080 = f"https://instagram.fbkk28-1.fna.fbcdn.net/v/t51.82787-15/{asset_name}?stp=c0.420.1080.1080a_dst-jpg_e35_tt6&_nc_ht=instagram.fbkk28-1.fna.fbcdn.net"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.startswith("https://www.instagram.com/p/DfzabQmDTBe/embed/captioned"):
+            embed_html = (
+                "<html><body>"
+                '<div class="Header"><a class="UsernameText">ihavecpu</a></div>'
+                '<div class="Content">'
+                '<img class="EmbeddedMediaImage" '
+                f'src="{cropped_1080}" '
+                f'srcset="{uncropped_1080} 1080w, {cropped_1080} 1080w">'
+                "</div>"
+                '<div class="HoverCard"><img class="EmbeddedMediaImage" src="https://scontent.cdninstagram.com/avatar.jpg"></div>'
+                '<div class="Caption"><a class="CaptionUsername">ihavecpu</a> เห็นได้ไง? | iHAVECPU</div>'
+                "</body></html>"
+            )
+            return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, text=embed_html, request=request)
+        if url.startswith("https://www.instagram.com/p/DfzabQmDTBe"):
+            main_html = (
+                "<html><head>"
+                "<title>Instagram</title>"
+                '<meta property="og:title" content="Instagram">'
+                '<meta property="og:description" content=\'13K likes, 120 comments - ihavecpu on June 10, 2026: "เห็นได้ไง? | iHAVECPU". \'>'
+                f'<meta property="og:image" content="{cropped_og}">'
+                "</head><body></body></html>"
+            )
+            return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, text=main_html, request=request)
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+
+    res = await extract_unfurl_metadata("https://www.instagram.com/p/DfzabQmDTBe/")
+    assert res.title == "เห็นได้ไง?"
+    assert res.description == "เห็นได้ไง? | iHAVECPU"
+    assert res.media_items == [uncropped_1080]
+
+
+@pytest.mark.asyncio
+async def test_enrich_item_overwrites_generic_platform_titles_and_dedups_cropped_existing_media(
+    hermetic_isolation, mock_db, monkeypatch
+):
+    """enrich_item replaces generic Instagram/Facebook/TikTok/YouTube titles and avoids 2nd cropped slide from extension DOM."""
+    from Database.repository import create_or_bump_item
+
+    monkeypatch.delenv("META_OEMBED_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("ALLOW_META_CRAWLER_UA", "true")
+
+    asset_name = "712345678_987654321012345_111222333444_n.jpg"
+    cropped_ext_thumb = f"https://scontent.cdninstagram.com/v/t51.82787-15/{asset_name}?stp=c240.0.720.720a_dst-jpg_e35_s640x640_tt6"
+    uncropped_embed = f"https://instagram.fbkk28-1.fna.fbcdn.net/v/t51.82787-15/{asset_name}?stp=dst-jpg_e15_tt6"
+    tt_cover_p16 = "https://p16-sign-sg.tiktokcdn.com/tos-alisg-p-0037/abc123~tplv-photomode-zoomcover:720:720.jpeg?x-expires=999"
+
+    img_bytes = make_gradient_noise_jpeg_bytes(900, 1200)
+    ig_url = "https://www.instagram.com/reel/DYowlO2v1ww/"
+    tt_url = "https://www.tiktok.com/@creator/video/7703529186639547656"
+    fb_url = "https://www.facebook.com/reel/1EM5Hpu45Y"
+    yt_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    fb_thumb = "https://scontent.xx.fbcdn.net/fb-reel-cover.jpg"
+    yt_thumb = "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+
+    # Seed IG reel item with generic title "Instagram" and cropped duplicate extension media
+    mock_db.tables["items"].append(
+        {
+            "id": "item-ig-generic",
+            "user_id": "user-1",
+            "folder_id": None,
+            "url": ig_url,
+            "url_hash": compute_url_hash(ig_url),
+            "platform": "instagram",
+            "content_type": "video",
+            "title": "Instagram",
+            "description": None,
+            "image_url": cropped_ext_thumb,
+            "media_items": [cropped_ext_thumb],
+            "status": "todo",
+            "enrich_status": "done",
+        }
+    )
+    # Seed TikTok item with generic shell title
+    mock_db.tables["items"].append(
+        {
+            "id": "item-tt-generic",
+            "user_id": "user-1",
+            "folder_id": None,
+            "url": tt_url,
+            "url_hash": compute_url_hash(tt_url),
+            "platform": "tiktok",
+            "content_type": "video",
+            "title": "Watch trending videos for you | TikTok",
+            "description": None,
+            "image_url": None,
+            "media_items": [],
+            "status": "todo",
+            "enrich_status": "done",
+        }
+    )
+    # Seed Facebook & YouTube items with generic/noisy titles
+    mock_db.tables["items"].append(
+        {
+            "id": "item-fb-generic",
+            "user_id": "user-1",
+            "folder_id": None,
+            "url": fb_url,
+            "url_hash": compute_url_hash(fb_url),
+            "platform": "facebook",
+            "content_type": "video",
+            "title": "Facebook",
+            "description": None,
+            "image_url": None,
+            "media_items": [],
+            "status": "todo",
+            "enrich_status": "done",
+        }
+    )
+    mock_db.tables["items"].append(
+        {
+            "id": "item-yt-noisy",
+            "user_id": "user-1",
+            "folder_id": None,
+            "url": yt_url,
+            "url_hash": compute_url_hash(yt_url),
+            "platform": "youtube",
+            "content_type": "video",
+            "title": "(584) Match Highlight - YouTube",
+            "description": None,
+            "image_url": None,
+            "media_items": [],
+            "status": "todo",
+            "enrich_status": "done",
+        }
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.startswith("https://www.instagram.com/reel/DYowlO2v1ww/embed/captioned"):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    '<html><body><div class="Header"><a class="UsernameText">creator</a></div>'
+                    f'<div class="Content"><img class="EmbeddedMediaImage" src="{uncropped_embed}"></div>'
+                    '<div class="Caption"><a class="CaptionUsername">creator</a> 高難度招式 😎🔥</div></body></html>'
+                ),
+                request=request,
+            )
+        if url.startswith("https://www.instagram.com/reel/DYowlO2v1ww"):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    '<html><head><title>Instagram</title>'
+                    '<meta property="og:title" content="Instagram">'
+                    '<meta property="og:description" content=\'9K likes, 40 comments - creator on May 1, 2026: "高難度招式 😎🔥\nFull trick breakdown". \'>'
+                    f'<meta property="og:image" content="{cropped_ext_thumb}">'
+                    "</head><body></body></html>"
+                ),
+                request=request,
+            )
+        if url.startswith("https://www.tiktok.com/oembed"):
+            return httpx.Response(
+                200,
+                json={
+                    "title": "Trick shot compilation 2026\nSubscribe for more!",
+                    "author_name": "creator",
+                    "thumbnail_url": tt_cover_p16,
+                },
+                request=request,
+            )
+        if url.startswith("https://www.facebook.com/reel/1EM5Hpu45Y"):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    '<html><head><title>Facebook</title>'
+                    '<meta property="og:title" content="Facebook">'
+                    '<meta property="og:description" content="เน้นเข้ารอบ ไม่เน้นเข้าร่วม&#10;ต่อท้ายแคปชั่นเต็ม">'
+                    f'<meta property="og:image" content="{fb_thumb}">'
+                    "</head><body></body></html>"
+                ),
+                request=request,
+            )
+        if url.startswith("https://www.youtube.com/oembed"):
+            return httpx.Response(
+                200,
+                json={
+                    "title": "Match Highlight",
+                    "author_name": "SportsChannel",
+                    "thumbnail_url": yt_thumb,
+                    "html": '<iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ"></iframe>',
+                },
+                request=request,
+            )
+        if (
+            url.startswith(uncropped_embed)
+            or url.startswith(tt_cover_p16)
+            or url.startswith(fb_thumb)
+            or url.startswith(yt_thumb)
+        ):
+            return httpx.Response(200, headers={"content-type": "image/jpeg"}, content=img_bytes, request=request)
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+
+    ig_out = await enrich_item(mock_db, "item-ig-generic")
+    assert ig_out["status"] == "ok"
+    assert ig_out["item"]["title"] == "高難度招式 😎🔥"
+    assert ig_out["item"]["description"] == "高難度招式 😎🔥\nFull trick breakdown"
+    expected_ig_webp = (
+        f"https://storage.example.com/storage/v1/object/public/thumbnails/thumbnails/{compute_url_hash(ig_url)}.webp"
+    )
+    # Single asset must stay 1 image (never [uploaded_webp, cropped_ext_thumb])
+    assert ig_out["item"]["media_items"] == [expected_ig_webp]
+
+    tt_out = await enrich_item(mock_db, "item-tt-generic")
+    assert tt_out["status"] == "ok"
+    assert tt_out["item"]["title"] == "Trick shot compilation 2026"
+
+    fb_out = await enrich_item(mock_db, "item-fb-generic")
+    assert fb_out["status"] == "ok"
+    assert fb_out["item"]["title"] == "เน้นเข้ารอบ ไม่เน้นเข้าร่วม"
+
+    yt_out = await enrich_item(mock_db, "item-yt-noisy")
+    assert yt_out["status"] == "ok"
+    assert yt_out["item"]["title"] == "Match Highlight"
+
+    # Re-saving / bumping an item whose title remained generic schedules re-enrichment
+    from Database.schemas import ItemCreateRequest
+
+    created_ig = create_or_bump_item(
+        mock_db,
+        "user-1",
+        ItemCreateRequest(
+            url="https://www.instagram.com/reel/NEW_BUMP_123/",
+            title="Instagram",
+            platform="instagram",
+            content_type="video",
+        ),
+    )
+    mock_db.table("items").update({"enrich_status": "done"}).eq("id", created_ig["id"]).execute()
+    bumped_again = create_or_bump_item(
+        mock_db,
+        "user-1",
+        ItemCreateRequest(
+            url="https://www.instagram.com/reel/NEW_BUMP_123/",
+            title="Instagram",
+            platform="instagram",
+            content_type="video",
+        ),
+    )
+    assert bumped_again["enrich_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_fb_multiline_title_shortened_and_space_around_emoji_preserved(hermetic_isolation, monkeypatch):
+    """Facebook multiline og:title collapses to 1st line and keeps description whole even when spacing around emoji differs."""
+    monkeypatch.delenv("META_OEMBED_ACCESS_TOKEN", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.startswith("https://www.facebook.com/reel/1HBywf5BXx"):
+            html = (
+                "<html><head>"
+                '<meta property="og:title" content="BotTeam 🤖 ทีมพนักงาน AI ที่ทำงานอยู่ในคอมพิวเตอร์ของคุณเอง&#10;ไม่ใช่แค่แชท แต่ทำงานแทนได้จริง">'
+                '<meta property="og:description" content="BotTeam🤖 ทีมพนักงาน AI ที่ทำงานอยู่ในคอมพิวเตอร์ของคุณเอง&#10;ไม่ใช่แค่แชท แต่ทำงานแทนได้จริง&#10;รายละเอียดเพิ่มเติมที่ลิงก์">'
+                '<meta property="og:image" content="https://scontent.xx.fbcdn.net/botteam-thumb.jpg">'
+                "</head><body></body></html>"
+            )
+            return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, text=html, request=request)
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+
+    res = await extract_unfurl_metadata("https://www.facebook.com/reel/1HBywf5BXx")
+    assert "\n" not in res.title
+    assert res.title == "BotTeam🤖 ทีมพนักงาน AI ที่ทำงานอยู่ในคอมพิวเตอร์ของคุณเอง"
+    assert "รายละเอียดเพิ่มเติมที่ลิงก์" in res.description
+    assert res.description.endswith("รายละเอียดเพิ่มเติมที่ลิงก์")
+
+
+
+def test_ig_embed_sidecar_extracts_all_carousel_slides():
+    """IG carousel embeds render only slide #1 as <img>; remaining slides come from escaped JSON display_url."""
+    from Unfurl.extractors import _parse_instagram_embed_captioned
+
+    def esc(u: str) -> str:
+        return u.replace("/", "\\\\\\/").replace("&", "\\\\u0026")
+
+    slides = [
+        f"https://scontent-bkk1-2.cdninstagram.com/v/t51.82787-15/90758025{i}_18640174489025585_210324011829699057{i}_n.heic?stp=dst-jpg_e35_tt6&oh=abc{i}"
+        for i in range(6)
+    ]
+    blob = '\\"edge_sidecar_to_children\\":{' + ",".join(
+        f'\\"display_url\\":\\"{esc(u)}\\"' for u in [slides[0], *slides]
+    ) + "}"
+    html = (
+        "<html><body>"
+        f'<div class="Content"><img class="EmbeddedMediaImage" src="{slides[0]}"></div>'
+        f"<script>{blob}</script></body></html>"
+    )
+    res = _parse_instagram_embed_captioned(html, "https://www.instagram.com/p/X/embed/captioned/")
+    assert res["media_items"] == slides[:5]
+
+
+@pytest.mark.asyncio
+async def test_ig_reels_plural_fetches_singular_reel_meta_while_keeping_canonical_url_and_fb_intact(
+    hermetic_isolation, monkeypatch
+):
+    """IG /reels/<code> fetches meta from /reel/<code>/ while keeping original canonical_url/url_hash and leaving Facebook /reels/ untouched."""
+    monkeypatch.delenv("META_OEMBED_ACCESS_TOKEN", raising=False)
+    seen_urls: List[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        seen_urls.append(url)
+        if url.startswith("https://www.instagram.com/reels/"):
+            # Simulate IG bouncing /reels/ to login wall while /reel/ serves metadata
+            return httpx.Response(
+                302,
+                headers={"location": "https://www.instagram.com/accounts/login/"},
+                request=request,
+            )
+        if url.startswith("https://www.instagram.com/reel/Dfz09kGyug0/embed/captioned"):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text="<html><body>The link to this photo or video may be broken</body></html>",
+                request=request,
+            )
+        if url.startswith("https://www.instagram.com/reel/Dfz09kGyug0/"):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    '<html><head><meta property="og:title" content="user บน Instagram: &quot;แคปชั่นจริงจากรีล&quot;">'
+                    '<meta property="og:description" content=\'100 likes, 5 comments - user on May 1, 2026: "แคปชั่นจริงจากรีล". \'>'
+                    '<meta property="og:image" content="https://scontent.cdninstagram.com/v/t51/cover_reel.jpg">'
+                    "</head><body></body></html>"
+                ),
+                request=request,
+            )
+        if url.startswith("https://www.facebook.com/reels/999888777"):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    '<html><head><meta property="og:title" content="Facebook Reel Caption">'
+                    '<meta property="og:description" content="Facebook Reel Caption Full">'
+                    '<meta property="og:image" content="https://scontent.xx.fbcdn.net/fb_reel.jpg">'
+                    "</head><body></body></html>"
+                ),
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+
+    ig_input = "https://www.instagram.com/reels/Dfz09kGyug0/"
+    ig_res = await extract_unfurl_metadata(ig_input)
+    assert ig_res.url == "https://www.instagram.com/reels/Dfz09kGyug0"
+    assert ig_res.canonical_url == "https://www.instagram.com/reels/Dfz09kGyug0"
+    assert ig_res.url_hash == compute_url_hash(ig_input)
+    assert ig_res.title == "แคปชั่นจริงจากรีล"
+    assert ig_res.embed_url == "https://www.instagram.com/reel/Dfz09kGyug0/embed"
+    assert any(u.startswith("https://www.instagram.com/reel/Dfz09kGyug0/") for u in seen_urls)
+    assert not any(u.startswith("https://www.instagram.com/reels/Dfz09kGyug0") for u in seen_urls)
+
+    seen_urls.clear()
+    fb_res = await extract_unfurl_metadata("https://www.facebook.com/reels/999888777")
+    assert fb_res.title == "Facebook Reel Caption"
+    assert any(u.startswith("https://www.facebook.com/reels/999888777") for u in seen_urls)
+
+
+@pytest.mark.asyncio
+async def test_ig_playable_video_resolver_extracts_mp4_and_enforces_access(
+    hermetic_isolation, mock_db, monkeypatch
+):
+    """extract_instagram_playable_video_url & resolve_item_playable_video extract validated Meta CDN .mp4 or return None cleanly."""
+    from fastapi import HTTPException
+    from Unfurl.extractors import extract_instagram_playable_video_url
+    from Unfurl.service import resolve_item_playable_video
+
+    mp4_url = "https://scontent-bkk1-1.cdninstagram.com/o1/v/t2/f2/m86/sample_reel.mp4?oh=123&oe=456"
+    escaped_mp4 = mp4_url.replace("/", "\\\\\\/").replace("&", "\\\\u0026")
+    bad_mp4 = "https://evil.example.com/bad.mp4".replace("/", "\\\\\\/")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.startswith("https://www.instagram.com/reel/DYowlO2v1ww/embed/captioned"):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=f'<script>"video_url":"{bad_mp4}","other":{{"video_url":"{escaped_mp4}"}}</script>',
+                request=request,
+            )
+        if url.startswith("https://www.instagram.com/reel/DfzqfsjyQkb/embed"):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text="<html><body>Watch on Instagram</body></html>",
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+
+    # Validates host allowlist (skips evil.example.com, keeps scontent-bkk1-1.cdninstagram.com)
+    assert await extract_instagram_playable_video_url("https://www.instagram.com/reels/DYowlO2v1ww/") == mp4_url
+    # Gracefully returns None when IG omits video_url
+    assert await extract_instagram_playable_video_url("https://www.instagram.com/reel/DfzqfsjyQkb/") is None
+
+    mock_db.tables["items"].append(
+        {
+            "id": "item-ig-mp4",
+            "owner_id": "user-1",
+            "user_id": "user-1",
+            "folder_id": None,
+            "url": "https://www.instagram.com/reels/DYowlO2v1ww/",
+            "embed_type": "instagram",
+            "embed_url": "https://www.instagram.com/reel/DYowlO2v1ww/embed",
+            "platform": "instagram",
+            "content_type": "video",
+        }
+    )
+    resolved = await resolve_item_playable_video(mock_db, user_id="user-1", item_id="item-ig-mp4")
+    assert resolved["video_url"] == mp4_url
+    assert resolved["embed_url"] == "https://www.instagram.com/reel/DYowlO2v1ww/embed"
+
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_item_playable_video(mock_db, user_id="stranger-2", item_id="item-ig-mp4")
+    assert exc_info.value.status_code == 403

@@ -71,7 +71,7 @@ def compress_image_to_webp(
 
         current_img = img
         for scale_attempt in range(3):
-            for quality in (80, 70, 60, 50, 40, 30, 20):
+            for quality in (88, 80, 72, 64, 54, 44, 32, 20):
                 out = BytesIO()
                 current_img.save(out, format="WEBP", quality=quality, method=4)
                 encoded = out.getvalue()

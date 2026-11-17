@@ -190,6 +190,7 @@
   const state = {
     authMode: "login",
     activeViewMode: "save",
+    tabDefaultTitle: "",
     domMeta: null,
     domMetaUrl: "",
     previewMeta: null,
@@ -256,6 +257,9 @@
     blockedTabCard: document.getElementById("blockedTabCard"),
     openWebBlockedBtn: document.getElementById("openWebBlockedBtn"),
     toggleUrlEditBtn: document.getElementById("toggleUrlEditBtn"),
+    socialFeedWarningCard: document.getElementById("socialFeedWarningCard"),
+    socialFeedWarningTitle: document.getElementById("socialFeedWarningTitle"),
+    socialFeedWarningText: document.getElementById("socialFeedWarningText"),
     urlEditRow: document.getElementById("urlEditRow"),
     previewImage: document.getElementById("previewImage"),
     previewPlaceholder: document.getElementById("previewPlaceholder"),
@@ -903,6 +907,18 @@
     });
   }
 
+  function shouldOverwritePopupTitle(currentTitle, nextTitle, url, forceRefresh = false) {
+    if (!nextTitle) return false;
+    const isNextGeneric =
+      typeof api.isGenericPlatformTitle === "function" && api.isGenericPlatformTitle(nextTitle, url);
+    if (isNextGeneric) return false;
+    if (forceRefresh || !currentTitle) return true;
+    if (typeof api.isGenericPlatformTitle === "function" && api.isGenericPlatformTitle(currentTitle, url)) {
+      return true;
+    }
+    return Boolean(state.tabDefaultTitle && currentTitle === state.tabDefaultTitle);
+  }
+
   function resetPreviewMetadata() {
     state.previewMeta = null;
     state.previewUrl = "";
@@ -931,8 +947,9 @@
         els.previewSourceBadge.textContent = preview.cached ? "แคช" : "✓";
       }
 
-      if (preview.title && (!els.titleInput.value.trim() || forceRefresh)) {
+      if (shouldOverwritePopupTitle(els.titleInput.value.trim(), preview.title, targetUrl, forceRefresh)) {
         els.titleInput.value = preview.title;
+        state.tabDefaultTitle = "";
       }
       els.siteNameLabel.textContent = formatDomainDisplay(targetUrl, preview.site_name || "");
 
@@ -964,12 +981,53 @@
     }
   }
 
+  function applySocialLinkWarningUi(warn, { autoExpand = false, clearInput = false } = {}) {
+    if (warn) {
+      if (els.socialFeedWarningTitle) {
+        els.socialFeedWarningTitle.textContent = `⚠️ กรุณาใส่ลิงก์แชร์ของโพสต์ (${warn.platform})`;
+      }
+      if (els.socialFeedWarningText) {
+        els.socialFeedWarningText.textContent = warn.message;
+      }
+      if (els.socialFeedWarningCard) {
+        els.socialFeedWarningCard.classList.remove("hidden");
+      }
+      if (autoExpand && els.urlEditRow) {
+        els.urlEditRow.classList.remove("hidden");
+      }
+      if (clearInput && els.urlInput) {
+        els.urlInput.value = "";
+      }
+      if (els.urlInput) {
+        els.urlInput.placeholder = `วางลิงก์แชร์ของโพสต์ เช่น ${warn.example}`;
+      }
+      if (els.saveItemBtn) {
+        els.saveItemBtn.disabled = true;
+        els.saveItemBtn.textContent = "กรุณาวางลิงก์แชร์ของโพสต์ก่อนบันทึก";
+      }
+      return true;
+    }
+
+    if (els.socialFeedWarningCard) {
+      els.socialFeedWarningCard.classList.add("hidden");
+    }
+    if (els.urlInput) {
+      els.urlInput.placeholder = "https://...";
+    }
+    if (els.saveItemBtn) {
+      els.saveItemBtn.disabled = false;
+      els.saveItemBtn.textContent = "บันทึก";
+    }
+    return false;
+  }
+
   function populateFromTabSync(tab) {
     if (!tab || !tab.url) return null;
     const rawUrl = tab.url.trim();
     const saveable = api.isSaveableHttpUrl(rawUrl);
     els.blockedTabCard.classList.toggle("hidden", saveable);
     if (!saveable) {
+      applySocialLinkWarningUi(null);
       els.urlInput.value = "";
       els.titleInput.value = "";
       els.siteNameLabel.textContent = tab.title || "แท็บระบบเบราว์เซอร์";
@@ -978,9 +1036,25 @@
       return null;
     }
 
+    const socialWarn =
+      typeof api.getSocialPostLinkWarning === "function" ? api.getSocialPostLinkWarning(rawUrl) : null;
+    if (socialWarn) {
+      state.activeTabId = tab.id || null;
+      applySocialLinkWarningUi(socialWarn, { autoExpand: true, clearInput: true });
+      els.titleInput.value = "";
+      els.siteNameLabel.textContent = `${socialWarn.platform} · รอวางลิงก์แชร์ของโพสต์`;
+      renderPreviewThumbnail(tab.favIconUrl || "", socialWarn.platform);
+      return null;
+    }
+
+    applySocialLinkWarningUi(null);
     state.activeTabId = tab.id || null;
     els.urlInput.value = rawUrl;
-    els.titleInput.value = (tab.title || "").trim();
+    const rawTabTitle = (tab.title || "").trim();
+    const isTabGeneric =
+      typeof api.isGenericPlatformTitle === "function" && api.isGenericPlatformTitle(rawTabTitle, rawUrl);
+    state.tabDefaultTitle = isTabGeneric ? "" : rawTabTitle;
+    els.titleInput.value = isTabGeneric ? "" : rawTabTitle;
     const domain = formatDomainDisplay(rawUrl);
     els.siteNameLabel.textContent = domain;
     renderPreviewThumbnail(tab.favIconUrl || "", domain);
@@ -996,7 +1070,7 @@
         state.domMeta = domMeta;
         state.domMetaUrl = rawUrl;
         if (domMeta) {
-          if (domMeta.title && (!els.titleInput.value || domMeta.title.length > els.titleInput.value.length)) {
+          if (shouldOverwritePopupTitle(els.titleInput.value.trim(), domMeta.title, rawUrl, false)) {
             els.titleInput.value = domMeta.title;
           }
           if (domMeta.site_name) {
@@ -1136,6 +1210,7 @@
     if (els.previewSourceBadge) els.previewSourceBadge.textContent = "";
     if (els.offlineQueueBar) els.offlineQueueBar.classList.add("hidden");
     if (els.reminderPickerCard) els.reminderPickerCard.classList.add("hidden");
+    if (els.socialFeedWarningCard) els.socialFeedWarningCard.classList.add("hidden");
     if (els.feedbackBanner) els.feedbackBanner.classList.add("hidden");
   }
 
@@ -1356,7 +1431,14 @@
     const url = els.urlInput.value.trim();
     if (!api.isSaveableHttpUrl(url)) {
       if (els.urlEditRow) els.urlEditRow.classList.remove("hidden");
-      showBanner("กรุณากรอก URL ที่ขึ้นต้นด้วย http:// หรือ https://", "error");
+      showBanner("กรุณากรอกลิงก์ของโพสต์ที่ขึ้นต้นด้วย http:// หรือ https://", "error");
+      return;
+    }
+    const socialWarn =
+      typeof api.getSocialPostLinkWarning === "function" ? api.getSocialPostLinkWarning(url) : null;
+    if (socialWarn) {
+      applySocialLinkWarningUi(socialWarn, { autoExpand: true, clearInput: false });
+      showBanner(socialWarn.message, "error");
       return;
     }
 
@@ -1374,10 +1456,18 @@
       (activePreviewMeta && (activePreviewMeta.image_url || activePreviewMeta.thumbnail_url)) || "";
     const previewMedia = normalizeMediaUrlList(activePreviewMeta && activePreviewMeta.media_items, previewImage);
     const domMedia = normalizeMediaUrlList(activeDomMeta && activeDomMeta.media_items);
+    const isMetaSoc = /instagram\.com|facebook\.com|fb\.watch/i.test(url);
     const mergedMedia = [];
     const seenMerged = new Set();
-    const primaryList = domMedia.length > previewMedia.length ? domMedia : previewMedia;
-    const secondaryList = domMedia.length > previewMedia.length ? previewMedia : domMedia;
+    const primaryList = previewMedia.length
+      ? previewMedia
+      : domMedia;
+    const secondaryList =
+      previewMedia.length && !isMetaSoc
+        ? domMedia
+        : previewMedia.length && domMedia.length > previewMedia.length
+          ? domMedia.filter((u) => !/[?&]stp=c\d+\.\d+\.\d+\.\d+/i.test(u))
+          : [];
     for (const u of [...primaryList, ...secondaryList]) {
       if (!u || seenMerged.has(u) || mergedMedia.length >= 5) continue;
       seenMerged.add(u);
@@ -1385,10 +1475,16 @@
     }
     const coverImage = mergedMedia[0] || previewImage || undefined;
     const tags = parseTagList();
+    const rawSubmittedTitle = els.titleInput.value.trim();
+    const safeSubmittedTitle =
+      rawSubmittedTitle &&
+      (typeof api.isGenericPlatformTitle !== "function" || !api.isGenericPlatformTitle(rawSubmittedTitle, url))
+        ? rawSubmittedTitle
+        : undefined;
 
     const payload = {
       url,
-      title: els.titleInput.value.trim() || undefined,
+      title: safeSubmittedTitle,
       description:
         (activeDomMeta && activeDomMeta.description) ||
         (activePreviewMeta && activePreviewMeta.description) ||
@@ -1643,11 +1739,35 @@
       });
     }
 
+    let urlPreviewTimer = null;
     els.urlInput.addEventListener("input", () => {
+      clearTimeout(urlPreviewTimer);
       const nextUrl = els.urlInput.value.trim();
+      if (els.savedResultCard) {
+        els.savedResultCard.classList.add("hidden");
+      }
+      if (!nextUrl) {
+        if (els.socialFeedWarningCard && !els.socialFeedWarningCard.classList.contains("hidden")) {
+          if (els.saveItemBtn) {
+            els.saveItemBtn.disabled = true;
+            els.saveItemBtn.textContent = "กรุณาวางลิงก์แชร์ของโพสต์ก่อนบันทึก";
+          }
+        }
+        return;
+      }
+      const socialWarn =
+        typeof api.getSocialPostLinkWarning === "function" ? api.getSocialPostLinkWarning(nextUrl) : null;
+      if (socialWarn) {
+        applySocialLinkWarningUi(socialWarn, { autoExpand: true, clearInput: false });
+        return;
+      }
+      applySocialLinkWarningUi(null);
       if (api.isSaveableHttpUrl(nextUrl)) {
         els.blockedTabCard.classList.add("hidden");
         els.siteNameLabel.textContent = formatDomainDisplay(nextUrl);
+        urlPreviewTimer = setTimeout(() => {
+          void fetchPreviewForUrl(nextUrl, false);
+        }, 350);
       }
       if ((state.previewUrl && state.previewUrl !== nextUrl) || (state.domMetaUrl && state.domMetaUrl !== nextUrl)) {
         resetPreviewMetadata();

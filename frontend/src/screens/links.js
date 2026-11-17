@@ -44,16 +44,111 @@ export function resolveAllowlistedEmbedUrl(rawUrl) {
   }
 }
 
-function getPreviewMediaImages(item) {
+/**
+ * Validate a direct HTTPS video stream URL strictly against Meta CDN media hosts.
+ */
+export function resolveAllowlistedDirectVideoUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== "string") return null;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    if (parsed.protocol !== "https:") return null;
+    if (parsed.username || parsed.password) return null;
+    const host = parsed.hostname.toLowerCase();
+    const allowed =
+      host === "cdninstagram.com" ||
+      host.endsWith(".cdninstagram.com") ||
+      host === "fbcdn.net" ||
+      host.endsWith(".fbcdn.net");
+    return allowed ? parsed.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+const META_CROPPED_STP_RE = /[?&]stp=c\d+\.\d+\.\d+\.\d+/i;
+const META_DOWNSCALED_RE = /(?:[?&]stp=[^&]*cmp\d+|_s(?:640|480|320|240|150)x(?:640|480|320|240|150))/i;
+const META_ASSET_FILENAME_RE = /^\d+_\d+_\d+_[a-z]\.(?:jpg|jpeg|png|webp)$/i;
+const TIKTOK_ASSET_ID_RE = /\/tos-[^/]+\/([A-Za-z0-9_-]{12,})(?:~|$)/;
+
+function getPreviewAssetKey(url) {
+  const exact = url.split("#")[0];
+  try {
+    const parsed = new URL(exact);
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname || "";
+    const base = (path.split("/").pop() || "").toLowerCase();
+    if (
+      host.includes("fbcdn.net") ||
+      host.includes("cdninstagram.com") ||
+      path.includes("/v/t")
+    ) {
+      if (META_ASSET_FILENAME_RE.test(base) || base.length >= 28) {
+        return `meta:${base}`;
+      }
+    }
+    if (host.includes("tiktokcdn") || host.includes("muscdn")) {
+      const m = path.match(TIKTOK_ASSET_ID_RE);
+      if (m) return `tt:${m[1]}`;
+    }
+    if (host === "pbs.twimg.com" && path.startsWith("/media/")) {
+      const twId = base.split(".")[0];
+      if (twId) return `twimg:${twId}`;
+    }
+    if (host === "preview.redd.it" || host === "i.redd.it") {
+      return `reddit:${path.toLowerCase()}`;
+    }
+  } catch {}
+  return `exact:${exact}`;
+}
+
+export function getPreviewMediaImages(item) {
   const list = Array.isArray(item?.mediaItems)
     ? item.mediaItems
     : Array.isArray(item?.media_items)
       ? item.media_items
       : [];
-  return list
+  const rawUrls = list
     .map((m) => (typeof m === "string" ? m : m?.media_url || m?.url || m?.thumbnail_url || ""))
     .map((u) => safeImgUrl(u))
     .filter(Boolean);
+
+  const deduped = [];
+  const posByAssetKey = new Map();
+  for (const url of rawUrls) {
+    const key = getPreviewAssetKey(url);
+    const isExact = key.startsWith("exact:");
+    const isCropped = META_CROPPED_STP_RE.test(url) || META_DOWNSCALED_RE.test(url);
+    if (posByAssetKey.has(key)) {
+      if (!isExact && !isCropped) {
+        const prevIdx = posByAssetKey.get(key);
+        const prevUrl = deduped[prevIdx];
+        if (META_CROPPED_STP_RE.test(prevUrl) || META_DOWNSCALED_RE.test(prevUrl)) {
+          deduped[prevIdx] = url;
+        }
+      }
+      continue;
+    }
+    posByAssetKey.set(key, deduped.length);
+    deduped.push(url);
+  }
+
+  // Legacy already-saved items may hold [uploaded_cover.webp, og_cropped_s640x640 / lookaside.fbsbx]
+  if (deduped.length >= 2 && /\/thumbnails\/[a-f0-9]{16,64}\.webp/i.test(deduped[0])) {
+    const filtered = [
+      deduped[0],
+      ...deduped
+        .slice(1)
+        .filter(
+          (u) =>
+            !(
+              (META_CROPPED_STP_RE.test(u) && /_s(?:640|480|320)x(?:640|480|320)/i.test(u)) ||
+              u.toLowerCase().includes("lookaside.fbsbx.com")
+            )
+        ),
+    ];
+    return filtered;
+  }
+  return deduped;
 }
 
 const FB_STATS_SEG_RE =
@@ -64,11 +159,120 @@ const FB_INLINE_STATS_EN_RE =
   /(?:(?<=\.\s)|^)[\d,.]+[KMBkmb]?\s+(?:likes?|followers?)(?:\s*·\s*[\d,.]+[KMBkmb]?\s+(?:talking about this|were here|followers?))*\.?\s*/gi;
 const IG_OG_TITLE_RE = /^(.+?)\s+(?:on|บน)\s+Instagram:\s*["“”]?([\s\S]+?)["“”]?\s*$/i;
 const IG_OG_DESC_RE =
-  /^(?:[\d,.]+[KMBkmb]?\s*(?:likes?|comments?)|(?:ถูกใจ|ความคิดเห็น)\s*[^,-]+)(?:[\s,·•]+(?:[\d,.]+[KMBkmb]?\s*(?:likes?|comments?)|(?:ถูกใจ|ความคิดเห็น)\s*[^,-]+))*\s*-\s*([A-Za-z0-9._]+)(?:\s+(?:on|บน|เมื่อ)\s+[^:]+)?:\s*["“”]?([\s\S]*?)["“”]?\s*$/i;
+  /^(?:[\d,.]+[KMBkmb]?\s*(?:likes?|comments?)|(?:ถูกใจ|ความคิดเห็น)\s*[^,-]+)(?:[\s,·•]+(?:[\d,.]+[KMBkmb]?\s*(?:likes?|comments?)|(?:ถูกใจ|ความคิดเห็น)\s*[^,-]+))*\s*-\s*([A-Za-z0-9._]+)(?:\s+(?:on|บน|เมื่อ)\s+[^:]+)?:\s*([\s\S]*?)\s*$/i;
 const IG_PROFILE_STATS_RE =
   /^(?:ผู้ติดตาม\s*[^-]+|[\d,.]+[KMBkmb]?\s*Followers,\s*[\d,.]+[KMBkmb]?\s*Following,\s*[\d,.]+[KMBkmb]?\s*Posts)\s*-\s*/i;
 const TT_META_DESC_RE =
   /^(?:[\d,.]+[KMBkmb]?\s*Likes?(?:,\s*[\d,.]+[KMBkmb]?\s*Comments?)?\.?\s*|ถูกใจ\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*ครั้ง(?:,\s*ความคิดเห็น\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*รายการ)?\.?\s*)(?:TikTok video from\s+([^:]+):\s*["“”]?([\s\S]+?)["“”]?\s*$|วิดีโอ\s*TikTok\s*จาก\s+([^:]+):\s*["“”]?([\s\S]+?)["“”]?\s*$)?/i;
+const NOTIFICATION_PREFIX_RE = /^\(\d+\+?\)\s+/;
+const GENERIC_PLATFORM_TITLES = new Set([
+  "instagram",
+  "log in • instagram",
+  "login • instagram",
+  "เข้าสู่ระบบ • instagram",
+  "เข้าสู่ระบบ instagram",
+  "instagram photo",
+  "instagram video",
+  "instagram reel",
+  "instagram reels",
+  "facebook",
+  "facebook - log in or sign up",
+  "facebook - เข้าสู่ระบบหรือสมัครใช้งาน",
+  "log into facebook",
+  "log in to facebook",
+  "เข้าสู่ระบบ facebook",
+  "watch",
+  "facebook watch",
+  "reels",
+  "facebook reels",
+  "tiktok",
+  "tiktok - make your day",
+  "watch trending videos for you",
+  "watch trending videos for you | tiktok",
+  "explore - find your favourite videos on tiktok",
+  "discover | tiktok",
+  "เข้าสู่ระบบ | tiktok",
+  "youtube",
+  "- youtube",
+  "home - youtube",
+  "shorts - youtube",
+  "x",
+  "twitter",
+  "home / x",
+  "log in to x / x",
+  "explore / x",
+  "x (formerly twitter)",
+  "reddit",
+  "reddit - dive into anything",
+  "reddit - the heart of the internet",
+  "vimeo",
+  "spotify",
+  "spotify – web player",
+  "threads",
+  "pinterest",
+]);
+
+function stripBalancedCaptionQuotes(rawCap) {
+  const cap = String(rawCap || "").trim();
+  if ((cap.startsWith('"') && cap.endsWith('".')) || (cap.startsWith("“") && cap.endsWith("”."))) {
+    return cap.slice(1, -2).trim();
+  }
+  if ((cap.startsWith('"') && cap.endsWith('"')) || (cap.startsWith("“") && cap.endsWith("”"))) {
+    return cap.slice(1, -1).trim();
+  }
+  const dqCount = (cap.match(/"/g) || []).length;
+  const cdqCount = (cap.match(/”/g) || []).length;
+  if ((cap.endsWith('".') && dqCount % 2 === 1) || (cap.endsWith("”.") && cdqCount % 2 === 1)) {
+    return cap.slice(0, -2).trim();
+  }
+  return cap;
+}
+
+export function isGenericOrNoisyTitle(title, platformLower = "", rawUrl = "") {
+  const stripped = String(title || "").trim();
+  if (!stripped) return true;
+  const lowered = stripped.toLowerCase();
+  if (/^https?:\/\//i.test(stripped)) return true;
+  if (rawUrl) {
+    const rawTrim = String(rawUrl).trim().toLowerCase();
+    if (lowered === rawTrim) return true;
+    try {
+      const host = new URL(rawUrl).hostname.toLowerCase();
+      if (host && (lowered === host || lowered === host.replace(/^www\./, ""))) return true;
+    } catch {}
+  }
+  const noBadge = stripped.replace(NOTIFICATION_PREFIX_RE, "").trim();
+  const noBadgeLower = noBadge.toLowerCase();
+  if (GENERIC_PLATFORM_TITLES.has(lowered) || GENERIC_PLATFORM_TITLES.has(noBadgeLower)) return true;
+  if (NOTIFICATION_PREFIX_RE.test(stripped) && (/\s*[-–|]\s*YouTube$/i.test(stripped) || GENERIC_PLATFORM_TITLES.has(noBadgeLower))) {
+    return true;
+  }
+  if ((platformLower.includes("instagram") || /instagram\.com/i.test(rawUrl)) && /^@?[A-Za-z0-9._]+\s+(?:on|บน)\s+Instagram\s*$/i.test(noBadge)) {
+    return true;
+  }
+  if ((platformLower.includes("tiktok") || /tiktok\.com/i.test(rawUrl)) && /^(?:watch trending|discover|make your day|tiktok)\b.*\|\s*tiktok$/i.test(noBadgeLower)) {
+    return true;
+  }
+  return false;
+}
+
+function scrubGenericPlatformTitle(title, platformLower = "", rawUrl = "") {
+  const stripped = String(title || "").trim();
+  if (!stripped) return "";
+  if (!isGenericOrNoisyTitle(stripped, platformLower, rawUrl)) return stripped;
+  let cleaned = stripped.replace(NOTIFICATION_PREFIX_RE, "").trim();
+  if (platformLower.includes("youtube") || /youtube\.com|youtu\.be/i.test(rawUrl)) {
+    cleaned = cleaned.replace(/\s*[-–|]\s*YouTube\s*$/i, "").trim();
+  } else if (platformLower === "x" || /x\.com|twitter\.com/i.test(rawUrl)) {
+    cleaned = cleaned.replace(/\s*\/\s*(?:X|Twitter)\s*$/i, "").trim();
+  } else if (platformLower.includes("tiktok") || /tiktok\.com/i.test(rawUrl)) {
+    cleaned = cleaned.replace(/\s*\|\s*TikTok\s*$/i, "").trim();
+  } else if (platformLower.includes("facebook") || /facebook\.com|fb\.watch/i.test(rawUrl)) {
+    cleaned = cleaned.replace(/\s*\|\s*Facebook\s*$/i, "").trim();
+  }
+  if (!cleaned || isGenericOrNoisyTitle(cleaned, platformLower, rawUrl)) return "";
+  return cleaned;
+}
 
 function extractSocialUrlAuthor(rawUrl, platformLower) {
   try {
@@ -107,12 +311,42 @@ function extractSocialUrlAuthor(rawUrl, platformLower) {
   return "";
 }
 
-function normalizeCompareCaption(str) {
-  return String(str || "")
+function normalizeCompareCaption(str, collapseSpaces = false) {
+  const cleaned = String(str || "")
     .trim()
-    .replace(/^[\s"'“”‘’]+|[\s"'“”‘’….\-]+$/g, "")
-    .replace(/\s+/g, " ")
-    .toLowerCase();
+    .replace(/^[\s"'“”‘’]+|[\s"'“”‘’….\-]+$/g, "");
+  return (collapseSpaces ? cleaned.replace(/\s+/g, "") : cleaned.replace(/\s+/g, " ")).toLowerCase();
+}
+
+function extractShortOpeningTitle(caption, maxChars = 58) {
+  const raw = String(caption || "");
+  if (!raw.trim()) return "";
+  let firstLine = "";
+  for (const ln of raw.split(/\r?\n/)) {
+    const cleaned = ln
+      .replace(/\*\*|__/g, "")
+      .trim()
+      .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "");
+    if (cleaned) {
+      firstLine = cleaned.replace(/\s+/g, " ");
+      break;
+    }
+  }
+  if (!firstLine) return "";
+
+  const sentMatch = firstLine.match(/^(.{8,}?[!?.])(?:\s+|$)/);
+  if (sentMatch && sentMatch[1].trim().length <= maxChars) {
+    return sentMatch[1].trim();
+  }
+  if (firstLine.length <= maxChars) {
+    return firstLine;
+  }
+  const windowStr = firstLine.slice(0, maxChars);
+  const spaceIdx = windowStr.lastIndexOf(" ");
+  if (spaceIdx >= 16) {
+    return `${windowStr.slice(0, spaceIdx).replace(/[\s,;:\-—–·•.]+$/, "")}…`;
+  }
+  return `${windowStr.replace(/[\s,;:\-—–·•.]+$/, "")}…`;
 }
 
 function combineAuthorDisplay(displayAuthor, handleAuthor) {
@@ -127,8 +361,12 @@ function combineAuthorDisplay(displayAuthor, handleAuthor) {
   return disp || hnd || "";
 }
 
+export function formatCardDisplayTitle(item) {
+  return formatPostDetailTitleAndDesc(item).displayTitle || String(item?.title || item?.url || "").trim();
+}
+
 /**
- * Strip view/reaction/comment counts from FB/IG/TikTok metadata and collapse duplicate Title into post owner name.
+ * Strip view/reaction/comment counts from FB/IG/TikTok metadata and extract concise 1-line caption title across platforms.
  */
 export function formatPostDetailTitleAndDesc(item) {
   const rawTitle = String(item?.title || "").trim();
@@ -140,10 +378,16 @@ export function formatPostDetailTitleAndDesc(item) {
   const isTt = platLower.includes("tiktok") || rawUrl.includes("tiktok.com");
 
   if (!isFb && !isIg && !isTt) {
+    const cleanedTitle = scrubGenericPlatformTitle(rawTitle, platLower, rawUrl);
+    const nonGenericTitle =
+      cleanedTitle ||
+      (rawDesc && !rawDesc.startsWith("By ") ? extractShortOpeningTitle(rawDesc) : "") ||
+      rawTitle ||
+      rawUrl;
     const sameNonSocial =
-      rawDesc && normalizeCompareCaption(rawDesc) === normalizeCompareCaption(rawTitle);
+      rawDesc && normalizeCompareCaption(rawDesc) === normalizeCompareCaption(nonGenericTitle);
     return {
-      displayTitle: rawTitle || rawUrl,
+      displayTitle: nonGenericTitle,
       displayDesc: sameNonSocial ? "" : rawDesc,
     };
   }
@@ -166,11 +410,18 @@ export function formatPostDetailTitleAndDesc(item) {
         parts.pop();
       }
       if (parts.length >= 2) {
-        displayAuthor = parts[parts.length - 1];
-        t = parts.slice(0, -1).join(" | ").trim() || displayAuthor;
+        if (parts[0].length <= 45 && parts[1].length > parts[0].length) {
+          displayAuthor = parts[0];
+          t = parts.slice(1).join(" | ").trim() || displayAuthor;
+        } else {
+          displayAuthor = parts[parts.length - 1];
+          t = parts.slice(0, -1).join(" | ").trim() || displayAuthor;
+        }
       } else if (parts.length === 1) {
         t = parts[0];
       }
+    } else if (FB_STATS_SEG_RE.test(t) && t.length < 80) {
+      t = "";
     }
     if (d) {
       if (d.includes("|")) {
@@ -186,6 +437,8 @@ export function formatPostDetailTitleAndDesc(item) {
       d = d.replace(FB_INLINE_STATS_TH_RE, "").replace(FB_INLINE_STATS_EN_RE, "").trim();
       if (t && d.startsWith(`${t}. `)) {
         d = d.slice(t.length + 2).trim();
+      } else if (t && d.startsWith(`${t} `) && t.length <= 45) {
+        d = d.slice(t.length).replace(/^[\s.\-·•]+/, "").trim();
       }
     }
   } else if (isIg) {
@@ -199,16 +452,16 @@ export function formatPostDetailTitleAndDesc(item) {
       const mDesc = d.match(IG_OG_DESC_RE);
       if (mDesc) {
         handleAuthor = `@${mDesc[1].trim().replace(/^@/, "")}`;
-        d = mDesc[2].trim();
+        d = stripBalancedCaptionQuotes(mDesc[2]);
       } else {
-        d = d.replace(IG_PROFILE_STATS_RE, "").trim();
+        d = stripBalancedCaptionQuotes(d.replace(IG_PROFILE_STATS_RE, "").trim());
       }
     }
   } else if (isTt && d) {
     const mTt = d.match(TT_META_DESC_RE);
     if (mTt && (mTt[1] || mTt[3])) {
       displayAuthor = (mTt[1] || mTt[3] || "").trim();
-      d = (mTt[2] || mTt[4] || "").trim();
+      d = stripBalancedCaptionQuotes(mTt[2] || mTt[4] || "");
     } else {
       d = d
         .replace(
@@ -219,6 +472,8 @@ export function formatPostDetailTitleAndDesc(item) {
     }
   }
 
+  t = scrubGenericPlatformTitle(t, platLower, rawUrl);
+
   let tCore = t;
   let dCore = d;
   const mTc = t.match(/^([^:\n|]{1,50}):\s+([\s\S]+)$/);
@@ -226,42 +481,96 @@ export function formatPostDetailTitleAndDesc(item) {
     if (!displayAuthor) displayAuthor = mTc[1].trim();
     tCore = mTc[2].trim();
   }
-  const mDc = d.match(/^(@[A-Za-z0-9._-]+)\s+[—–-]\s+([\s\S]+)$/);
+  tCore = scrubGenericPlatformTitle(tCore, platLower, rawUrl);
+  dCore = stripBalancedCaptionQuotes(dCore);
+  const mDc = dCore.match(/^(@[A-Za-z0-9._-]+)\s+[—–-]\s+([\s\S]+)$/);
   if (mDc) {
     if (!handleAuthor) handleAuthor = mDc[1].trim();
     dCore = mDc[2].trim();
   } else {
-    const mDc2 = d.match(/^([^:\n|—]{1,50})\s+—\s+([\s\S]+)$/);
+    const mDc2 = dCore.match(/^([^:\n|—]{1,50})\s+—\s+([\s\S]+)$/);
     if (mDc2) {
       if (!displayAuthor) displayAuthor = mDc2[1].trim();
       dCore = mDc2[2].trim();
     }
   }
+  dCore = stripBalancedCaptionQuotes(dCore);
 
   const normT = normalizeCompareCaption(tCore);
   const normD = normalizeCompareCaption(dCore);
+  const normTCompact = normalizeCompareCaption(tCore, true);
+  const normDCompact = normalizeCompareCaption(dCore, true);
   const isDup =
     Boolean(normT && normD) &&
-    (normT === normD || (normT.length >= 12 && (normD.startsWith(normT) || normT.startsWith(normD))));
+    (normT === normD ||
+      (normTCompact && normTCompact === normDCompact) ||
+      (normT.length >= 12 && (normD.startsWith(normT) || normT.startsWith(normD))) ||
+      (normTCompact.length >= 12 && (normDCompact.startsWith(normTCompact) || normTCompact.startsWith(normDCompact))));
 
-  if (isDup) {
-    const bestCaption = dCore && dCore.length >= tCore.length ? dCore : tCore;
-    const urlAuthor = extractSocialUrlAuthor(rawUrl, isFb ? "facebook" : isIg ? "instagram" : "tiktok");
-    const ownerLabel =
-      combineAuthorDisplay(displayAuthor, handleAuthor) ||
-      urlAuthor ||
-      item?.site_name ||
-      (isIg ? "Instagram" : isFb ? "Facebook" : "TikTok");
+  const isSyntheticDesc =
+    Boolean(dCore) && ((dCore.startsWith("@") && !dCore.includes(" ")) || dCore.startsWith("โพสต์จาก "));
+  const urlAuthor = extractSocialUrlAuthor(rawUrl, isFb ? "facebook" : isIg ? "instagram" : "tiktok");
+  const tCoreLower = (tCore || "").trim().toLowerCase();
+  const tIsAuthorOrGeneric =
+    !tCore ||
+    isGenericOrNoisyTitle(tCore, platLower, rawUrl) ||
+    (Boolean(displayAuthor) && tCoreLower === displayAuthor.trim().toLowerCase()) ||
+    (Boolean(handleAuthor) &&
+      (tCoreLower === handleAuthor.trim().toLowerCase() || tCoreLower === handleAuthor.trim().replace(/^@/, "").toLowerCase())) ||
+    (Boolean(urlAuthor) &&
+      (tCoreLower === urlAuthor.trim().toLowerCase() || tCoreLower === urlAuthor.trim().replace(/^@/, "").toLowerCase()));
+  const tIsMultilineOrLong = Boolean(tCore && (/[\r\n]/.test(tCore) || tCore.length > 65));
+  const shouldUseOpeningSentence =
+    Boolean(dCore) &&
+    !isSyntheticDesc &&
+    (isDup || tIsAuthorOrGeneric || tIsMultilineOrLong || (dCore.length >= 24 && dCore.length > tCore.length));
+
+  if (shouldUseOpeningSentence) {
+    const bestCaption = !isDup || dCore.length >= tCore.length ? dCore : tCore || dCore;
+    const shortOpening = extractShortOpeningTitle(bestCaption);
     return {
-      displayTitle: ownerLabel,
+      displayTitle: shortOpening || t || rawTitle || rawUrl,
       displayDesc: bestCaption,
     };
   }
 
+  if (tCore && (isDup || tIsMultilineOrLong)) {
+    const shortOpening = extractShortOpeningTitle(tCore);
+    return {
+      displayTitle: shortOpening || tCore,
+      displayDesc: !d || isSyntheticDesc || tCore.length > d.length ? tCore : d,
+    };
+  }
+
+  const fallbackOwner =
+    combineAuthorDisplay(displayAuthor, handleAuthor) ||
+    urlAuthor ||
+    item?.site_name ||
+    rawTitle ||
+    rawUrl;
   return {
-    displayTitle: t || rawTitle || rawUrl,
+    displayTitle: t || fallbackOwner,
     displayDesc: d && normalizeCompareCaption(d) !== normalizeCompareCaption(t) ? d : "",
   };
+}
+
+function isPlayableVideoEmbed(embedUrl, item) {
+  if (!embedUrl) return false;
+  const contentType = String(item?.contentType || item?.content_type || "").toLowerCase();
+  try {
+    const parsed = new URL(embedUrl);
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    if (host.includes("facebook.com") && path.includes("/plugins/post.php")) {
+      return false;
+    }
+    if (host.includes("instagram.com") && path.startsWith("/p/") && contentType !== "video") {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -271,12 +580,12 @@ export function formatPostDetailTitleAndDesc(item) {
 export function deriveVideoEmbedInfo(item) {
   const rawUrl = String(item?.url || "").trim();
   const explicitEmbed = resolveAllowlistedEmbedUrl(item?.embedUrl || item?.embed_url);
-  let embedUrl = explicitEmbed;
+  let embedUrl = isPlayableVideoEmbed(explicitEmbed, item) ? explicitEmbed : null;
   let thumbUrl = "";
   let platform = item?.platform || "";
   let isVertical = Boolean(
-    explicitEmbed &&
-      (explicitEmbed.includes("tiktok.com/") || /instagram\.com\/(?:reel|tv)\//i.test(explicitEmbed))
+    embedUrl &&
+      (embedUrl.includes("tiktok.com/") || /instagram\.com\/(?:reel|tv)\//i.test(embedUrl))
   );
 
   if (rawUrl) {
@@ -379,14 +688,28 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
 
   // Case 1: Interactive video iframe on allowlisted domain
   if (safeEmbedUrl) {
+    const isVert = Boolean(derivedVideo.isVertical || uiState.playingVideoIsVertical);
+    const customAspectAttr =
+      uiState.playingVideoAspect && /^\d+\s*\/\s*\d+$/.test(String(uiState.playingVideoAspect))
+        ? ` style="aspect-ratio: ${escHtml(String(uiState.playingVideoAspect))};"`
+        : "";
     if (uiState.videoPlaying) {
+      const directVideoUrl = resolveAllowlistedDirectVideoUrl(uiState.playingVideoDirectUrl);
       const activeSrc = withAutoplayParam(safeEmbedUrl);
-      const playingClass = derivedVideo.isVertical
+      const playingClass = isVert
         ? `${baseBoxClass} is-playing is-vertical-video`
         : `${baseBoxClass} is-playing`;
-      return `
-        <div class="${playingClass}" data-node-id="319:6103">
-          <iframe
+      const mediaEl = directVideoUrl
+        ? `<video
+            class="figma-preview-video"
+            src="${escHtml(directVideoUrl)}"
+            ${singleCover ? `poster="${escHtml(singleCover)}"` : ""}
+            controls
+            loop
+            autoplay
+            playsinline
+          ></video>`
+        : `<iframe
             class="figma-preview-iframe"
             src="${escHtml(activeSrc)}"
             title="${escHtml(item?.title || "ตัวอย่างวิดีโอ")}"
@@ -394,7 +717,10 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
             allowfullscreen
             sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
             referrerpolicy="strict-origin-when-cross-origin"
-          ></iframe>
+          ></iframe>`;
+      return `
+        <div class="${playingClass}"${customAspectAttr} data-node-id="319:6103">
+          ${mediaEl}
           <button
             type="button"
             class="figma-preview-close-btn"
@@ -407,9 +733,10 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
         </div>
       `;
     }
-    const posterBoxClass = derivedVideo.isVertical
+    const posterBoxClass = isVert
       ? `${baseBoxClass} has-media is-vertical-video`
       : `${baseBoxClass} has-media`;
+    const playLoading = Boolean(uiState.playingVideoLoading);
     return `
       <div class="${posterBoxClass}" data-node-id="319:6103">
         ${
@@ -419,26 +746,35 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
         }
         <button
           type="button"
-          class="figma-preview-play-btn"
+          class="figma-preview-play-btn${playLoading ? " is-loading" : ""}"
           data-action="play-embed-video"
           aria-label="เล่นวิดีโอตัวอย่าง"
+          ${playLoading ? "disabled" : ""}
         >
           ${icons.play(22)}
         </button>
-        <span class="figma-preview-badge">${escHtml(derivedVideo.platform || item?.platform || "Video")} · แตะเพื่อเล่น</span>
+        <span class="figma-preview-badge">${escHtml(derivedVideo.platform || item?.platform || "Video")} · ${playLoading ? "กำลังเตรียมคลิป..." : "แตะเพื่อเล่น"}</span>
       </div>
     `;
   }
 
-  // Case 2: Multi-image carousel (2–5 images inside 358x186px)
+  // Case 2: Multi-image carousel (2–5 images inside adaptive preview container)
   if (mediaImages.length >= 2) {
     const total = mediaImages.length;
     const rawIdx = Number(uiState.carouselIndex || 0);
     const activeIdx = ((rawIdx % total) + total) % total;
     const currentSrc = mediaImages[activeIdx];
+    const safeOrigUrl = safeHrefUrl(item?.url);
+    const isLastSlide = activeIdx === total - 1;
     return `
       <div class="${baseBoxClass} has-media" data-node-id="319:6103">
-        <img class="figma-preview-img" src="${escHtml(currentSrc)}" alt="${escHtml(item?.title || "")}" />
+        <img
+          class="figma-preview-img is-zoomable"
+          src="${escHtml(currentSrc)}"
+          alt="${escHtml(item?.title || "")}"
+          data-action="open-image-lightbox"
+          title="แตะเพื่อขยายเต็มจอ"
+        />
         <button
           type="button"
           class="figma-carousel-arrow prev"
@@ -454,6 +790,23 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
           aria-label="รูปถัดไป"
         >›</button>
         <span class="figma-preview-badge">${activeIdx + 1}/${total}</span>
+        ${
+          isLastSlide && safeOrigUrl
+            ? `<a
+                class="figma-preview-more-link"
+                href="${escHtml(safeOrigUrl)}"
+                target="_blank"
+                rel="noopener noreferrer"
+              >ดูรูปทั้งหมดในโพสต์ต้นฉบับ ↗</a>`
+            : ""
+        }
+        <button
+          type="button"
+          class="figma-preview-zoom-btn"
+          data-action="open-image-lightbox"
+          title="ขยายรูปเต็มจอ"
+          aria-label="ขยายรูปเต็มจอ"
+        >⤢ ขยาย</button>
         <div class="figma-carousel-dots">
           ${mediaImages
             .map(
@@ -477,7 +830,20 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
   if (singleCover) {
     return `
       <div class="${baseBoxClass} has-media" data-node-id="319:6103">
-        <img class="figma-preview-img" src="${escHtml(singleCover)}" alt="${escHtml(item?.title || "")}" />
+        <img
+          class="figma-preview-img is-zoomable"
+          src="${escHtml(singleCover)}"
+          alt="${escHtml(item?.title || "")}"
+          data-action="open-image-lightbox"
+          title="แตะเพื่อขยายเต็มจอ"
+        />
+        <button
+          type="button"
+          class="figma-preview-zoom-btn"
+          data-action="open-image-lightbox"
+          title="ขยายรูปเต็มจอ"
+          aria-label="ขยายรูปเต็มจอ"
+        >⤢ ขยาย</button>
       </div>
     `;
   }
@@ -512,6 +878,75 @@ export function renderRichPreviewBox(item, uiState = {}, options = {}) {
 export function renderLinkDetailModals(state, item) {
   if (!item) return "";
   const ui = state.ui;
+
+  if (ui.imageLightboxOpen) {
+    const mediaImages = getPreviewMediaImages(item);
+    const derivedVideo = deriveVideoEmbedInfo(item);
+    const singleCover = resolveMediaThumbUrl(item) || mediaImages[0] || derivedVideo.thumbUrl || "";
+    const list = mediaImages.length >= 2 ? mediaImages : singleCover ? [singleCover] : [];
+    if (list.length) {
+      const total = list.length;
+      const rawIdx = Number(ui.carouselIndex || 0);
+      const activeIdx = ((rawIdx % total) + total) % total;
+      const currentSrc = list[activeIdx];
+      const safeOrigUrl = safeHrefUrl(item?.url);
+      const isLastSlide = total >= 2 && activeIdx === total - 1;
+      return `
+        <div class="modal-backdrop center figma-lightbox-backdrop" data-action="close-image-lightbox">
+          <div class="figma-lightbox-stage">
+            <button
+              type="button"
+              class="figma-lightbox-close-btn"
+              data-action="close-image-lightbox"
+              title="ปิดภาพขยาย"
+              aria-label="ปิดภาพขยาย"
+            >
+              ${icons.close(18)}
+            </button>
+            ${
+              total >= 2
+                ? `<span class="figma-lightbox-counter">${activeIdx + 1}/${total}</span>`
+                : ""
+            }
+            <img
+              class="figma-lightbox-img"
+              src="${escHtml(currentSrc)}"
+              alt="${escHtml(item?.title || "")}"
+            />
+            ${
+              total >= 2
+                ? `
+              <button
+                type="button"
+                class="figma-carousel-arrow prev figma-lightbox-arrow"
+                data-action="carousel-prev"
+                data-id="${escHtml(item.id)}"
+                aria-label="รูปก่อนหน้า"
+              >‹</button>
+              <button
+                type="button"
+                class="figma-carousel-arrow next figma-lightbox-arrow"
+                data-action="carousel-next"
+                data-id="${escHtml(item.id)}"
+                aria-label="รูปถัดไป"
+              >›</button>`
+                : ""
+            }
+            ${
+              isLastSlide && safeOrigUrl
+                ? `<a
+                    class="figma-lightbox-more-link"
+                    href="${escHtml(safeOrigUrl)}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >ดูรูปทั้งหมดในโพสต์ต้นฉบับ ↗</a>`
+                : ""
+            }
+          </div>
+        </div>
+      `;
+    }
+  }
 
   if (ui.aiConfirmModalOpen || ui.aiSummaryStatus === "confirm") {
     return `

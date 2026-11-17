@@ -410,12 +410,35 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
 
         merged_after_bump = {**existing_item, **bump_updates}
         merged_desc = str(merged_after_bump.get("description") or "").strip()
+        merged_title = str(merged_after_bump.get("title") or "").strip()
+        merged_title_clean = re.sub(r"^\(\d+\+?\)\s+", "", merged_title).strip().lower()
         merged_plat = str(merged_after_bump.get("platform") or "").lower()
         canon_lower = canon_url.lower()
         is_yt = merged_plat == "youtube" or "youtube.com" in canon_lower or "youtu.be" in canon_lower
         needs_re_enrich = (
             not merged_after_bump.get("image_url")
             or not merged_desc
+            or merged_desc.endswith(("...", "…", '".', "”."))
+            or merged_title_clean
+            in (
+                "",
+                "instagram",
+                "log in • instagram",
+                "login • instagram",
+                "เข้าสู่ระบบ • instagram",
+                "facebook",
+                "facebook - log in or sign up",
+                "log into facebook",
+                "tiktok",
+                "tiktok - make your day",
+                "watch trending videos for you | tiktok",
+                "youtube",
+                "- youtube",
+                "x",
+                "twitter",
+                "home / x",
+                "reddit",
+            )
             or (is_yt and merged_desc.startswith("By "))
             or ((is_yt or merged_plat in ("tiktok", "vimeo")) and not merged_after_bump.get("embed_url"))
         )

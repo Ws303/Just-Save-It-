@@ -14,8 +14,12 @@ from Database.text_hygiene import canonicalize_url, clean_text_field, compute_ur
 from .extractors import (
     MAX_MEDIA_ITEMS,
     _VALID_CONTENT_TYPES,
+    _image_asset_dedup_key,
+    _is_cropped_meta_image_url,
+    extract_instagram_playable_video_url,
     extract_unfurl_metadata,
     filter_and_cap_images,
+    is_generic_or_noisy_title,
     is_junk_image_url,
 )
 from .security import (
@@ -84,6 +88,11 @@ def find_recent_unfurl_cache(
         row_desc = str(row.get("description") or "").strip()
         if row_plat == "youtube" and (not row_desc or row_desc.startswith("By ")):
             continue
+        if is_generic_or_noisy_title(row.get("title"), row_plat, row_url):
+            continue
+        row_media = row.get("media_items") or []
+        if is_meta_social and any(isinstance(u, str) and _is_cropped_meta_image_url(u) for u in row_media[1:]):
+            continue
         unfurled_dt = _parse_iso(row.get("unfurled_at"))
         if unfurled_dt is None or unfurled_dt < cutoff:
             continue
@@ -145,15 +154,24 @@ def _resolve_media_with_existing(
     if (
         platform in ("instagram", "facebook")
         and not force_refresh
-        and len(existing_media) > len(candidate_media)
+        and existing_media
     ):
         lead = candidate_cover or existing_cover
-        merged = (
-            [lead, *[u for u in existing_media[1:] if u != lead]][:MAX_MEDIA_ITEMS]
-            if lead
-            else list(existing_media)
-        )
-        return lead, merged, False
+        candidate_asset_keys = {_image_asset_dedup_key(u) for u in candidate_media if u}
+        if candidate_cover:
+            candidate_asset_keys.add(_image_asset_dedup_key(candidate_cover))
+        extras: List[str] = []
+        for u in existing_media[1:]:
+            if not u or u == lead:
+                continue
+            if _image_asset_dedup_key(u) in candidate_asset_keys:
+                continue
+            if _is_cropped_meta_image_url(u) or "lookaside.fbsbx.com" in u.lower():
+                continue
+            extras.append(u)
+        candidate_total = ([lead, *extras] if lead else extras)[:MAX_MEDIA_ITEMS]
+        if len(candidate_total) > len(candidate_media):
+            return lead, candidate_total, False
     return candidate_cover, list(candidate_media), False
 
 
@@ -256,17 +274,40 @@ async def preview_url_readonly(
     }
 
 
-def _should_replace_title(item: Dict[str, Any], force_refresh: bool) -> bool:
+def _should_replace_title(
+    item: Dict[str, Any],
+    force_refresh: bool,
+    *,
+    candidate_title: Optional[str] = None,
+    platform: str = "",
+    canon_url: str = "",
+) -> bool:
     if force_refresh:
         return True
     current_title = (item.get("title") or "").strip()
-    if not current_title:
+    eff_plat = (platform or str(item.get("platform") or "")).lower()
+    eff_url = canon_url or str(item.get("canonical_url") or item.get("url") or "")
+    if is_generic_or_noisy_title(current_title, eff_plat, eff_url):
         return True
-    return current_title in (
+    if current_title in (
         (item.get("url") or "").strip(),
         (item.get("canonical_url") or "").strip(),
         canonicalize_url(item.get("url") or ""),
-    )
+    ):
+        return True
+    if candidate_title and eff_plat in ("instagram", "facebook", "tiktok"):
+        if not is_generic_or_noisy_title(candidate_title, eff_plat, eff_url) and (
+            "\n" in current_title
+            or "\r" in current_title
+            or "บน Instagram:" in current_title
+            or "on Instagram:" in current_title
+            or current_title.endswith("| Facebook")
+            or current_title.endswith("| TikTok")
+            or "ความรู้สึก" in current_title
+            or "ยอดดู" in current_title
+        ):
+            return True
+    return False
 
 
 def _should_replace_description(
@@ -281,7 +322,14 @@ def _should_replace_description(
         return False
     if force_refresh or not old_desc:
         return True
-    return platform == "youtube" and old_desc.startswith("By ") and not candidate.startswith("By ")
+    if platform == "youtube" and old_desc.startswith("By ") and not candidate.startswith("By "):
+        return True
+    if platform in ("instagram", "facebook", "tiktok"):
+        if old_desc.endswith(("...", "…", '".', "”.")) and len(candidate) >= len(old_desc) - 2:
+            return True
+        if len(candidate) > len(old_desc) + 20:
+            return True
+    return False
 
 
 async def enrich_item(
@@ -344,7 +392,16 @@ async def enrich_item(
                 "unfurled_at": cached_data["unfurled_at"] or now_iso,
                 "updated_at": now_iso,
             }
-            if _should_replace_title(item, force_refresh=False) and cached_data["title"]:
+            if (
+                _should_replace_title(
+                    item,
+                    force_refresh=False,
+                    candidate_title=cached_data["title"],
+                    platform=cached_plat,
+                    canon_url=canon_url,
+                )
+                and cached_data["title"]
+            ):
                 updates["title"] = cached_data["title"]
             if _should_replace_description(old_desc, cached_data["description"], cached_plat):
                 updates["description"] = cached_data["description"]
@@ -387,9 +444,20 @@ async def enrich_item(
         final_media = list(media_source)
         if final_cover:
             exclude_urls = {final_cover}
+            exclude_asset_keys = set()
             if uploaded_to_storage and cover_source:
                 exclude_urls.add(cover_source)
-            final_media = [final_cover, *[u for u in final_media if u not in exclude_urls]][:MAX_MEDIA_ITEMS]
+                source_key = _image_asset_dedup_key(cover_source)
+                if source_key[0] != "exact":
+                    exclude_asset_keys.add(source_key)
+            final_media = [
+                final_cover,
+                *[
+                    u
+                    for u in final_media
+                    if u not in exclude_urls and _image_asset_dedup_key(u) not in exclude_asset_keys
+                ],
+            ][:MAX_MEDIA_ITEMS]
         elif final_media:
             final_cover = final_media[0]
 
@@ -415,9 +483,18 @@ async def enrich_item(
             "unfurled_at": now_iso,
             "updated_at": now_iso,
         }
-        if _should_replace_title(item, force_refresh=force_refresh) and result.title:
-            updates["title"] = result.title
         effective_plat = str(result.platform or old_plat or "").lower()
+        if (
+            _should_replace_title(
+                item,
+                force_refresh=force_refresh,
+                candidate_title=result.title,
+                platform=effective_plat,
+                canon_url=result.canonical_url or canon_url,
+            )
+            and result.title
+        ):
+            updates["title"] = result.title
         if _should_replace_description(
             old_desc, result.description, effective_plat, force_refresh=force_refresh
         ):
@@ -477,6 +554,39 @@ async def refresh_item_preview_for_user(
         storage_uploader=storage_uploader,
         preloaded_item=item,
     )
+
+
+async def resolve_item_playable_video(
+    db: Any,
+    user_id: str,
+    item_id: str,
+    rate_limiter: Optional[SlidingWindowRateLimiter] = None,
+) -> Dict[str, Any]:
+    """Resolve a fresh direct `.mp4` video URL for playable IG items, or None to fall back to iframe."""
+    res = db.table("items").select("*").eq("id", item_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found.")
+    item = dict(res.data[0])
+    if not can_access_item(db, user_id, item, require_editor=False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+    if rate_limiter is not None:
+        rate_limiter.enforce(user_id)
+
+    target_url = str(item.get("url") or item.get("embed_url") or "").strip()
+    video_url: Optional[str] = None
+    if target_url:
+        try:
+            video_url = await extract_instagram_playable_video_url(target_url)
+        except Exception as exc:
+            logger.debug("Playable video resolve fallback for %s: %s", item_id, redact_secrets_in_text(exc))
+            video_url = None
+
+    safe_embed = validate_embed_url(item.get("embed_type"), item.get("embed_url")) or item.get("embed_url")
+    return {
+        "item_id": item_id,
+        "video_url": video_url,
+        "embed_url": safe_embed,
+    }
 
 
 def _fetch_retryable_failed_items(db: Any, batch_limit: int, max_attempts: int) -> List[Dict[str, Any]]:

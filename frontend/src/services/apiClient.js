@@ -1102,6 +1102,25 @@ export const apiClient = {
     return res;
   },
 
+  async resolveItemVideo(itemId) {
+    if (!itemId) return { ok: false, data: { video_url: null } };
+    const startKey = getAuthContextKey();
+    const res = await dispatchRequest({
+      method: "GET",
+      path: `/api/items/${encodeURIComponent(itemId)}/video`,
+      body: null,
+      skipUnauthRedirect: true,
+      mockHandler: () => ({
+        status: 200,
+        data: { item_id: itemId, video_url: null },
+      }),
+    });
+    if (!isAuthContextCurrent(startKey)) {
+      return staleAuthResult();
+    }
+    return res;
+  },
+
   async deleteLink(itemId) {
     const startKey = getAuthContextKey();
     const idx = store.state.data.links.findIndex((l) => l.id === itemId);

@@ -42,7 +42,12 @@ import {
   renderFoldersGridInner,
   renderFolderDetailLinksInner,
 } from "./screens/folders.js";
-import { renderLinkDetailScreen, renderSavedPreviewScreen, renderSaveAndReminderSheets } from "./screens/links.js";
+import {
+  renderLinkDetailScreen,
+  renderSavedPreviewScreen,
+  renderSaveAndReminderSheets,
+  isGenericOrNoisyTitle,
+} from "./screens/links.js";
 import { renderAiScreen } from "./screens/ai.js";
 import {
   renderProfileScreen,
@@ -425,6 +430,7 @@ async function copyText(text) {
 }
 
 const _autoEnrichedItemIds = new Set();
+const _failedDirectVideoIds = new Set();
 const scheduleSearchEmit = createFrameCoalescer(() => store.emit());
 
 function patchSearchResultsInPlace(scope, prevValue, nextValue) {
@@ -489,7 +495,8 @@ function maybeAutoEnrichItem(itemId) {
   if (!item) return;
   const desc = String(item.description || "").trim();
   const isYt = /youtube\.com|youtu\.be/i.test(String(item.url || "")) || String(item.platform || "").toLowerCase() === "youtube";
-  const needsEnrich = !item.coverUrl || !desc || (isYt && !item.embed_url);
+  const hasGenericTitle = isGenericOrNoisyTitle(item.title, item.platform, item.url);
+  const needsEnrich = !item.coverUrl || !desc || hasGenericTitle || (isYt && !item.embed_url);
   if (!needsEnrich) return;
   _autoEnrichedItemIds.add(itemId);
   apiClient.refreshItemPreview(itemId, { silent: true }).catch(() => {});
@@ -706,6 +713,25 @@ function findInteractiveTarget(startEl) {
   }
   return null;
 }
+
+// Fallback cleanly to official embed iframe if a resolved CDN <video> stream expires or fails to play.
+appEl.addEventListener(
+  "error",
+  (e) => {
+    const el = e.target;
+    if (!el || el.tagName !== "VIDEO" || !el.classList?.contains("figma-preview-video")) return;
+    const ui = store.state.ui;
+    if (ui.activeLinkId) {
+      _failedDirectVideoIds.add(ui.activeLinkId);
+    }
+    if (ui.playingVideoDirectUrl) {
+      ui.playingVideoDirectUrl = "";
+      ui.videoPlaying = true;
+      store.emit();
+    }
+  },
+  true
+);
 
 // =========================================================
 // DELEGATED CLICK HANDLERS
@@ -1049,20 +1075,77 @@ appEl.addEventListener("click", async (e) => {
     }
     if (act === "carousel-prev" || act === "carousel-next" || act === "carousel-dot") {
       const item = getLinkById(d.id || ui.activeLinkId);
-      const total = item?.media_items?.length || 1;
+      const list = Array.isArray(item?.mediaItems) && item.mediaItems.length
+        ? item.mediaItems
+        : Array.isArray(item?.media_items)
+          ? item.media_items
+          : [];
+      const total = Math.max(1, list.length);
       if (act === "carousel-dot") ui.carouselIndex = Number(d.index || 0) % total;
-      else if (act === "carousel-prev") ui.carouselIndex = (ui.carouselIndex - 1 + total) % total;
-      else ui.carouselIndex = (ui.carouselIndex + 1) % total;
+      else if (act === "carousel-prev") ui.carouselIndex = ((Number(ui.carouselIndex || 0) - 1) % total + total) % total;
+      else ui.carouselIndex = (Number(ui.carouselIndex || 0) + 1) % total;
+      store.emit();
+      return;
+    }
+    if (act === "open-image-lightbox") {
+      ui.imageLightboxOpen = true;
+      store.emit();
+      return;
+    }
+    if (act === "close-image-lightbox") {
+      if (target.classList.contains("figma-lightbox-img") || target.closest(".figma-lightbox-arrow") || target.closest(".figma-lightbox-more-link")) {
+        return;
+      }
+      ui.imageLightboxOpen = false;
       store.emit();
       return;
     }
     if (act === "play-embed-video") {
+      if (ui.playingVideoLoading) return;
+      const box = target.closest(".figma-rich-preview-box");
+      const img = box ? box.querySelector(".figma-preview-img") : null;
+      if (img && img.naturalWidth > 0 && img.naturalHeight > 0) {
+        ui.playingVideoIsVertical = img.naturalHeight > img.naturalWidth;
+        ui.playingVideoAspect = `${img.naturalWidth} / ${img.naturalHeight}`;
+      }
+      const item = getLinkById(ui.activeLinkId);
+      const isIg =
+        String(item?.platform || "").toLowerCase() === "instagram" ||
+        /instagram\.com/i.test(String(item?.url || ""));
+      if (isIg && store.state.api.mode === "live" && item?.id && !_failedDirectVideoIds.has(item.id)) {
+        const targetLinkId = item.id;
+        ui.playingVideoLoading = true;
+        ui.playingVideoDirectUrl = "";
+        store.emit();
+        try {
+          const res = await apiClient.resolveItemVideo(targetLinkId);
+          if (store.state.ui.activeLinkId !== targetLinkId) return;
+          store.state.ui.playingVideoLoading = false;
+          store.state.ui.playingVideoDirectUrl =
+            res?.ok && res?.data?.video_url ? String(res.data.video_url) : "";
+          store.state.ui.videoPlaying = true;
+          store.emit();
+        } catch {
+          if (store.state.ui.activeLinkId !== targetLinkId) return;
+          store.state.ui.playingVideoLoading = false;
+          store.state.ui.playingVideoDirectUrl = "";
+          store.state.ui.videoPlaying = true;
+          store.emit();
+        }
+        return;
+      }
+      ui.playingVideoLoading = false;
+      ui.playingVideoDirectUrl = "";
       ui.videoPlaying = true;
       store.emit();
       return;
     }
     if (act === "stop-embed-video") {
       ui.videoPlaying = false;
+      ui.playingVideoLoading = false;
+      ui.playingVideoDirectUrl = "";
+      ui.playingVideoIsVertical = false;
+      ui.playingVideoAspect = "";
       store.emit();
       return;
     }
@@ -2328,8 +2411,33 @@ appEl.addEventListener("click", async (e) => {
 
 if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape") return;
     const ui = store.state.ui;
+    if (ui.imageLightboxOpen && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      const item = getLinkById(ui.activeLinkId);
+      const list = Array.isArray(item?.mediaItems) && item.mediaItems.length
+        ? item.mediaItems
+        : Array.isArray(item?.media_items)
+          ? item.media_items
+          : [];
+      const total = Math.max(1, list.length);
+      if (total >= 2) {
+        ui.carouselIndex = e.key === "ArrowLeft"
+          ? ((Number(ui.carouselIndex || 0) - 1) % total + total) % total
+          : (Number(ui.carouselIndex || 0) + 1) % total;
+        store.emit();
+      }
+      return;
+    }
+    if (e.key !== "Escape") return;
+    if (ui.imageLightboxOpen) {
+      ui.imageLightboxOpen = false;
+      store.emit();
+      return;
+    }
+    if (ui.aiConfirmModalOpen || (ui.aiSummaryStatus && ui.aiSummaryStatus !== "idle")) {
+      store.dismissAiSummaryModal();
+      return;
+    }
     if (ui.folderPickerSheetOpen) {
       ui.folderPickerSheetOpen = false;
       store.emit();
@@ -2338,10 +2446,6 @@ if (typeof document !== "undefined" && typeof document.addEventListener === "fun
     if (ui.createFolderSheetOpen) {
       ui.createFolderSheetOpen = false;
       store.emit();
-      return;
-    }
-    if (ui.aiConfirmModalOpen || (ui.aiSummaryStatus && ui.aiSummaryStatus !== "idle")) {
-      store.dismissAiSummaryModal();
       return;
     }
     if (ui.noteEditing) {

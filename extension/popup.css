@@ -670,6 +670,29 @@ body {
 }
 
 /* Post-save inline feedback */
+.social-feed-warning {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fffbeb;
+  border: 1px solid #f59e0b;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.social-feed-warning-title {
+  color: #92400e;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.social-feed-warning-text {
+  margin: 0;
+  color: #78350f;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
 .saved-inline-card {
   padding: 10px 12px;
   border-radius: 12px;

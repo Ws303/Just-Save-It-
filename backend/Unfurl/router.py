@@ -8,12 +8,19 @@ from pydantic import BaseModel, Field, field_validator
 from Database.client import get_db
 from Login.auth_dep import get_current_user_id
 from .security import SlidingWindowRateLimiter, require_internal_secret
-from .service import enrich_item, preview_url_readonly, refresh_item_preview_for_user, retry_failed_enrichments
+from .service import (
+    enrich_item,
+    preview_url_readonly,
+    refresh_item_preview_for_user,
+    resolve_item_playable_video,
+    retry_failed_enrichments,
+)
 
 router = APIRouter(tags=["Rich Unfurl Engine"])
 
 preview_rate_limiter = SlidingWindowRateLimiter(max_requests=30, window_seconds=60, name="unfurl_preview")
 refresh_rate_limiter = SlidingWindowRateLimiter(max_requests=10, window_seconds=3600, name="unfurl_refresh")
+video_resolve_rate_limiter = SlidingWindowRateLimiter(max_requests=60, window_seconds=60, name="unfurl_video_resolve")
 
 
 class ItemCreatedWebhookPayload(BaseModel):
@@ -103,6 +110,21 @@ async def refresh_preview_endpoint(
         user_id=user_id,
         item_id=item_id,
         rate_limiter=refresh_rate_limiter,
+    )
+
+
+@router.get("/api/items/{item_id}/video")
+async def resolve_item_video_endpoint(
+    item_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Resolve a fresh direct `.mp4` URL for in-app looping playback when supported, or None for iframe fallback."""
+    return await resolve_item_playable_video(
+        db,
+        user_id=user_id,
+        item_id=item_id,
+        rate_limiter=video_resolve_rate_limiter,
     )
 
 

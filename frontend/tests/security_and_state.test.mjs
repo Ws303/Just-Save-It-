@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
 
 import { safeHrefUrl, safeImgUrl } from "../src/components/icons.js";
-import { resolveAllowlistedEmbedUrl } from "../src/screens/links.js";
+import {
+  resolveAllowlistedEmbedUrl,
+  resolveAllowlistedDirectVideoUrl,
+  getPreviewMediaImages,
+  formatCardDisplayTitle,
+  formatPostDetailTitleAndDesc,
+  isGenericOrNoisyTitle,
+  renderRichPreviewBox,
+} from "../src/screens/links.js";
 import { store, buildFolderInviteUrl, resolveRuntimeApiConfig } from "../src/state/store.js";
 import { renderLinkCard } from "../src/screens/common.js";
 import { renderFolderSheets } from "../src/screens/folders.js";
@@ -318,15 +329,15 @@ test("Facebook video embed, 5-image carousel, and private post fallback render p
   );
   assert.match(ttPlayHtml, /tiktok\.com\/player\/v1\/6718335390845095173\?autoplay=1&(?:amp;)?music_info=0&(?:amp;)?description=0/);
 
-  // Social engagement noise stripped & duplicate title collapses to post owner name
+  // Social engagement noise stripped & title set to short 1-line opening sentence of caption
   const fbClean = formatPostDetailTitleAndDesc({
     url: "https://www.facebook.com/watch/?v=10155278547321729",
     platform: "facebook",
     title: "ยอดดู 75 ล้าน ครั้ง · แชร์ 1.4 แสน ครั้ง | Today, we remember what was on our minds in 2016. | Mark Zuckerberg | Facebook",
-    description: "Today, we remember what was on our minds in 2016.",
+    description: "Today, we remember what was on our minds in 2016. Looking back at all the moments we shared together.",
   });
-  assert.equal(fbClean.displayTitle, "Mark Zuckerberg");
-  assert.equal(fbClean.displayDesc, "Today, we remember what was on our minds in 2016.");
+  assert.equal(fbClean.displayTitle, "Today, we remember what was on our minds in 2016.");
+  assert.equal(fbClean.displayDesc, "Today, we remember what was on our minds in 2016. Looking back at all the moments we shared together.");
 
   const igClean = formatPostDetailTitleAndDesc({
     url: "https://www.instagram.com/p/BsOGulcndj-/",
@@ -334,6 +345,236 @@ test("Facebook video embed, 5-image carousel, and private post fallback render p
     title: 'Just An Egg 🥚 บน Instagram: "Let’s set a world record together and get the most liked post"',
     description: '60M likes, 4M comments - world_record_egg บน January 4, 2019: "Let’s set a world record together and get the most liked post on Instagram!"',
   });
-  assert.equal(igClean.displayTitle, "Just An Egg 🥚 (@world_record_egg)");
+  assert.equal(igClean.displayTitle, "Let’s set a world record together and get the most liked…");
   assert.equal(igClean.displayDesc, "Let’s set a world record together and get the most liked post on Instagram!");
+
+  // Photo post with plugins/post.php or instagram.com/p/.../embed must render Carousel/Image (NO Play button)
+  const fbPhotoCarousel = renderRichPreviewBox(
+    {
+      id: "fb-photo-1",
+      url: "https://www.facebook.com/page/posts/123",
+      platform: "facebook",
+      content_type: "post",
+      embed_type: "facebook",
+      embed_url: "https://www.facebook.com/plugins/post.php?href=https%3A%2F%2Fwww.facebook.com%2Fpage%2Fposts%2F123",
+      media_items: ["https://cdn.example.com/fb1.jpg", "https://cdn.example.com/fb2.jpg"],
+    },
+    { carouselIndex: 0 }
+  );
+  assert.doesNotMatch(fbPhotoCarousel, /play-embed-video/);
+  assert.match(fbPhotoCarousel, /1\/2/);
+  assert.doesNotMatch(fbPhotoCarousel, /ดูรูปทั้งหมดในโพสต์ต้นฉบับ/);
+
+  // Last slide of carousel shows "ดูรูปทั้งหมดในโพสต์ต้นฉบับ ↗" link to original post
+  const fbPhotoLastSlide = renderRichPreviewBox(
+    {
+      id: "fb-photo-1",
+      url: "https://www.facebook.com/page/posts/123",
+      platform: "facebook",
+      content_type: "post",
+      embed_url: "https://www.facebook.com/plugins/post.php?href=https%3A%2F%2Fwww.facebook.com%2Fpage%2Fposts%2F123",
+      media_items: ["https://cdn.example.com/fb1.jpg", "https://cdn.example.com/fb2.jpg"],
+    },
+    { carouselIndex: 1 }
+  );
+  assert.match(fbPhotoLastSlide, /2\/2/);
+  assert.match(fbPhotoLastSlide, /ดูรูปทั้งหมดในโพสต์ต้นฉบับ ↗/);
+  assert.match(fbPhotoLastSlide, /href="https:\/\/www\.facebook\.com\/page\/posts\/123"/);
+  assert.match(fbPhotoLastSlide, /data-action="open-image-lightbox"/);
+
+  // Fullscreen image lightbox modal renders when ui.imageLightboxOpen is true
+  const { renderLinkDetailModals } = await import("../src/screens/links.js");
+  const lightboxHtml = renderLinkDetailModals(
+    { ui: { imageLightboxOpen: true, carouselIndex: 1 } },
+    {
+      id: "fb-photo-1",
+      url: "https://www.facebook.com/page/posts/123",
+      title: "Album",
+      media_items: ["https://cdn.example.com/fb1.jpg", "https://cdn.example.com/fb2.jpg"],
+    }
+  );
+  assert.match(lightboxHtml, /figma-lightbox-backdrop/);
+  assert.match(lightboxHtml, /https:\/\/cdn\.example\.com\/fb2\.jpg/);
+  assert.match(lightboxHtml, /ดูรูปทั้งหมดในโพสต์ต้นฉบับ ↗/);
+
+  // Video playing preserves dynamically detected vertical aspect ratio (e.g. FB watch vertical video)
+  const fbWatchVertPlaying = renderRichPreviewBox(
+    {
+      id: "fb-watch-v",
+      url: "https://www.facebook.com/watch/?v=10155278547321729",
+      platform: "facebook",
+      content_type: "video",
+    },
+    { videoPlaying: true, playingVideoIsVertical: true, playingVideoAspect: "720 / 1280" },
+    { desktop: true }
+  );
+  assert.match(fbWatchVertPlaying, /is-playing is-vertical-video/);
+  assert.match(fbWatchVertPlaying, /aspect-ratio:\s*720\s*\/\s*1280/);
+  assert.match(fbWatchVertPlaying, /data-action="stop-embed-video"/);
+  assert.doesNotMatch(fbWatchVertPlaying, /figma-preview-player-bar/);
+
+  // IG Reel with direct Meta CDN `.mp4` stream renders looping HTML5 <video controls loop> without extra UI buttons
+  const validMp4 = "https://scontent-bkk1-1.cdninstagram.com/o1/v/t2/f2/m86/sample_reel.mp4?efg=1";
+  assert.equal(resolveAllowlistedDirectVideoUrl(validMp4), validMp4);
+  assert.equal(resolveAllowlistedDirectVideoUrl("https://evil.example.com/video.mp4"), null);
+  assert.equal(resolveAllowlistedDirectVideoUrl("javascript:alert(1)"), null);
+
+  const igDirectVideoHtml = renderRichPreviewBox(
+    {
+      id: "ig-reel-mp4",
+      url: "https://www.instagram.com/reel/DYowlO2v1ww/",
+      embed_url: "https://www.instagram.com/reel/DYowlO2v1ww/embed",
+      platform: "instagram",
+      content_type: "video",
+    },
+    { videoPlaying: true, playingVideoDirectUrl: validMp4, playingVideoIsVertical: true },
+    { desktop: true }
+  );
+  assert.match(igDirectVideoHtml, /<video[^>]*class="figma-preview-video"[^>]*controls[^>]*loop/);
+  assert.doesNotMatch(igDirectVideoHtml, /<iframe/);
+
+  // Fallback to <iframe> when direct video URL is missing or untrusted
+  const igFallbackIframeHtml = renderRichPreviewBox(
+    {
+      id: "ig-reel-fallback",
+      url: "https://www.instagram.com/reel/DfzqfsjyQkb/",
+      embed_url: "https://www.instagram.com/reel/DfzqfsjyQkb/embed",
+      platform: "instagram",
+      content_type: "video",
+    },
+    { videoPlaying: true, playingVideoDirectUrl: "https://evil.example.com/bad.mp4" },
+    { desktop: true }
+  );
+  assert.doesNotMatch(igFallbackIframeHtml, /<video/);
+  assert.match(igFallbackIframeHtml, /<iframe[^>]*src="https:\/\/www\.instagram\.com\/reel\/DfzqfsjyQkb\/embed"/);
 });
+
+test("Cross-platform generic title cleanup & single-photo IG asset dedup in Web UI and Extension", () => {
+  // 1. Legacy 2-item IG single-photo array [uploaded.webp, cropped stp=c...s640x640] collapses to 1 slide
+  const uploadedThumb = "http://localhost:8000/local-media/thumbnails/thumbnails/fe632666f614bba96ac01296c75ffc6b.webp";
+  const igSingleLegacy = {
+    id: "ig-1-dup",
+    url: "https://www.instagram.com/p/DfzabQmDTBe/",
+    platform: "instagram",
+    content_type: "image",
+    coverUrl: uploadedThumb,
+    mediaItems: [
+      uploadedThumb,
+      "https://scontent.cdninstagram.com/v/t51.82787-15/675803457_18579207407021094_3857042213012979541_n.jpg?stp=c240.0.720.720a_dst-jpg_e35_s640x640_tt6",
+      "https://lookaside.fbsbx.com/lookaside/crawler/media/?media_id=123",
+    ],
+  };
+  assert.deepEqual(getPreviewMediaImages(igSingleLegacy), [uploadedThumb]);
+
+  // 2. Real multi-photo carousel still preserves distinct photos
+  const igMulti = {
+    id: "ig-3",
+    url: "https://www.instagram.com/p/Multi123/",
+    platform: "instagram",
+    content_type: "image",
+    coverUrl: uploadedThumb,
+    mediaItems: [
+      uploadedThumb,
+      "https://instagram.fbkk28-1.fna.fbcdn.net/v/t51/111_222_333_n.jpg?stp=dst-jpg_e15_tt6",
+      "https://instagram.fbkk28-1.fna.fbcdn.net/v/t51/444_555_666_n.jpg?stp=dst-jpg_e15_tt6",
+    ],
+  };
+  assert.equal(getPreviewMediaImages(igMulti).length, 3);
+
+  // 3. Generic platform titles across IG / FB / TikTok / YouTube are replaced in both card & detail views
+  assert.equal(isGenericOrNoisyTitle("Instagram", "instagram", "https://www.instagram.com/reel/DYowlO2v1ww/"), true);
+  assert.equal(
+    isGenericOrNoisyTitle("Watch trending videos for you | TikTok", "tiktok", "https://www.tiktok.com/@a/video/1"),
+    true
+  );
+
+  const igReelItem = {
+    url: "https://www.instagram.com/reel/DYowlO2v1ww/",
+    platform: "instagram",
+    content_type: "video",
+    title: "Instagram",
+    description: '13K likes, 120 comments - creator on June 10, 2026: "高難度招式 😎🔥\nFull breakdown". ',
+  };
+  assert.equal(formatCardDisplayTitle(igReelItem), "高難度招式 😎🔥");
+  const igDetail = formatPostDetailTitleAndDesc(igReelItem);
+  assert.equal(igDetail.displayTitle, "高難度招式 😎🔥");
+  assert.equal(igDetail.displayDesc, "高難度招式 😎🔥\nFull breakdown");
+
+  const ytNoisy = {
+    url: "https://www.youtube.com/watch?v=abc",
+    platform: "youtube",
+    content_type: "video",
+    title: "(584) Match Highlight 2026 - YouTube",
+    description: "",
+  };
+  assert.equal(formatCardDisplayTitle(ytNoisy), "Match Highlight 2026");
+
+  // 4. Extension api.js recognizes generic platform titles
+  const require = createRequire(import.meta.url);
+  const extApi = require("../../extension/api.js");
+  assert.equal(extApi.isGenericPlatformTitle("Instagram"), true);
+  assert.equal(extApi.isGenericPlatformTitle("Watch trending videos for you | TikTok"), true);
+  assert.equal(extApi.isGenericPlatformTitle("Facebook"), true);
+  assert.equal(extApi.isGenericPlatformTitle("เห็นได้ไง? | iHAVECPU"), false);
+
+  // 5. Extension content_assist.js picks uncropped srcset over cropped stp=c, deduplicates cross-CDN Meta assets, and clears generic title
+  const asset = "675803457_18579207407021094_3857042213012979541_n.jpg";
+  const uncropped1080 = `https://instagram.fbkk28-1.fna.fbcdn.net/v/t51.82787-15/${asset}?stp=dst-jpg_e15_tt6`;
+  const cropped1080 = `https://instagram.fbkk28-1.fna.fbcdn.net/v/t51.82787-15/${asset}?stp=c0.420.1080.1080a_dst-jpg_e35_tt6`;
+  const croppedOg = `https://scontent.cdninstagram.com/v/t51.82787-15/${asset}?stp=c240.0.720.720a_dst-jpg_e35_s640x640_tt6`;
+
+  const metaContents = {
+    'meta[property="og:image"]': croppedOg,
+    'meta[property="og:title"]': "Instagram",
+    'meta[property="og:description"]': "เห็นได้ไง? | iHAVECPU",
+    'link[rel="canonical"]': "https://www.instagram.com/p/DfzabQmDTBe/",
+    'meta[property="og:site_name"]': "Instagram",
+  };
+  const fakeImg = {
+    naturalWidth: 1080,
+    naturalHeight: 1350,
+    width: 500,
+    height: 625,
+    currentSrc: cropped1080,
+    getBoundingClientRect() {
+      return { width: 500, height: 625 };
+    },
+    getAttribute(attr) {
+      if (attr === "srcset") return `${uncropped1080} 1080w, ${cropped1080} 1080w`;
+      if (attr === "src") return cropped1080;
+      return "";
+    },
+  };
+  const assistSrc = readFileSync(new URL("../../extension/content_assist.js", import.meta.url), "utf8");
+  const assistRes = vm.runInNewContext(assistSrc, {
+    window: {
+      location: { href: "https://www.instagram.com/p/DfzabQmDTBe/", hostname: "www.instagram.com" },
+      getSelection: () => "",
+    },
+    document: {
+      title: "Instagram",
+      querySelector(sel) {
+        if (metaContents[sel]) {
+          return {
+            getAttribute(attr) {
+              return attr === "href" || attr === "content" ? metaContents[sel] : "";
+            },
+          };
+        }
+        return null;
+      },
+      querySelectorAll(sel) {
+        if (sel.includes("article img")) {
+          return [fakeImg];
+        }
+        return [];
+      },
+    },
+    URL,
+  });
+
+  assert.equal(assistRes.title, "");
+  assert.equal(assistRes.media_items.length, 1);
+  assert.equal(assistRes.media_items[0].url, uncropped1080);
+});
+
