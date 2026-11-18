@@ -578,3 +578,274 @@ test("Cross-platform generic title cleanup & single-photo IG asset dedup in Web 
   assert.equal(assistRes.media_items[0].url, uncropped1080);
 });
 
+test("Social profiles/pages saving, TikTok photo DOM/title, YouTube community post media & contentType inference", async () => {
+  const { inferContentType } = await import("../src/services/apiClient.js");
+  const require = createRequire(import.meta.url);
+  const extApi = require("../../extension/api.js");
+
+  // 1. Extension allows FB pages, IG profiles, TikTok channels while blocking pure home/feed pages
+  assert.equal(extApi.getSocialPostLinkWarning("https://www.facebook.com/Google"), null);
+  assert.equal(extApi.getSocialPostLinkWarning("https://www.facebook.com/profile.php?id=1000123456"), null);
+  assert.equal(extApi.getSocialPostLinkWarning("https://www.instagram.com/instagram/"), null);
+  assert.equal(extApi.getSocialPostLinkWarning("https://www.tiktok.com/@tiktok"), null);
+  assert.ok(extApi.getSocialPostLinkWarning("https://www.facebook.com/"));
+  assert.ok(extApi.getSocialPostLinkWarning("https://www.facebook.com/watch"));
+  assert.ok(extApi.getSocialPostLinkWarning("https://www.instagram.com/explore/"));
+  assert.ok(extApi.getSocialPostLinkWarning("https://www.tiktok.com/foryou"));
+
+  // 2. inferContentType & renderRichPreviewBox treat YT community posts & TikTok /photo/ as social/carousel, not video
+  assert.equal(inferContentType({ url: "https://www.youtube.com/post/Ugkx123", platform: "YouTube" }), "social");
+  assert.equal(inferContentType({ url: "https://www.youtube.com/@Google", platform: "YouTube" }), "social");
+  assert.equal(inferContentType({ url: "https://www.youtube.com/@Google/shorts", platform: "YouTube" }), "social");
+  assert.equal(inferContentType({ url: "https://www.youtube.com/shorts/AbCdEf12345", platform: "YouTube" }), "video");
+  assert.equal(inferContentType({ url: "https://www.tiktok.com/@creator/photo/738811", platform: "TikTok" }), "social");
+  assert.equal(
+    inferContentType({
+      url: "https://vt.tiktok.com/ZSr999/",
+      canonical_url: "https://www.tiktok.com/@creator/photo/738811",
+      content_type: "post",
+      platform: "TikTok",
+    }),
+    "social"
+  );
+  assert.equal(inferContentType({ url: "https://www.tiktok.com/@creator", platform: "TikTok" }), "social");
+  assert.equal(inferContentType({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", platform: "YouTube" }), "video");
+
+  // 2b. Social profiles/pages preserve page/channel name instead of overwriting with bio/follower stats
+  const fbProfDisp = formatPostDetailTitleAndDesc({
+    url: "https://www.facebook.com/Google",
+    platform: "facebook",
+    title: "Google",
+    description: "Google. 29M likes · 100K talking about this. Organizing the world's information.",
+  });
+  assert.equal(fbProfDisp.displayTitle, "Google");
+  assert.equal(fbProfDisp.displayDesc, "Organizing the world's information.");
+
+  const igProfDisp = formatPostDetailTitleAndDesc({
+    url: "https://www.instagram.com/travel_th/",
+    platform: "instagram",
+    title: "Travel TH (@travel_th) • รูปและวิดีโอ Instagram",
+    description: "ผู้ติดตาม 120K คน, กำลังติดตาม 50 คน, 310 โพสต์ - ดูรูปภาพและวิดีโอบน Instagram จาก Travel TH (@travel_th)",
+  });
+  assert.equal(igProfDisp.displayTitle, "Travel TH (@travel_th)");
+  assert.equal(igProfDisp.displayDesc, "ผู้ติดตาม 120K คน, กำลังติดตาม 50 คน, 310 โพสต์");
+
+  assert.equal(
+    formatCardDisplayTitle({
+      url: "https://www.tiktok.com/@creator",
+      platform: "tiktok",
+      title: "Cafe Guide TH (@creator)",
+      description: "Daily coffee & cafe reviews in Thailand for fellow coffee lovers",
+    }),
+    "Cafe Guide TH (@creator)"
+  );
+
+  const ttPhotoHtml = renderRichPreviewBox(
+    {
+      id: "tt-photo-1",
+      url: "https://www.tiktok.com/@creator/photo/738811",
+      platform: "TikTok",
+      content_type: "post",
+      embed_url: "https://www.tiktok.com/embed/v2/738811",
+      media_items: ["https://cdn.test/tt1.jpg", "https://cdn.test/tt2.jpg"],
+    },
+    {},
+    { desktop: true }
+  );
+  assert.doesNotMatch(ttPhotoHtml, /figma-preview-play-btn/);
+  assert.match(ttPhotoHtml, /1\/2/);
+
+  // 3. Extension content_assist.js extracts TikTok /photo/ imagePost.title + desc + images
+  const ttUniJson = JSON.stringify({
+    __DEFAULT_SCOPE__: {
+      "webapp.video-detail": {
+        itemInfo: {
+          itemStruct: {
+            desc: "Photo caption details",
+            author: { uniqueId: "creator", nickname: "CreatorTH" },
+            imagePost: {
+              title: "Photo Mode Title",
+              images: [
+                { imageURL: { urlList: ["https://p16-sign.tiktokcdn.com/tos-alisg/slide1.jpg"] } },
+                { imageURL: { urlList: ["https://p16-sign.tiktokcdn.com/tos-alisg/slide2.jpg"] } },
+              ],
+            },
+          },
+        },
+      },
+    },
+  });
+  const assistSrc = readFileSync(new URL("../../extension/content_assist.js", import.meta.url), "utf8");
+  const ttAssistRes = vm.runInNewContext(assistSrc, {
+    window: {
+      location: { href: "https://www.tiktok.com/@creator/photo/738811", pathname: "/@creator/photo/738811", hostname: "www.tiktok.com" },
+      getSelection: () => "",
+    },
+    document: {
+      title: "CreatorTH on TikTok",
+      getElementById(id) {
+        return id === "__UNIVERSAL_DATA_FOR_REHYDRATION__" ? { textContent: ttUniJson } : null;
+      },
+      querySelector() {
+        return null;
+      },
+      querySelectorAll() {
+        return [];
+      },
+    },
+    URL,
+  });
+  assert.equal(ttAssistRes.title, "Photo Mode Title");
+  assert.match(ttAssistRes.description, /Photo caption details/);
+  assert.equal(ttAssistRes.media_items.length, 2);
+
+  // 4. Stale IG SPA og:url metadata & YT sidebar images are ignored cleanly by content_assist.js
+  const staleIgRes = vm.runInNewContext(assistSrc, {
+    window: {
+      location: { href: "https://www.instagram.com/reel/NEW_REEL/", pathname: "/reel/NEW_REEL/", hostname: "www.instagram.com" },
+      getSelection: () => "",
+    },
+    document: {
+      title: "Instagram",
+      getElementById() {
+        return null;
+      },
+      querySelector(sel) {
+        if (sel.includes('meta[property="og:url"]')) {
+          return { getAttribute: () => "https://www.instagram.com/p/OLD_POST/" };
+        }
+        if (sel.includes('meta[property="og:image"]')) {
+          return { getAttribute: () => "https://scontent.cdninstagram.com/v/t51/stale_old_post_1080.jpg" };
+        }
+        if (sel.includes('meta[property="og:description"]')) {
+          return { getAttribute: () => "Stale caption from old post" };
+        }
+        return null;
+      },
+      querySelectorAll() {
+        return [];
+      },
+    },
+    URL,
+  });
+  assert.equal(staleIgRes.media_items.length, 0);
+  assert.equal(staleIgRes.description, "");
+  assert.equal(staleIgRes.canonical_url, "https://www.instagram.com/reel/NEW_REEL/");
+
+  const ytVidAssistRes = vm.runInNewContext(assistSrc, {
+    window: {
+      location: { href: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", pathname: "/watch", hostname: "www.youtube.com" },
+      getSelection: () => "",
+    },
+    document: {
+      title: "Video Title - YouTube",
+      getElementById() {
+        return null;
+      },
+      querySelector(sel) {
+        if (sel.includes('meta[property="og:image"]')) {
+          return { getAttribute: () => "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg" };
+        }
+        return null;
+      },
+      querySelectorAll() {
+        return [
+          {
+            naturalWidth: 480,
+            naturalHeight: 360,
+            currentSrc: "https://i.ytimg.com/vi/SIDEBAR999/hqdefault.jpg",
+            getBoundingClientRect: () => ({ width: 480, height: 360 }),
+            getAttribute: () => null,
+          },
+        ];
+      },
+    },
+    URL,
+  });
+  assert.deepEqual(
+    Array.from(ytVidAssistRes.media_items, (m) => m.url),
+    ["https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"]
+  );
+
+  // 5. TikTok [data-e2e="user-avatar"] does NOT pollute /photo/ or /video/, nor suppress video og:image
+  const ttAvatarEl = {
+    naturalWidth: 120,
+    naturalHeight: 120,
+    currentSrc: "https://p16-sign.tiktokcdn.com/tos-alisg/header_creator_avatar_300.jpeg",
+    getBoundingClientRect: () => ({ width: 120, height: 120 }),
+    closest: (sel) => sel === '[data-e2e="user-avatar"]',
+    getAttribute: () => null,
+  };
+  const ttPhotoWithAvatarRes = vm.runInNewContext(assistSrc, {
+    window: {
+      location: { href: "https://www.tiktok.com/@creator/photo/738811", pathname: "/@creator/photo/738811", hostname: "www.tiktok.com" },
+      getSelection: () => "",
+    },
+    document: {
+      title: "CreatorTH on TikTok",
+      getElementById(id) {
+        return id === "__UNIVERSAL_DATA_FOR_REHYDRATION__" ? { textContent: ttUniJson } : null;
+      },
+      querySelector(sel) {
+        if (sel.includes('meta[property="og:image"]')) {
+          return { getAttribute: () => "https://p16-sign.tiktokcdn.com/tos-alisg/cropped_photo_og.jpg" };
+        }
+        return null;
+      },
+      querySelectorAll(sel) {
+        return sel.includes("user-avatar") ? [ttAvatarEl] : [];
+      },
+    },
+    URL,
+  });
+  assert.deepEqual(
+    Array.from(ttPhotoWithAvatarRes.media_items, (m) => m.url),
+    [
+      "https://p16-sign.tiktokcdn.com/tos-alisg/slide1.jpg",
+      "https://p16-sign.tiktokcdn.com/tos-alisg/slide2.jpg",
+    ]
+  );
+
+  const ttVideoWithAvatarRes = vm.runInNewContext(assistSrc, {
+    window: {
+      location: { href: "https://www.tiktok.com/@creator/video/739900", pathname: "/@creator/video/739900", hostname: "www.tiktok.com" },
+      getSelection: () => "",
+    },
+    document: {
+      title: "CreatorTH on TikTok",
+      getElementById: () => null,
+      querySelector(sel) {
+        if (sel.includes('meta[property="og:image"]')) {
+          return { getAttribute: () => "https://p16-sign.tiktokcdn.com/tos-alisg/video_cover_og.jpg" };
+        }
+        return null;
+      },
+      querySelectorAll(sel) {
+        return sel.includes("user-avatar") ? [ttAvatarEl] : [];
+      },
+    },
+    URL,
+  });
+  assert.deepEqual(
+    Array.from(ttVideoWithAvatarRes.media_items, (m) => m.url),
+    ["https://p16-sign.tiktokcdn.com/tos-alisg/video_cover_og.jpg"]
+  );
+
+  // 6. Resolved vt.tiktok.com photo shortlink falls through to carousel when canonical_url contains /photo/
+  const ttShortPhotoHtml = renderRichPreviewBox(
+    {
+      id: "tt-short-photo",
+      url: "https://vt.tiktok.com/ZSr999/",
+      canonical_url: "https://www.tiktok.com/@creator/photo/738811",
+      platform: "TikTok",
+      content_type: "post",
+      embed_url: "https://www.tiktok.com/embed/v2/738811",
+      media_items: ["https://cdn.test/tt1.jpg", "https://cdn.test/tt2.jpg"],
+    },
+    {},
+    { desktop: true }
+  );
+  assert.doesNotMatch(ttShortPhotoHtml, /figma-preview-play-btn/);
+  assert.match(ttShortPhotoHtml, /1\/2/);
+});
+

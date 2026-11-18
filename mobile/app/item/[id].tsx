@@ -73,13 +73,16 @@ export default function ItemDetailScreen() {
   const [videoLoading, setVideoLoading] = useState(false);
   const [imageRatios, setImageRatios] = useState<Record<string, number>>({});
   const actionSeqRef = useRef(0);
+  const activeIdRef = useRef<string | undefined>(id);
+  activeIdRef.current = id;
 
   const loadItem = useCallback(async () => {
     if (!id) return;
+    const targetId = id;
     const startGen = getAuthGeneration();
-    const res = await apiFetch<MobileLinkItem>(`/api/items/${encodeURIComponent(id)}`);
-    if (getAuthGeneration() !== startGen) {
-      setLoading(false);
+    const res = await apiFetch<MobileLinkItem>(`/api/items/${encodeURIComponent(targetId)}`);
+    if (getAuthGeneration() !== startGen || activeIdRef.current !== targetId) {
+      if (activeIdRef.current === targetId) setLoading(false);
       return;
     }
     if (res.ok && res.data) {
@@ -90,23 +93,27 @@ export default function ItemDetailScreen() {
       setAiSummary(loaded.ai_summary || "");
       void upsertCachedLinkItem(loaded).catch(() => {});
 
-      const itemId = String(loaded.id || id);
-      const hasGenericTitle = isGenericOrNoisyTitle(loaded.title, loaded.platform || "", loaded.url);
+      const itemId = String(loaded.id || targetId);
+      const targetUrl = String(loaded.canonical_url || loaded.url || "");
+      const hasGenericTitle = isGenericOrNoisyTitle(loaded.title, loaded.platform || "", targetUrl);
+      const descStr = String(loaded.description || "").trim();
       const hasCover = Boolean(resolveMobileThumbUrl(loaded));
-      const hasDesc = Boolean(String(loaded.description || "").trim());
       const isYt =
-        /youtube\.com|youtu\.be/i.test(String(loaded.url || "")) ||
+        /youtube\.com|youtu\.be/i.test(targetUrl) ||
         String(loaded.platform || "").toLowerCase() === "youtube";
+      const isYtPlaceholderDesc = isYt && (descStr.startsWith("By ") || descStr.startsWith("วิดีโอ YouTube"));
+      const hasDesc = Boolean(descStr) && !isYtPlaceholderDesc;
+      const isYtVideo = isYt && !/youtube\.com\/(?:post\/|@|channel\/|c\/|user\/)/i.test(targetUrl);
       const needsAutoEnrich =
         !isPrivateOrRestrictedItem(loaded) &&
         loaded.enrich_status !== "failed" &&
-        (!hasCover || !hasDesc || hasGenericTitle || (isYt && !loaded.embed_url));
+        (!hasCover || !hasDesc || hasGenericTitle || (isYtVideo && !loaded.embed_url));
 
       if (itemId && needsAutoEnrich && !_autoEnrichedItemIds.has(itemId)) {
         _autoEnrichedItemIds.add(itemId);
         void refreshLinkPreview(itemId)
           .then((pvRes) => {
-            if (getAuthGeneration() !== startGen) return;
+            if (getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
             const st = String(pvRes.data?.status || "").toLowerCase();
             if (pvRes.ok && st !== "failed" && pvRes.data) {
               const rawNext = (pvRes.data.item ?? pvRes.data) as MobileLinkItem;
@@ -118,7 +125,7 @@ export default function ItemDetailScreen() {
           .catch(() => {});
       }
     }
-    setLoading(false);
+    if (activeIdRef.current === targetId) setLoading(false);
   }, [id]);
 
   useFocusEffect(

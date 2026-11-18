@@ -191,6 +191,7 @@
     authMode: "login",
     activeViewMode: "save",
     tabDefaultTitle: "",
+    autoFilledTitle: "",
     domMeta: null,
     domMetaUrl: "",
     previewMeta: null,
@@ -916,7 +917,10 @@
     if (typeof api.isGenericPlatformTitle === "function" && api.isGenericPlatformTitle(currentTitle, url)) {
       return true;
     }
-    return Boolean(state.tabDefaultTitle && currentTitle === state.tabDefaultTitle);
+    return Boolean(
+      (state.tabDefaultTitle && currentTitle === state.tabDefaultTitle) ||
+        (state.autoFilledTitle && currentTitle === state.autoFilledTitle)
+    );
   }
 
   function resetPreviewMetadata() {
@@ -950,6 +954,7 @@
       if (shouldOverwritePopupTitle(els.titleInput.value.trim(), preview.title, targetUrl, forceRefresh)) {
         els.titleInput.value = preview.title;
         state.tabDefaultTitle = "";
+        state.autoFilledTitle = preview.title;
       }
       els.siteNameLabel.textContent = formatDomainDisplay(targetUrl, preview.site_name || "");
 
@@ -972,13 +977,19 @@
   }
 
   async function checkDomAssistPermissionPassive(url) {
-    if (!chrome.permissions || typeof chrome.permissions.contains !== "function") return false;
+    if (typeof chrome === "undefined" || !chrome.scripting || typeof chrome.scripting.executeScript !== "function") {
+      return false;
+    }
+    if (!chrome.permissions || typeof chrome.permissions.contains !== "function") return true;
     try {
       const originPattern = new URL(url).origin + "/*";
-      return await chrome.permissions.contains({ origins: [originPattern] });
+      const granted = await chrome.permissions.contains({ origins: [originPattern] });
+      if (granted) return true;
     } catch (_err) {
       return false;
     }
+    // MV3 activeTab grants temporary script access to the active tab while the popup is open.
+    return api.isSaveableHttpUrl(url);
   }
 
   function applySocialLinkWarningUi(warn, { autoExpand = false, clearInput = false } = {}) {
@@ -1054,6 +1065,7 @@
     const isTabGeneric =
       typeof api.isGenericPlatformTitle === "function" && api.isGenericPlatformTitle(rawTabTitle, rawUrl);
     state.tabDefaultTitle = isTabGeneric ? "" : rawTabTitle;
+    state.autoFilledTitle = state.tabDefaultTitle;
     els.titleInput.value = isTabGeneric ? "" : rawTabTitle;
     const domain = formatDomainDisplay(rawUrl);
     els.siteNameLabel.textContent = domain;
@@ -1072,6 +1084,7 @@
         if (domMeta) {
           if (shouldOverwritePopupTitle(els.titleInput.value.trim(), domMeta.title, rawUrl, false)) {
             els.titleInput.value = domMeta.title;
+            state.autoFilledTitle = domMeta.title;
           }
           if (domMeta.site_name) {
             els.siteNameLabel.textContent = formatDomainDisplay(rawUrl, domMeta.site_name);
@@ -1457,15 +1470,16 @@
     const previewMedia = normalizeMediaUrlList(activePreviewMeta && activePreviewMeta.media_items, previewImage);
     const domMedia = normalizeMediaUrlList(activeDomMeta && activeDomMeta.media_items);
     const isMetaSoc = /instagram\.com|facebook\.com|fb\.watch/i.test(url);
+    const isStructuredSocial = isMetaSoc || /youtube\.com|youtu\.be|tiktok\.com/i.test(url);
     const mergedMedia = [];
     const seenMerged = new Set();
     const primaryList = previewMedia.length
       ? previewMedia
       : domMedia;
     const secondaryList =
-      previewMedia.length && !isMetaSoc
+      previewMedia.length && !isStructuredSocial
         ? domMedia
-        : previewMedia.length && domMedia.length > previewMedia.length
+        : previewMedia.length && isMetaSoc && domMedia.length > previewMedia.length
           ? domMedia.filter((u) => !/[?&]stp=c\d+\.\d+\.\d+\.\d+/i.test(u))
           : [];
     for (const u of [...primaryList, ...secondaryList]) {
@@ -1777,6 +1791,15 @@
     els.refreshPreviewBtn.addEventListener("click", () => {
       void fetchPreviewForUrl(els.urlInput.value.trim(), true);
     });
+
+    if (els.titleInput) {
+      els.titleInput.addEventListener("input", () => {
+        if (els.titleInput.value.trim() !== state.autoFilledTitle) {
+          state.autoFilledTitle = "";
+          state.tabDefaultTitle = "";
+        }
+      });
+    }
 
     els.toggleNewFolderBtn.addEventListener("click", () => {
       els.newFolderBox.classList.toggle("hidden");

@@ -21,6 +21,7 @@ from .extractors import (
     filter_and_cap_images,
     is_generic_or_noisy_title,
     is_junk_image_url,
+    is_profile_or_page_url,
 )
 from .security import (
     SlidingWindowRateLimiter,
@@ -86,7 +87,13 @@ def find_recent_unfurl_cache(
             if not user_id or not row_owner or row_owner != str(user_id).strip():
                 continue
         row_desc = str(row.get("description") or "").strip()
-        if row_plat == "youtube" and (not row_desc or row_desc.startswith("By ")):
+        if (row_plat == "youtube" or "youtube.com" in row_url or "youtu.be" in row_url) and (
+            not row_desc or row_desc.startswith(("By ", "วิดีโอ YouTube"))
+        ):
+            continue
+        if "/photo/" in row_url and "tiktok.com" in row_url and (
+            not row_desc or row_desc.startswith("@") or row.get("embed_url")
+        ):
             continue
         if is_generic_or_noisy_title(row.get("title"), row_plat, row_url):
             continue
@@ -103,7 +110,12 @@ def find_recent_unfurl_cache(
     return best_row
 
 
-def _extract_clean_media(row: Dict[str, Any], base_url: str) -> Tuple[Optional[str], List[str]]:
+def _extract_clean_media(
+    row: Dict[str, Any],
+    base_url: str,
+    *,
+    allow_profile_avatars: Optional[bool] = None,
+) -> Tuple[Optional[str], List[str]]:
     raw_media = row.get("media_items") or []
     if not isinstance(raw_media, list):
         raw_media = []
@@ -116,10 +128,20 @@ def _extract_clean_media(row: Dict[str, Any], base_url: str) -> Tuple[Optional[s
             if isinstance(cand, str):
                 norm_media.append(cand)
 
-    capped_media = filter_and_cap_images(norm_media, base_url=base_url, max_images=MAX_MEDIA_ITEMS)
+    allow_avatars = (
+        is_profile_or_page_url(base_url)
+        if allow_profile_avatars is None
+        else allow_profile_avatars
+    )
+    capped_media = filter_and_cap_images(
+        norm_media,
+        base_url=base_url,
+        max_images=MAX_MEDIA_ITEMS,
+        allow_profile_avatars=allow_avatars,
+    )
     raw_cover = row.get("image_url")
     cover_candidate = sanitize_external_url(raw_cover) if isinstance(raw_cover, str) else None
-    if cover_candidate and not is_junk_image_url(cover_candidate):
+    if cover_candidate and not is_junk_image_url(cover_candidate, allow_profile_avatars=allow_avatars):
         cover_clean: Optional[str] = cover_candidate
         if not capped_media or capped_media[0] != cover_clean:
             capped_media = [cover_clean, *[u for u in capped_media if u != cover_clean]][:MAX_MEDIA_ITEMS]
@@ -176,7 +198,13 @@ def _resolve_media_with_existing(
 
 
 def _sanitize_cached_payload(donor: Dict[str, Any], base_url: str) -> Dict[str, Any]:
-    cover_clean, capped_media = _extract_clean_media(donor, base_url=base_url)
+    effective_base = str(donor.get("canonical_url") or base_url)
+    allow_avatars = is_profile_or_page_url(effective_base)
+    cover_clean, capped_media = _extract_clean_media(
+        donor,
+        base_url=effective_base,
+        allow_profile_avatars=allow_avatars,
+    )
 
     embed_type = str(donor.get("embed_type") or "none")
     embed_url = validate_embed_url(embed_type, donor.get("embed_url"))
@@ -236,9 +264,7 @@ async def preview_url_readonly(
                 "favicon_url": cached_data["favicon_url"],
                 "content_type": cached_data["content_type"] or "link",
                 "platform": cached_data["platform"] or "web",
-                "preview_status": "private_or_restricted"
-                if cached_data.get("enrich_error") == "private_or_restricted"
-                else "ok",
+                "preview_status": "ok",
                 "cached": True,
             }
 
@@ -322,9 +348,11 @@ def _should_replace_description(
         return False
     if force_refresh or not old_desc:
         return True
-    if platform == "youtube" and old_desc.startswith("By ") and not candidate.startswith("By "):
+    if platform == "youtube" and old_desc.startswith(("By ", "วิดีโอ YouTube")) and not candidate.startswith(("By ", "วิดีโอ YouTube")):
         return True
     if platform in ("instagram", "facebook", "tiktok"):
+        if old_desc.startswith(("@", "ช่อง TikTok ", "โพสต์จาก ")) and not candidate.startswith(("@", "ช่อง TikTok ", "โพสต์จาก ")):
+            return True
         if old_desc.endswith(("...", "…", '".', "”.")) and len(candidate) >= len(old_desc) - 2:
             return True
         if len(candidate) > len(old_desc) + 20:
@@ -349,7 +377,8 @@ async def enrich_item(
         item = dict(res.data[0])
     raw_url = item.get("canonical_url") or item.get("url") or ""
     canon_url = canonicalize_url(raw_url)
-    url_hash = compute_url_hash(canon_url)
+    lookup_hash = compute_url_hash(canon_url)
+    dedup_hash = str(item.get("url_hash") or "").strip() or compute_url_hash(str(item.get("url") or canon_url))
     now_iso = _now_utc().isoformat()
     next_enrich_status = "done" if item.get("ai_summary") else "unfurled"
 
@@ -359,12 +388,14 @@ async def enrich_item(
     canon_lower = canon_url.lower()
     needs_yt_full_desc = (
         old_plat == "youtube" or "youtube.com" in canon_lower or "youtu.be" in canon_lower
-    ) and old_desc.startswith("By ")
+    ) and (not old_desc or old_desc.startswith(("By ", "วิดีโอ YouTube")))
 
     # 1. Cross-user 7-day cache check (same-user isolated for social platforms)
     owner_id = str(item.get("owner_id") or "").strip() or None
     if not force_refresh:
-        donor = find_recent_unfurl_cache(db, url_hash, exclude_item_id=item_id, user_id=owner_id)
+        donor = find_recent_unfurl_cache(db, lookup_hash, exclude_item_id=item_id, user_id=owner_id)
+        if donor is None and dedup_hash != lookup_hash:
+            donor = find_recent_unfurl_cache(db, dedup_hash, exclude_item_id=item_id, user_id=owner_id)
         if donor is not None:
             cached_data = _sanitize_cached_payload(donor, base_url=canon_url)
             cached_plat = str(cached_data.get("platform") or old_plat or "").lower()
@@ -377,8 +408,8 @@ async def enrich_item(
                 force_refresh=False,
             )
             updates: Dict[str, Any] = {
-                "canonical_url": canon_url,
-                "url_hash": url_hash,
+                "canonical_url": str(donor.get("canonical_url") or canon_url),
+                "url_hash": dedup_hash,
                 "image_url": cached_cover,
                 "media_items": cached_media,
                 "embed_type": cached_data["embed_type"],
@@ -417,7 +448,9 @@ async def enrich_item(
 
     # 2. Live 0-token extraction + Cover #1 WebP upload
     try:
-        needs_tiktok_full_desc = old_plat == "tiktok" and (not old_desc or old_desc.startswith("@"))
+        needs_tiktok_full_desc = (old_plat == "tiktok" or "tiktok.com" in canon_lower) and (
+            not old_desc or old_desc.startswith(("@", "ช่อง TikTok ")) or "/photo/" in canon_lower
+        )
         result = await extract_unfurl_metadata(
             canon_url,
             fetch_full_description=bool(force_refresh or needs_yt_full_desc or needs_tiktok_full_desc),
@@ -431,12 +464,12 @@ async def enrich_item(
             force_refresh=force_refresh,
         )
 
-        if preserved_from_existing and _is_already_stored_cover(cover_source, url_hash):
+        if preserved_from_existing and _is_already_stored_cover(cover_source, dedup_hash):
             final_cover, uploaded_to_storage = cover_source, False
         else:
             final_cover, uploaded_to_storage = await process_and_upload_cover(
                 cover_source,
-                url_hash=url_hash,
+                url_hash=dedup_hash,
                 db=db,
                 storage_uploader=storage_uploader,
             )
@@ -467,7 +500,7 @@ async def enrich_item(
 
         updates = {
             "canonical_url": result.canonical_url,
-            "url_hash": result.url_hash,
+            "url_hash": dedup_hash,
             "image_url": final_cover,
             "media_items": final_media,
             "embed_type": safe_embed_type,
@@ -513,7 +546,7 @@ async def enrich_item(
         safe_err = redact_secrets_in_text(exc)[:500]
         fail_updates = {
             "canonical_url": canon_url,
-            "url_hash": url_hash,
+            "url_hash": dedup_hash,
             "enrich_status": "failed",
             "enrich_attempts": attempts,
             "enrich_error": safe_err,
@@ -581,7 +614,7 @@ async def resolve_item_playable_video(
             logger.debug("Playable video resolve fallback for %s: %s", item_id, redact_secrets_in_text(exc))
             video_url = None
 
-    safe_embed = validate_embed_url(item.get("embed_type"), item.get("embed_url")) or item.get("embed_url")
+    safe_embed = validate_embed_url(item.get("embed_type"), item.get("embed_url"))
     return {
         "item_id": item_id,
         "video_url": video_url,

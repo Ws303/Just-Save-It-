@@ -18,6 +18,7 @@ export interface StoredSession {
 export interface MobileLinkItem {
   id: string;
   url: string;
+  canonical_url?: string | null;
   title?: string;
   description?: string;
   platform?: string;

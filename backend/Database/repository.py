@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 from typing import Any, Dict, List, Optional, Set, Tuple
+import urllib.parse
 import uuid
 from zoneinfo import ZoneInfo
 
@@ -414,6 +415,7 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
         merged_title_clean = re.sub(r"^\(\d+\+?\)\s+", "", merged_title).strip().lower()
         merged_plat = str(merged_after_bump.get("platform") or "").lower()
         canon_lower = canon_url.lower()
+        canon_path = urllib.parse.urlparse(canon_lower).path or "/"
         is_yt = merged_plat == "youtube" or "youtube.com" in canon_lower or "youtu.be" in canon_lower
         needs_re_enrich = (
             not merged_after_bump.get("image_url")
@@ -439,8 +441,25 @@ def create_or_bump_item(db: Any, user_id: str, req: ItemCreateRequest) -> Dict[s
                 "home / x",
                 "reddit",
             )
-            or (is_yt and merged_desc.startswith("By "))
-            or ((is_yt or merged_plat in ("tiktok", "vimeo")) and not merged_after_bump.get("embed_url"))
+            or (is_yt and merged_desc.startswith(("By ", "วิดีโอ YouTube")))
+            or (
+                is_yt
+                and "/post/" in canon_path
+                and (
+                    not merged_desc
+                    or not merged_after_bump.get("image_url")
+                    or merged_after_bump.get("content_type") not in ("post", "video")
+                )
+            )
+            or ("tiktok.com" in canon_lower and "/photo/" in canon_path and (not merged_desc or merged_desc.startswith("@")))
+            or (
+                (
+                    (is_yt and "/post/" not in canon_path and not re.search(r"/(?:@|channel/|c/|user/)", canon_path))
+                    or (merged_plat == "tiktok" and "/photo/" not in canon_path and not re.match(r"^/@[^/]+/?$", canon_path))
+                    or merged_plat == "vimeo"
+                )
+                and not merged_after_bump.get("embed_url")
+            )
         )
         if needs_re_enrich:
             bump_updates["enrich_status"] = "pending"

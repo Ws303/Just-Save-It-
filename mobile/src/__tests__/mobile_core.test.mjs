@@ -2246,4 +2246,65 @@ class MainActivity : ReactActivity() {
     if (prevEnvBase === undefined) delete process.env.EXPO_PUBLIC_API_BASE_URL;
     else process.env.EXPO_PUBLIC_API_BASE_URL = prevEnvBase;
   }
+
+  // 8. Profiles/pages saveable & non-video YT post / TT photo contentType classification
+  const { inferMobileContentType, isPlayableVideoEmbed } = await import("../itemHelpers.ts");
+  assert.equal(getSocialPostLinkWarning("https://www.facebook.com/Google"), null);
+  assert.equal(getSocialPostLinkWarning("https://www.facebook.com/profile.php?id=1000123456"), null);
+  assert.equal(getSocialPostLinkWarning("https://www.instagram.com/instagram/"), null);
+  assert.equal(getSocialPostLinkWarning("https://www.tiktok.com/@tiktok"), null);
+  assert.ok(getSocialPostLinkWarning("https://www.facebook.com/watch"));
+  assert.ok(getSocialPostLinkWarning("https://www.instagram.com/explore/"));
+
+  assert.equal(inferMobileContentType({ url: "https://www.youtube.com/post/Ugkx123", platform: "youtube" }), "social");
+  assert.equal(inferMobileContentType({ url: "https://www.youtube.com/@Google", platform: "youtube" }), "social");
+  assert.equal(inferMobileContentType({ url: "https://www.youtube.com/@Google/shorts", platform: "youtube" }), "social");
+  assert.equal(inferMobileContentType({ url: "https://www.youtube.com/shorts/AbCdEf12345", platform: "youtube" }), "video");
+  assert.equal(inferMobileContentType({ url: "https://www.tiktok.com/@creator/photo/738811", platform: "tiktok" }), "social");
+  assert.equal(
+    inferMobileContentType({
+      url: "https://vt.tiktok.com/ZSr999/",
+      canonical_url: "https://www.tiktok.com/@creator/photo/738811",
+      content_type: "post",
+      platform: "tiktok",
+    }),
+    "social",
+  );
+  assert.equal(
+    isPlayableVideoEmbed("https://www.tiktok.com/embed/v2/738811", {
+      url: "https://vt.tiktok.com/ZSr999/",
+      canonical_url: "https://www.tiktok.com/@creator/photo/738811",
+    }),
+    false,
+  );
+  assert.equal(inferMobileContentType({ url: "https://www.tiktok.com/@creator", platform: "tiktok" }), "social");
+  assert.equal(inferMobileContentType({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", platform: "youtube" }), "video");
+
+  const mobFbProf = formatPostDetailTitleAndDesc({
+    url: "https://www.facebook.com/Google",
+    platform: "facebook",
+    title: "Google",
+    description: "Google. 29M likes · 100K talking about this. Organizing the world's information.",
+  });
+  assert.equal(mobFbProf.displayTitle, "Google");
+  assert.equal(mobFbProf.displayDesc, "Organizing the world's information.");
+
+  const mobIgProf = formatPostDetailTitleAndDesc({
+    url: "https://www.instagram.com/travel_th/",
+    platform: "instagram",
+    title: "Travel TH (@travel_th) • รูปและวิดีโอ Instagram",
+    description: "ผู้ติดตาม 120K คน, กำลังติดตาม 50 คน, 310 โพสต์ - ดูรูปภาพและวิดีโอบน Instagram จาก Travel TH (@travel_th)",
+  });
+  assert.equal(mobIgProf.displayTitle, "Travel TH (@travel_th)");
+  assert.equal(mobIgProf.displayDesc, "ผู้ติดตาม 120K คน, กำลังติดตาม 50 คน, 310 โพสต์");
+
+  assert.equal(
+    formatCardDisplayTitle({
+      url: "https://www.tiktok.com/@creator",
+      platform: "tiktok",
+      title: "Cafe Guide TH (@creator)",
+      description: "Daily coffee & cafe reviews in Thailand for fellow coffee lovers",
+    }),
+    "Cafe Guide TH (@creator)",
+  );
 });

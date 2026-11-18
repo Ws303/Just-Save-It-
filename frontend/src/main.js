@@ -492,11 +492,18 @@ function patchSearchResultsInPlace(scope, prevValue, nextValue) {
 function maybeAutoEnrichItem(itemId) {
   if (!itemId || store.state.api.mode !== "live" || _autoEnrichedItemIds.has(itemId)) return;
   const item = getLinkById(itemId);
-  if (!item) return;
+  if (!item || item.previewStatus === "private_or_restricted" || item.enrichStatus === "failed") return;
   const desc = String(item.description || "").trim();
-  const isYt = /youtube\.com|youtu\.be/i.test(String(item.url || "")) || String(item.platform || "").toLowerCase() === "youtube";
-  const hasGenericTitle = isGenericOrNoisyTitle(item.title, item.platform, item.url);
-  const needsEnrich = !item.coverUrl || !desc || hasGenericTitle || (isYt && !item.embed_url);
+  const targetUrl = String(item.canonicalUrl || item.url || "");
+  const isYt = /youtube\.com|youtu\.be/i.test(targetUrl) || String(item.platform || "").toLowerCase() === "youtube";
+  const isYtPlaceholderDesc = isYt && (desc.startsWith("By ") || desc.startsWith("วิดีโอ YouTube"));
+  const hasGenericTitle = isGenericOrNoisyTitle(item.title, item.platform, targetUrl);
+  const needsEnrich =
+    !item.coverUrl ||
+    !desc ||
+    isYtPlaceholderDesc ||
+    hasGenericTitle ||
+    (isYt && !item.embed_url && !/youtube\.com\/(?:post\/|@|channel\/|c\/|user\/)/i.test(targetUrl));
   if (!needsEnrich) return;
   _autoEnrichedItemIds.add(itemId);
   apiClient.refreshItemPreview(itemId, { silent: true }).catch(() => {});

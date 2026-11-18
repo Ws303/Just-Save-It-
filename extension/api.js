@@ -663,7 +663,9 @@
     ]);
     if (genericSet.has(lowered) || genericSet.has(noBadge)) return true;
     if (/^@?[a-z0-9._]+\s+(?:on|บน)\s+instagram$/i.test(noBadge)) return true;
+    if (/^(?:instagram photos and videos|ดูรูปภาพและวิดีโอบน instagram)$/i.test(noBadge)) return true;
     if (/^(?:watch trending|discover|make your day|tiktok)\b.*\|\s*tiktok$/i.test(noBadge)) return true;
+    if (/^(?:[^|\n]+\s+(?:on|บน)\s+tiktok|tiktok's creator profile|photo on tiktok)$/i.test(noBadge)) return true;
     return false;
   }
 
@@ -673,6 +675,7 @@
       const parsed = new URL(rawUrl.trim());
       const host = parsed.hostname.toLowerCase();
       const path = parsed.pathname || "/";
+      const normPath = path.replace(/\/+$/, "").toLowerCase() || "/";
       const params = parsed.searchParams;
 
       if (host === "fb.watch" || host.endsWith(".fb.watch")) {
@@ -688,21 +691,20 @@
         const hasPostParam = Boolean(
           params.get("story_fbid") || params.get("fbid") || params.get("v") || params.get("multi_permalinks")
         );
-        const isDirectPostPath =
-          /^\/share\/(?:[pvr]\/)?[A-Za-z0-9_-]+/i.test(path) ||
-          /\/(?:posts|videos|photos|permalink)\/[^/]+/i.test(path) ||
-          /^\/(?:reel|reels)\/[^/]+/i.test(path) ||
-          /^\/(?:permalink|story|photo)\.php/i.test(path) ||
-          /^\/watch\/live\/?/i.test(path) ||
-          /pfbid[A-Za-z0-9]+/i.test(path);
-        if (hasPostParam || isDirectPostPath) {
+        const isFeedShell =
+          normPath === "/" ||
+          /^\/(?:home\.php|watch|reel|reels|marketplace|gaming|groups\/feed|bookmarks|notifications|messages|friends|saved|memories|settings|login(?:\.php)?)$/.test(
+            normPath
+          ) ||
+          (normPath === "/profile.php" && !params.get("id"));
+        if (hasPostParam || !isFeedShell) {
           return null;
         }
         return {
           platform: "Facebook",
-          example: "https://www.facebook.com/share/p/...",
+          example: "https://www.facebook.com/share/p/... หรือ https://www.facebook.com/PageName",
           message:
-            "หน้านี้เป็นหน้าฟีดหรือหน้าเพจของ Facebook ไม่ใช่ลิงก์โพสต์โดยตรง — กรุณากดปุ่ม 'แชร์ (Share) > คัดลอกลิงก์' จากโพสต์หรือคลิปที่ต้องการ แล้วนำมาวางในช่อง URL ด้านล่าง",
+            "หน้านี้เป็นหน้าฟีดหลักของ Facebook ไม่ใช่ลิงก์โพสต์หรือหน้าเพจ — กรุณาเปิดหน้าเพจหรือคัดลอกลิงก์จากโพสต์/คลิป แล้วนำมาวางในช่อง URL ด้านล่าง",
         };
       }
 
@@ -710,14 +712,19 @@
         const isIgPostPath =
           /^\/(?:[^/]+\/)?(?:p|reel|reels|tv|share)\/[A-Za-z0-9_-]+/i.test(path) ||
           /^\/stories\/[^/]+\/\d+/i.test(path);
-        if (isIgPostPath) {
+        const isIgFeedShell =
+          normPath === "/" ||
+          (!isIgPostPath &&
+            (/^\/(?:explore|reels|reel|p|tv|share|direct|accounts|your_activity)(?:\/|$)/.test(normPath) ||
+              /^\/stories(?:\/[^/]+)?$/i.test(normPath)));
+        if (!isIgFeedShell) {
           return null;
         }
         return {
           platform: "Instagram",
-          example: "https://www.instagram.com/p/... หรือ /reel/...",
+          example: "https://www.instagram.com/p/... หรือ https://www.instagram.com/username/",
           message:
-            "หน้านี้เป็นหน้าฟีดหรือโปรไฟล์ของ Instagram ไม่ใช่ลิงก์โพสต์โดยตรง — กรุณากดปุ่ม 'แชร์ (Share) > คัดลอกลิงก์' จากโพสต์หรือ Reel ที่ต้องการ แล้วนำมาวางในช่อง URL ด้านล่าง",
+            "หน้านี้เป็นหน้าฟีดหรือหน้าหลักของ Instagram — กรุณาเข้าหน้าโปรไฟล์หรือกด 'แชร์ > คัดลอกลิงก์' จากโพสต์/Reel แล้วนำมาวางในช่อง URL ด้านล่าง",
         };
       }
 
@@ -732,18 +739,18 @@
       }
       if (host === "tiktok.com" || host.endsWith(".tiktok.com")) {
         const hasTtParam = Boolean(params.get("item_id") || params.get("share_item_id"));
-        const isTtPostPath =
-          /^\/@[^/]+\/(?:video|photo)\/\d+/i.test(path) ||
+        const isTtSaveablePath =
+          /^\/@[^/]+(?:\/(?:video|photo)\/\d+)?\/?$/i.test(path) ||
           /^\/(?:t|v)\/[A-Za-z0-9_-]+/i.test(path) ||
           /^\/embed\//i.test(path);
-        if (hasTtParam || isTtPostPath) {
+        if (hasTtParam || isTtSaveablePath) {
           return null;
         }
         return {
           platform: "TikTok",
-          example: "https://www.tiktok.com/@user/video/... หรือ https://vt.tiktok.com/...",
+          example: "https://www.tiktok.com/@user/video/... หรือ https://www.tiktok.com/@user",
           message:
-            "หน้านี้เป็นหน้าฟีดหรือโปรไฟล์ของ TikTok ไม่ใช่ลิงก์คลิปโดยตรง — กรุณากดปุ่ม 'แชร์ (Share) > คัดลอกลิงก์' จากคลิปที่ต้องการ แล้วนำมาวางในช่อง URL ด้านล่าง",
+            "หน้านี้เป็นหน้าฟีดหรือหน้าหลักของ TikTok — กรุณาเปิดหน้าช่อง (@user) หรือคัดลอกลิงก์จากคลิป/รูปที่ต้องการ แล้วนำมาวางในช่อง URL ด้านล่าง",
         };
       }
     } catch (_err) {

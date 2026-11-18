@@ -2848,3 +2848,342 @@ async def test_ig_playable_video_resolver_extracts_mp4_and_enforces_access(
     with pytest.raises(HTTPException) as exc_info:
         await resolve_item_playable_video(mock_db, user_id="stranger-2", item_id="item-ig-mp4")
     assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_profile_pages_youtube_community_post_and_tiktok_photo_extraction(hermetic_isolation, mock_db):
+    """Verify FB Page, IG Profile, TikTok Channel/Photo, YouTube Community Post multi-image, and YouTube full shortDescription."""
+    import json
+
+    yt_post_url = "https://www.youtube.com/post/UgkxMultiPhotoPost123"
+    yt_video_url = "https://www.youtube.com/watch?v=AbCdEf12345"
+    tt_photo_url = "https://www.tiktok.com/@creator/photo/7388112233445566778"
+    tt_profile_url = "https://www.tiktok.com/@creator"
+    ig_profile_url = "https://www.instagram.com/travel_th/"
+    fb_page_url = "https://www.facebook.com/TravelTHPage"
+
+    yt_post_json = {
+        "contents": {
+            "twoColumnBrowseResultsRenderer": {
+                "tabs": [
+                    {
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [
+                                        {
+                                            "itemSectionRenderer": {
+                                                "contents": [
+                                                    {
+                                                        "backstagePostThreadRenderer": {
+                                                            "post": {
+                                                                "backstagePostRenderer": {
+                                                                    "authorText": {"runs": [{"text": "Google"}]},
+                                                                    "contentText": {
+                                                                        "runs": [
+                                                                            {"text": "First line of YT post!\n\nSecond paragraph with link "},
+                                                                            {"text": "https://example.com/guide"},
+                                                                        ]
+                                                                    },
+                                                                    "backstageAttachment": {
+                                                                        "postMultiImageRenderer": {
+                                                                            "images": [
+                                                                                {
+                                                                                    "backstageImageRenderer": {
+                                                                                        "image": {
+                                                                                            "thumbnails": [
+                                                                                                {"url": "https://yt3.ggpht.com/imgA1111111111=s400-nd", "width": 400, "height": 400},
+                                                                                                {"url": "https://yt3.ggpht.com/imgA1111111111=s1080-nd", "width": 1080, "height": 1080},
+                                                                                            ]
+                                                                                        }
+                                                                                    }
+                                                                                },
+                                                                                {
+                                                                                    "backstageImageRenderer": {
+                                                                                        "image": {
+                                                                                            "thumbnails": [
+                                                                                                {"url": "https://yt3.ggpht.com/imgB2222222222=s1080-nd", "width": 1080, "height": 1080},
+                                                                                            ]
+                                                                                        }
+                                                                                    }
+                                                                                },
+                                                                                {
+                                                                                    "backstageImageRenderer": {
+                                                                                        "image": {
+                                                                                            "thumbnails": [
+                                                                                                {"url": "https://yt3.ggpht.com/imgC3333333333=s1080-nd", "width": 1080, "height": 1080},
+                                                                                            ]
+                                                                                        }
+                                                                                    }
+                                                                                },
+                                                                            ]
+                                                                        }
+                                                                    },
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+    }
+    tt_photo_uni = {
+        "__DEFAULT_SCOPE__": {
+            "webapp.video-detail": {
+                "itemInfo": {
+                    "itemStruct": {
+                        "desc": "Full photo slideshow caption #travel",
+                        "author": {"uniqueId": "creator", "nickname": "CreatorTH"},
+                        "imagePost": {
+                            "title": "Top 3 Cafes in Chiang Mai",
+                            "images": [
+                                {"imageURL": {"urlList": ["https://p16-sign.tiktokcdn.com/tos-alisg/photo1~tplv.jpeg"]}},
+                                {"imageURL": {"urlList": ["https://p16-sign.tiktokcdn.com/tos-alisg/photo2~tplv.jpeg"]}},
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+    }
+    tt_profile_uni = {
+        "__DEFAULT_SCOPE__": {
+            "webapp.user-detail": {
+                "userInfo": {
+                    "user": {
+                        "uniqueId": "creator",
+                        "nickname": "Cafe Guide TH",
+                        "signature": "Daily coffee & cafe reviews in Thailand",
+                        "avatarLarger": "https://p16-sign.tiktokcdn.com/tos-alisg/avatar/creator_1080.jpeg",
+                    }
+                }
+            }
+        }
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.startswith(yt_post_url):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    '<html><head><meta property="og:title" content="First line...">'
+                    '<meta property="og:image" content="https://yt3.ggpht.com/channelAvatar999=s900-c">'
+                    f'</head><body><img src="https://i.ytimg.com/vi/sidebar999/hqdefault.jpg" width="400" height="300">'
+                    f"<script>var ytInitialData = {json.dumps(yt_post_json)};</script></body></html>"
+                ),
+                request=request,
+            )
+        if url.startswith("https://www.youtube.com/oembed") and "AbCdEf12345" in url:
+            return httpx.Response(
+                200,
+                json={
+                    "title": "YT Full Desc Video",
+                    "author_name": "DevChannel",
+                    "thumbnail_url": "https://i.ytimg.com/vi/AbCdEf12345/hqdefault.jpg",
+                    "html": '<iframe src="https://www.youtube.com/embed/AbCdEf12345"></iframe>',
+                },
+                request=request,
+            )
+        if url.startswith(yt_video_url):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    '<html><head><meta property="og:title" content="YT Full Desc Video">'
+                    '<meta property="og:description" content="Short truncated og desc...">'
+                    '<meta property="og:image" content="https://i.ytimg.com/vi/AbCdEf12345/maxresdefault.jpg">'
+                    '</head><body><script>var ytInitialPlayerResponse = {"videoDetails":{"shortDescription":"Complete multi-line YouTube description with chapters and links."}};</script></body></html>'
+                ),
+                request=request,
+            )
+        if url.startswith(tt_photo_url):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    "<html><head><title>CreatorTH on TikTok</title>"
+                    '<meta name="description" content="210 Likes, 5 Comments. TikTok photo from CreatorTH (@creator)">'
+                    f'</head><body><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">{json.dumps(tt_photo_uni)}</script></body></html>'
+                ),
+                request=request,
+            )
+        if url.startswith("https://www.tiktok.com/oembed") and "creator" in url:
+            return httpx.Response(
+                200,
+                json={"embed_type": "profile", "author_name": "CreatorTH", "title": "TikTok's Creator Profile"},
+                request=request,
+            )
+        if url.startswith(tt_profile_url):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=f'<html><head></head><body><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">{json.dumps(tt_profile_uni)}</script></body></html>',
+                request=request,
+            )
+        if url.startswith(ig_profile_url.rstrip("/")):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    '<html><head><meta property="og:title" content="Travel TH (@travel_th) • รูปและวิดีโอ Instagram">'
+                    '<meta property="og:description" content="ผู้ติดตาม 120K คน, กำลังติดตาม 50 คน, 310 โพสต์ - ดูรูปภาพและวิดีโอบน Instagram จาก Travel TH (@travel_th)">'
+                    '<meta property="og:image" content="https://scontent.cdninstagram.com/v/t51.82787-19/profile_pic_1080.jpg">'
+                    "</head><body></body></html>"
+                ),
+                request=request,
+            )
+        if url.startswith(fb_page_url):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    '<html><head><meta property="og:title" content="TravelTH Official">'
+                    '<meta property="og:description" content="TravelTH Official. 500K likes · 20K talking about this. Best travel spots in Thailand.">'
+                    '<meta property="og:image" content="https://scontent.xx.fbcdn.net/v/t39.30808-6/page_cover_1200.jpg">'
+                    '</head><body><img src="https://scontent.xx.fbcdn.net/v/t39/feed_extra_888.jpg" width="500" height="500">'
+                    '<script>{"message":{"text":"Very long timeline feed post that must not replace the official page bio description."},"viewer_image":{"uri":"https:\\/\\/scontent.xx.fbcdn.net\\/v\\/t39\\/timeline_post_999.jpg"}}</script></body></html>'
+                ),
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+
+    # 1. YouTube Community Post: full text + all 3 deduped HD images + post content_type
+    yt_post = await extract_unfurl_metadata(yt_post_url, fetch_full_description=True)
+    assert yt_post.content_type == "post"
+    assert yt_post.embed_url is None
+    assert yt_post.title == "First line of YT post!"
+    assert "Second paragraph with link https://example.com/guide" in (yt_post.description or "")
+    assert len(yt_post.media_items) == 3
+    assert yt_post.media_items[0].endswith("=s1080-nd")
+
+    # 2. Brand-new YouTube Video via enrich_item (empty old_desc) fetches full shortDescription & HD cover
+    mock_db.tables["items"].append(
+        {
+            "id": "item-yt-new",
+            "user_id": "user-1",
+            "folder_id": None,
+            "url": yt_video_url,
+            "url_hash": compute_url_hash(yt_video_url),
+            "platform": "youtube",
+            "title": yt_video_url,
+            "description": "",
+            "status": "inbox",
+            "enrich_status": "pending",
+        }
+    )
+    yt_enriched = await enrich_item(mock_db, "item-yt-new")
+    assert yt_enriched["item"]["description"] == "Complete multi-line YouTube description with chapters and links."
+    assert yt_enriched["item"]["media_items"] == ["https://i.ytimg.com/vi/AbCdEf12345/maxresdefault.jpg"]
+
+    # 3. TikTok Photo Post: extracts imagePost.title + desc + 2 photos, no video embed
+    tt_photo = await extract_unfurl_metadata(tt_photo_url, fetch_full_description=True)
+    assert tt_photo.content_type == "post"
+    assert tt_photo.embed_url is None
+    assert tt_photo.title == "Top 3 Cafes in Chiang Mai"
+    assert "Full photo slideshow caption #travel" in (tt_photo.description or "")
+    assert len(tt_photo.media_items) == 2
+
+    # 4. TikTok Channel / Profile: extracts nickname, signature bio, avatar, no video embed
+    tt_prof = await extract_unfurl_metadata(tt_profile_url, fetch_full_description=True)
+    assert tt_prof.content_type == "link"
+    assert tt_prof.embed_url is None
+    assert tt_prof.title == "Cafe Guide TH (@creator)"
+    assert tt_prof.description == "Daily coffee & cafe reviews in Thailand"
+    assert tt_prof.media_items == ["https://p16-sign.tiktokcdn.com/tos-alisg/avatar/creator_1080.jpeg"]
+
+    # 5. IG Profile & FB Page: clean titles/descriptions, profile avatar retained, no post.php embed
+    ig_prof = await extract_unfurl_metadata(ig_profile_url, fetch_full_description=True)
+    assert ig_prof.content_type == "link"
+    assert ig_prof.embed_url is None
+    assert ig_prof.title == "Travel TH (@travel_th)"
+    assert ig_prof.description == "ผู้ติดตาม 120K คน, กำลังติดตาม 50 คน, 310 โพสต์"
+    assert len(ig_prof.media_items) == 1
+
+    fb_page = await extract_unfurl_metadata(fb_page_url, fetch_full_description=True)
+    assert fb_page.content_type == "link"
+    assert fb_page.embed_url is None
+    assert fb_page.title == "TravelTH Official"
+    assert fb_page.description == "Best travel spots in Thailand."
+    assert fb_page.media_items == ["https://scontent.xx.fbcdn.net/v/t39.30808-6/page_cover_1200.jpg"]
+
+    # 6. Cache payload preserves /avatar/ URLs on profile pages
+    from Unfurl.service import _sanitize_cached_payload, resolve_item_playable_video
+    from Database.repository import create_or_bump_item
+    from Database.schemas import ItemCreateRequest
+
+    cached_tt = _sanitize_cached_payload(
+        {
+            "title": tt_prof.title,
+            "description": tt_prof.description,
+            "image_url": tt_prof.image_url,
+            "media_items": tt_prof.media_items,
+            "platform": "tiktok",
+            "content_type": "link",
+        },
+        base_url=tt_profile_url,
+    )
+    assert cached_tt["image_url"] == "https://p16-sign.tiktokcdn.com/tos-alisg/avatar/creator_1080.jpeg"
+
+    # 7. resolve_item_playable_video fails closed on non-allowlisted embed_url
+    mock_db.tables["items"].append(
+        {
+            "id": "item-bad-embed",
+            "owner_id": "user-1",
+            "user_id": "user-1",
+            "url": "https://example.com/page",
+            "embed_type": "youtube",
+            "embed_url": "https://evil.example.com/embed/123",
+        }
+    )
+    bad_video_res = await resolve_item_playable_video(mock_db, user_id="user-1", item_id="item-bad-embed")
+    assert bad_video_res["embed_url"] is None
+
+    # 8. create_or_bump_item does NOT re-trigger pending enrich on already-enriched YT /post/ or TikTok @user?lang=en
+    mock_db.tables["items"].extend(
+        [
+            {
+                "id": "item-yt-post-done",
+                "owner_id": "user-1",
+                "user_id": "user-1",
+                "url": yt_post_url,
+                "url_hash": compute_url_hash(yt_post_url),
+                "platform": "youtube",
+                "content_type": "post",
+                "title": "First line of YT post!",
+                "description": "Full post description",
+                "image_url": "https://yt3.ggpht.com/imgA1111111111=s1080-nd",
+                "enrich_status": "done",
+                "status": "inbox",
+            },
+            {
+                "id": "item-tt-prof-done",
+                "owner_id": "user-1",
+                "user_id": "user-1",
+                "url": f"{tt_profile_url}?lang=en",
+                "url_hash": compute_url_hash(f"{tt_profile_url}?lang=en"),
+                "platform": "tiktok",
+                "content_type": "link",
+                "title": "Cafe Guide TH (@creator)",
+                "description": "Daily coffee reviews",
+                "image_url": "https://p16-sign.tiktokcdn.com/tos-alisg/avatar/creator_1080.jpeg",
+                "enrich_status": "unfurled",
+                "status": "inbox",
+            },
+        ]
+    )
+    bumped_yt = create_or_bump_item(mock_db, "user-1", ItemCreateRequest(url=yt_post_url))
+    assert bumped_yt["enrich_status"] == "done"
+    bumped_tt = create_or_bump_item(mock_db, "user-1", ItemCreateRequest(url=f"{tt_profile_url}?lang=en"))
+    assert bumped_tt["enrich_status"] == "unfurled"

@@ -162,8 +162,12 @@ const IG_OG_DESC_RE =
   /^(?:[\d,.]+[KMBkmb]?\s*(?:likes?|comments?)|(?:ถูกใจ|ความคิดเห็น)\s*[^,-]+)(?:[\s,·•]+(?:[\d,.]+[KMBkmb]?\s*(?:likes?|comments?)|(?:ถูกใจ|ความคิดเห็น)\s*[^,-]+))*\s*-\s*([A-Za-z0-9._]+)(?:\s+(?:on|บน|เมื่อ)\s+[^:]+)?:\s*([\s\S]*?)\s*$/i;
 const IG_PROFILE_STATS_RE =
   /^(?:ผู้ติดตาม\s*[^-]+|[\d,.]+[KMBkmb]?\s*Followers,\s*[\d,.]+[KMBkmb]?\s*Following,\s*[\d,.]+[KMBkmb]?\s*Posts)\s*-\s*/i;
+const IG_PROFILE_TITLE_RE =
+  /^(.+?)\s*\((@?[A-Za-z0-9._]+)\)\s*[•·]\s*(?:Instagram|รูปภาพและวิดีโอบน\s*Instagram|รูปและวิดีโอ\s*Instagram).*$/i;
+const IG_PROFILE_SEE_RE =
+  /^(?:ดูรูปภาพและวิดีโอบน\s*Instagram\s*จาก|See Instagram photos and videos from)\s+(.+?)(?:\s*\((@?[A-Za-z0-9._]+)\))?\s*(?::\s*([\s\S]*))?$/i;
 const TT_META_DESC_RE =
-  /^(?:[\d,.]+[KMBkmb]?\s*Likes?(?:,\s*[\d,.]+[KMBkmb]?\s*Comments?)?\.?\s*|ถูกใจ\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*ครั้ง(?:,\s*ความคิดเห็น\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*รายการ)?\.?\s*)(?:TikTok video from\s+([^:]+):\s*["“”]?([\s\S]+?)["“”]?\s*$|วิดีโอ\s*TikTok\s*จาก\s+([^:]+):\s*["“”]?([\s\S]+?)["“”]?\s*$)?/i;
+  /^(?:[\d,.]+[KMBkmb]?\s*Likes?(?:,\s*[\d,.]+[KMBkmb]?\s*Comments?)?\.?\s*|ถูกใจ\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*ครั้ง(?:,\s*ความคิดเห็น\s*[\d,.]+[KMBkmb]?\s*(?:แสน|ล้าน|พัน|หมื่น)?\s*รายการ)?\.?\s*)(?:TikTok (?:video|photo) from\s+([^:]+):\s*["“”]?([\s\S]+?)["“”]?\s*$|(?:วิดีโอ|รูปภาพ|โพสต์)\s*TikTok\s*จาก\s+([^:]+):\s*["“”]?([\s\S]+?)["“”]?\s*$)?/i;
 const NOTIFICATION_PREFIX_RE = /^\(\d+\+?\)\s+/;
 const GENERIC_PLATFORM_TITLES = new Set([
   "instagram",
@@ -250,7 +254,10 @@ export function isGenericOrNoisyTitle(title, platformLower = "", rawUrl = "") {
   if ((platformLower.includes("instagram") || /instagram\.com/i.test(rawUrl)) && /^@?[A-Za-z0-9._]+\s+(?:on|บน)\s+Instagram\s*$/i.test(noBadge)) {
     return true;
   }
-  if ((platformLower.includes("tiktok") || /tiktok\.com/i.test(rawUrl)) && /^(?:watch trending|discover|make your day|tiktok)\b.*\|\s*tiktok$/i.test(noBadgeLower)) {
+  if ((platformLower.includes("tiktok") || /tiktok\.com/i.test(rawUrl)) && (
+    /^(?:watch trending|discover|make your day|tiktok)\b.*\|\s*tiktok$/i.test(noBadgeLower) ||
+    /^(?:[^|\n]+\s+(?:on|บน)\s+tiktok|tiktok's creator profile|photo on tiktok)$/i.test(noBadgeLower)
+  )) {
     return true;
   }
   return false;
@@ -309,6 +316,80 @@ function extractSocialUrlAuthor(rawUrl, platformLower) {
     }
   } catch {}
   return "";
+}
+
+const IG_RESERVED_ROOT_PATHS = new Set([
+  "p",
+  "reel",
+  "reels",
+  "tv",
+  "share",
+  "stories",
+  "explore",
+  "direct",
+  "accounts",
+  "about",
+  "legal",
+  "developer",
+  "directory",
+]);
+const FB_FEED_PATHS = new Set([
+  "",
+  "/",
+  "/home.php",
+  "/watch",
+  "/reel",
+  "/reels",
+  "/marketplace",
+  "/gaming",
+  "/groups/feed",
+  "/bookmarks",
+  "/notifications",
+  "/messages",
+  "/friends",
+  "/saved",
+  "/memories",
+  "/settings",
+  "/login",
+  "/login.php",
+]);
+
+function isSocialProfileOrPageUrl(rawUrl, platformLower = "") {
+  try {
+    const parsed = new URL(String(rawUrl || "").trim());
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname || "/";
+    const normPath = path.replace(/\/+$/, "").toLowerCase() || "/";
+    const params = parsed.searchParams;
+    if (platformLower.includes("instagram") || host === "instagram.com" || host.endsWith(".instagram.com")) {
+      if (/^\/(?:[^/]+\/)?(?:p|reel|reels|tv|share)\/[A-Za-z0-9_-]+/i.test(path)) return false;
+      const m = path.match(/^\/([A-Za-z0-9._]+)\/?$/);
+      return Boolean(m && !IG_RESERVED_ROOT_PATHS.has(m[1].toLowerCase()));
+    }
+    if (platformLower.includes("tiktok") || host === "tiktok.com" || host.endsWith(".tiktok.com")) {
+      return /^\/@[A-Za-z0-9._-]+\/?$/i.test(path);
+    }
+    if (
+      (platformLower.includes("facebook") || host === "facebook.com" || host.endsWith(".facebook.com")) &&
+      host !== "fb.watch" &&
+      !host.endsWith(".fb.watch")
+    ) {
+      if (
+        /(?:^\/share\/(?:[pvr]\/)?[A-Za-z0-9_-]+|\/(?:posts|videos|photos|permalink)\/[^/]+|^\/(?:reel|reels)\/[^/]+|^\/(?:permalink|story|photo)\.php|^\/(?:watch|reel|reels|videos|video\.php)(?:\/|$)|pfbid[A-Za-z0-9]+)/i.test(
+          path
+        )
+      ) {
+        return false;
+      }
+      if (params.get("story_fbid") || params.get("fbid") || params.get("v") || params.get("multi_permalinks")) {
+        return false;
+      }
+      if (normPath === "/profile.php") return Boolean(params.get("id"));
+      if (FB_FEED_PATHS.has(normPath)) return false;
+      return normPath !== "/";
+    }
+  } catch {}
+  return false;
 }
 
 function normalizeCompareCaption(str, collapseSpaces = false) {
@@ -372,10 +453,13 @@ export function formatPostDetailTitleAndDesc(item) {
   const rawTitle = String(item?.title || "").trim();
   const rawDesc = String(item?.description || "").trim();
   const rawUrl = String(item?.url || "").trim();
+  const effectiveUrl = String(item?.canonical_url || item?.canonicalUrl || rawUrl).trim();
   const platLower = String(item?.platform || "").toLowerCase();
-  const isFb = platLower.includes("facebook") || rawUrl.includes("facebook.com") || rawUrl.includes("fb.watch");
-  const isIg = platLower.includes("instagram") || rawUrl.includes("instagram.com");
-  const isTt = platLower.includes("tiktok") || rawUrl.includes("tiktok.com");
+  const isFb =
+    platLower.includes("facebook") || effectiveUrl.includes("facebook.com") || effectiveUrl.includes("fb.watch");
+  const isIg = platLower.includes("instagram") || effectiveUrl.includes("instagram.com");
+  const isTt = platLower.includes("tiktok") || effectiveUrl.includes("tiktok.com");
+  const isProfileOrPage = (isFb || isIg || isTt) && isSocialProfileOrPageUrl(effectiveUrl, platLower);
 
   if (!isFb && !isIg && !isTt) {
     const cleanedTitle = scrubGenericPlatformTitle(rawTitle, platLower, rawUrl);
@@ -442,8 +526,18 @@ export function formatPostDetailTitleAndDesc(item) {
       }
     }
   } else if (isIg) {
-    const mTitle = t.match(IG_OG_TITLE_RE);
-    if (mTitle) {
+    const mProfT = t.match(IG_PROFILE_TITLE_RE);
+    const mSeeT = !mProfT ? t.match(IG_PROFILE_SEE_RE) : null;
+    const mTitle = !mProfT && !mSeeT ? t.match(IG_OG_TITLE_RE) : null;
+    if (mProfT) {
+      displayAuthor = mProfT[1].trim();
+      handleAuthor = `@${mProfT[2].trim().replace(/^@/, "")}`;
+      t = combineAuthorDisplay(displayAuthor, handleAuthor);
+    } else if (mSeeT) {
+      displayAuthor = mSeeT[1].trim();
+      if (mSeeT[2]) handleAuthor = `@${mSeeT[2].trim().replace(/^@/, "")}`;
+      t = combineAuthorDisplay(displayAuthor, handleAuthor);
+    } else if (mTitle) {
       displayAuthor = mTitle[1].trim();
       const cap = mTitle[2].trim();
       t = cap ? `${displayAuthor}: ${cap}` : displayAuthor;
@@ -454,7 +548,25 @@ export function formatPostDetailTitleAndDesc(item) {
         handleAuthor = `@${mDesc[1].trim().replace(/^@/, "")}`;
         d = stripBalancedCaptionQuotes(mDesc[2]);
       } else {
-        d = stripBalancedCaptionQuotes(d.replace(IG_PROFILE_STATS_RE, "").trim());
+        const statsM = d.match(IG_PROFILE_STATS_RE);
+        const statsPrefix = statsM ? statsM[0].replace(/\s*-\s*$/, "").trim() : "";
+        const dAfterStats = d.replace(IG_PROFILE_STATS_RE, "").trim();
+        const mSeeD = dAfterStats.match(IG_PROFILE_SEE_RE);
+        if (mSeeD) {
+          if (!displayAuthor) displayAuthor = mSeeD[1].trim();
+          if (mSeeD[2] && !handleAuthor) handleAuthor = `@${mSeeD[2].trim().replace(/^@/, "")}`;
+          const trailingBio = stripBalancedCaptionQuotes(mSeeD[3] || "");
+          if (trailingBio && statsPrefix) {
+            d = `${statsPrefix} — ${trailingBio}`;
+          } else {
+            d = trailingBio || statsPrefix;
+          }
+          if (isProfileOrPage && (!t || IG_PROFILE_SEE_RE.test(t))) {
+            t = combineAuthorDisplay(displayAuthor, handleAuthor) || t;
+          }
+        } else {
+          d = stripBalancedCaptionQuotes(dAfterStats);
+        }
       }
     }
   } else if (isTt && d) {
@@ -472,7 +584,23 @@ export function formatPostDetailTitleAndDesc(item) {
     }
   }
 
-  t = scrubGenericPlatformTitle(t, platLower, rawUrl);
+  t = scrubGenericPlatformTitle(t, platLower, effectiveUrl);
+
+  if (isProfileOrPage) {
+    if (!t) {
+      t =
+        combineAuthorDisplay(displayAuthor, handleAuthor) ||
+        extractSocialUrlAuthor(effectiveUrl, isFb ? "facebook" : isIg ? "instagram" : "tiktok") ||
+        String(item?.site_name || "").trim() ||
+        rawTitle ||
+        rawUrl;
+    }
+    const sameProfileText = Boolean(t && d && normalizeCompareCaption(t) === normalizeCompareCaption(d));
+    return {
+      displayTitle: t,
+      displayDesc: sameProfileText ? "" : d,
+    };
+  }
 
   let tCore = t;
   let dCore = d;
@@ -557,6 +685,7 @@ export function formatPostDetailTitleAndDesc(item) {
 function isPlayableVideoEmbed(embedUrl, item) {
   if (!embedUrl) return false;
   const contentType = String(item?.contentType || item?.content_type || "").toLowerCase();
+  const rawUrlLower = String(item?.canonical_url || item?.canonicalUrl || item?.url || "").toLowerCase();
   try {
     const parsed = new URL(embedUrl);
     const host = parsed.hostname.toLowerCase();
@@ -565,6 +694,17 @@ function isPlayableVideoEmbed(embedUrl, item) {
       return false;
     }
     if (host.includes("instagram.com") && path.startsWith("/p/") && contentType !== "video") {
+      return false;
+    }
+    if (host.includes("tiktok.com") && /\/photo\//.test(rawUrlLower)) {
+      return false;
+    }
+    if (
+      host.includes("youtube.com") &&
+      /youtube\.com\/(?:post\/|@|channel\/|c\/|user\/)/.test(rawUrlLower) &&
+      !/[?&]v=|\/(?:watch|shorts|embed|live)\//.test(rawUrlLower) &&
+      contentType !== "video"
+    ) {
       return false;
     }
   } catch {

@@ -256,15 +256,51 @@ export function inferContentType(item = {}) {
   const raw = String(item.content_type || item.contentType || "").trim().toLowerCase();
   const embedType = String(item.embed_type || "none").toLowerCase();
   const platform = String(item.platform || "").toLowerCase();
-  const url = String(item.url || "").toLowerCase();
+  const url = String(item.canonical_url || item.canonicalUrl || item.url || "").toLowerCase();
   const mediaItems = Array.isArray(item.media_items) ? item.media_items.filter(Boolean) : [];
-  if (raw === "video" || embedType === "youtube" || embedType === "tiktok" || embedType === "vimeo" || platform === "youtube" || platform === "tiktok" || /youtube\.com|youtu\.be|tiktok\.com|vimeo\.com|\.mp4\b/i.test(url)) {
+  const hasYtVideoTarget =
+    /[?&]v=[^&#]+/.test(url) ||
+    /youtu\.be\/[^/?#]+/.test(url) ||
+    /youtube\.com\/(?:watch(?:\/|\?|$)|embed\/[^/?#]+|shorts\/[^/?#]+|live\/[^/?#]+)/.test(url);
+  const explicitNonVideoPost = raw === "post" || raw === "social";
+  const isYtNonVideo =
+    /youtube\.com\/(?:post\/|@|channel\/|c\/|user\/)/.test(url) && !hasYtVideoTarget;
+  const isTtNonVideo =
+    /tiktok\.com/.test(url) &&
+    (/\/photo\//.test(url) || /tiktok\.com\/@[^/?#]+\/?(?:\?|$)/.test(url));
+  const isYtVideoUrl = hasYtVideoTarget;
+  const isTtVideoUrl = /tiktok\.com\/@[^/]+\/video\//.test(url) || /(?:vt|vm)\.tiktok\.com\//.test(url);
+  if (
+    raw === "video" ||
+    (!explicitNonVideoPost &&
+      !isYtNonVideo &&
+      !isTtNonVideo &&
+      (embedType === "youtube" ||
+        embedType === "tiktok" ||
+        embedType === "vimeo" ||
+        isYtVideoUrl ||
+        isTtVideoUrl ||
+        /vimeo\.com|\.mp4\b/i.test(url)))
+  ) {
     return "video";
   }
-  if (raw === "image" || (mediaItems.length > 0 && embedType === "none" && !["instagram", "facebook", "x", "reddit"].includes(platform)) || /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url)) {
+  if (
+    raw === "image" ||
+    (mediaItems.length > 0 &&
+      embedType === "none" &&
+      !["instagram", "facebook", "x", "reddit", "youtube", "tiktok"].includes(platform)) ||
+    /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url)
+  ) {
     return "image";
   }
-  if (raw === "social" || raw === "post" || ["instagram", "facebook", "x", "twitter", "reddit", "threads", "lemon8"].includes(platform) || ["instagram", "facebook", "x", "reddit"].includes(embedType)) {
+  if (
+    raw === "social" ||
+    raw === "post" ||
+    isYtNonVideo ||
+    isTtNonVideo ||
+    ["instagram", "facebook", "x", "twitter", "reddit", "threads", "lemon8"].includes(platform) ||
+    ["instagram", "facebook", "x", "reddit"].includes(embedType)
+  ) {
     return "social";
   }
   return "article";
@@ -301,6 +337,7 @@ export function mapBackendItemToUi(item, reminderMap = {}) {
     folderId: item.folder_id ?? null,
     platform: item.platform || inferredPlat,
     url: item.url,
+    canonicalUrl: item.canonical_url || null,
     domain,
     title: item.title || item.url,
     description: item.description || "",
@@ -308,6 +345,7 @@ export function mapBackendItemToUi(item, reminderMap = {}) {
     media_items: mediaItems,
     embed_url: item.embed_url || null,
     embed_type: item.embed_type || "none",
+    enrichStatus: item.enrich_status || null,
     previewStatus:
       item.preview_status ||
       item.previewStatus ||
