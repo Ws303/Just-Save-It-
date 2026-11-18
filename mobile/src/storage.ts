@@ -22,8 +22,19 @@ export interface MobileLinkItem {
   description?: string;
   platform?: string;
   content_type?: string;
+  contentType?: string;
   thumbnail_url?: string | null;
   image_url?: string | null;
+  coverUrl?: string | null;
+  thumb_url?: string | null;
+  media_url?: string | null;
+  media_type?: string | null;
+  media_items?: Array<string | Record<string, unknown>> | null;
+  embed_type?: string | null;
+  embed_url?: string | null;
+  preview_status?: string | null;
+  enrich_status?: string | null;
+  enrich_error?: string | null;
   status?: WorkflowStatus | string;
   is_favorite?: boolean;
   tags?: string[];
@@ -88,12 +99,20 @@ interface StorageBackend {
   removeItem: (key: string) => Promise<void>;
 }
 
+export interface RegisteredPushDevice {
+  user_id?: string;
+  platform: "android" | "ios";
+  delivery_mode: "remote" | "local_sync";
+  push_token: string | null;
+}
+
 const KEYS = {
   session: "jsi_mobile_session",
   offlineQueue: "jsi_mobile_offline_queue",
   cache: "jsi_mobile_cache",
   theme: "jsi_mobile_theme",
   pkceVerifier: "jsi_mobile_pkce_verifier",
+  pushDevice: "jsi_mobile_push_device",
 };
 
 const memoryStore = new Map<string, string>();
@@ -352,6 +371,7 @@ export async function saveSession(
       _memWorkspaceCache = null;
       await fallbackBackend.removeItem(KEYS.cache);
       await fallbackBackend.removeItem(KEYS.offlineQueue);
+      await fallbackBackend.removeItem(KEYS.pushDevice);
       if (isStaleExpectedGen()) return false;
     } else if (shouldBumpGen) {
       _authGeneration += 1;
@@ -409,6 +429,7 @@ export async function clearSession(): Promise<void> {
     await fallbackBackend.removeItem(KEYS.cache);
     await fallbackBackend.removeItem(KEYS.offlineQueue);
     await fallbackBackend.removeItem(KEYS.pkceVerifier);
+    await fallbackBackend.removeItem(KEYS.pushDevice);
     _authGeneration += 1;
   });
 }
@@ -716,11 +737,11 @@ export async function saveCachedWorkspace(data: Omit<CachedWorkspace, "updated_a
   });
 }
 
-export async function removeCachedLinkItem(itemId: string): Promise<void> {
+async function mutateCachedWorkspace(
+  mutator: (current: CachedWorkspace) => CachedWorkspace | null,
+): Promise<void> {
   const startGen = _authGeneration;
   const startClearEpoch = _clearEpoch;
-  const targetId = String(itemId || "").trim();
-  if (!targetId) return;
   return runSerializedAuthStorage(async () => {
     if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
       return;
@@ -730,13 +751,13 @@ export async function removeCachedLinkItem(itemId: string): Promise<void> {
     if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch || !currentUid) {
       return;
     }
-    if (_memWorkspaceCache && Array.isArray(_memWorkspaceCache.items)) {
+    if (_memWorkspaceCache) {
       const memUid = String(_memWorkspaceCache.user_id || "").trim();
       if (memUid && memUid === currentUid) {
-        _memWorkspaceCache = {
-          ..._memWorkspaceCache,
-          items: _memWorkspaceCache.items.filter((it) => it.id !== targetId),
-        };
+        const nextMem = mutator(_memWorkspaceCache);
+        if (nextMem) {
+          _memWorkspaceCache = { ...nextMem, user_id: currentUid, updated_at: new Date().toISOString() };
+        }
       } else if (memUid && memUid !== currentUid) {
         _memWorkspaceCache = null;
       }
@@ -746,13 +767,79 @@ export async function removeCachedLinkItem(itemId: string): Promise<void> {
       return;
     }
     const existingUid = String(existing?.user_id || "").trim();
-    if (existing && Array.isArray(existing.items) && existingUid === currentUid) {
-      const next: CachedWorkspace = {
-        ...existing,
-        items: existing.items.filter((it) => it.id !== targetId),
-      };
-      await writeJson(KEYS.cache, next);
+    if (existing && existingUid === currentUid) {
+      const nextDisk = mutator(existing);
+      if (nextDisk) {
+        await writeJson(KEYS.cache, { ...nextDisk, user_id: currentUid, updated_at: new Date().toISOString() });
+      }
     }
+  });
+}
+
+export async function removeCachedLinkItem(itemId: string): Promise<void> {
+  const targetId = String(itemId || "").trim();
+  if (!targetId) return;
+  return mutateCachedWorkspace((ws) => {
+    if (!Array.isArray(ws.items)) return null;
+    return {
+      ...ws,
+      items: ws.items.filter((it) => it.id !== targetId),
+    };
+  });
+}
+
+export async function upsertCachedLinkItem(updatedItem: MobileLinkItem): Promise<void> {
+  const targetId = String(updatedItem?.id || "").trim();
+  if (!targetId) return;
+  return mutateCachedWorkspace((ws) => {
+    const items = Array.isArray(ws.items) ? ws.items : [];
+    const idx = items.findIndex((it) => it.id === targetId);
+    const nextItems =
+      idx >= 0
+        ? items.map((it, i) => (i === idx ? { ...it, ...updatedItem } : it))
+        : [updatedItem, ...items];
+    return { ...ws, items: nextItems };
+  });
+}
+
+export async function updateCachedReminders(reminders: MobileReminderItem[]): Promise<void> {
+  return mutateCachedWorkspace((ws) => ({
+    ...ws,
+    reminders: Array.isArray(reminders) ? reminders : [],
+  }));
+}
+
+export async function saveRegisteredPushDevice(
+  device: Omit<RegisteredPushDevice, "user_id">,
+): Promise<void> {
+  const startGen = _authGeneration;
+  const startClearEpoch = _clearEpoch;
+  return runSerializedAuthStorage(async () => {
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) return;
+    const session = await _loadSessionUnlocked().catch(() => null);
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) return;
+    const uid = resolveSessionUserId(session) || _activeUserId;
+    if (!uid) return;
+    const record: RegisteredPushDevice = { ...device, user_id: uid };
+    await writeJson(KEYS.pushDevice, record);
+  });
+}
+
+export async function loadRegisteredPushDevice(): Promise<RegisteredPushDevice | null> {
+  return runSerializedAuthStorage(async () => {
+    const session = await _loadSessionUnlocked().catch(() => null);
+    const uid = resolveSessionUserId(session) || _activeUserId;
+    if (!uid) return null;
+    const data = await readJson<RegisteredPushDevice | null>(KEYS.pushDevice, null);
+    if (!data || String(data.user_id || "").trim() !== uid) return null;
+    return data;
+  });
+}
+
+export async function clearRegisteredPushDevice(): Promise<void> {
+  return runSerializedAuthStorage(async () => {
+    const backend = await getStorageBackend();
+    await backend.removeItem(KEYS.pushDevice);
   });
 }
 

@@ -1,5 +1,5 @@
 import React, { Component, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { getRandomValues as expoGetRandomValues } from "expo-crypto";
 import { Stack, useRootNavigationState, useRouter, useSegments } from "expo-router";
 
@@ -22,8 +22,8 @@ import {
   fetchWorkspace,
   flushOfflineQueue,
   subscribeSessionExpired,
+  syncRemindersFromServer,
 } from "../src/api";
-import { syncLocalRemindersWithOs } from "../src/notifications";
 import {
   extractInviteTokenFromUrl,
   extractSharedUrlFromIntent,
@@ -158,8 +158,12 @@ function RootLayoutContent() {
       try {
         const inviteToken = extractInviteTokenFromUrl(rawUrl);
         if (inviteToken) {
-          await acceptFolderInvite(inviteToken);
-          if (active) router.replace("/(tabs)/folders");
+          const invRes = await acceptFolderInvite(inviteToken);
+          if (!active) return;
+          if (!invRes.ok) {
+            Alert.alert("เข้าร่วมโฟลเดอร์ไม่สำเร็จ", invRes.error || "ลิงก์เชิญอาจหมดอายุหรือถูกยกเลิกแล้ว");
+          }
+          router.replace("/(tabs)/folders");
           return;
         }
 
@@ -211,8 +215,8 @@ function RootLayoutContent() {
             }
             return;
           }
-          if (active && Array.isArray(ws.reminders) && ws.reminders.length > 0) {
-            await syncLocalRemindersWithOs(ws.reminders).catch(() => {});
+          if (active) {
+            await syncRemindersFromServer(Array.isArray(ws.reminders) ? ws.reminders : []).catch(() => {});
           }
         }
 
@@ -292,8 +296,12 @@ function RootLayoutContent() {
 
         const inviteToken = extractInviteTokenFromUrl(rawUrl);
         if (inviteToken) {
-          await acceptFolderInvite(inviteToken);
-          if (active) router.replace("/(tabs)/folders");
+          const invRes = await acceptFolderInvite(inviteToken);
+          if (!active) return;
+          if (!invRes.ok) {
+            Alert.alert("เข้าร่วมโฟลเดอร์ไม่สำเร็จ", invRes.error || "ลิงก์เชิญอาจหมดอายุหรือถูกยกเลิกแล้ว");
+          }
+          router.replace("/(tabs)/folders");
           return;
         }
 

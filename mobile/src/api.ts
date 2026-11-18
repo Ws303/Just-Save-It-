@@ -1,3 +1,9 @@
+import { formatRemindTimeAndZone, getDeviceTimezone } from "./itemHelpers";
+import {
+  cancelAllLocalRemindersSafe,
+  syncLocalRemindersWithOs,
+  type ReminderInput,
+} from "./notifications";
 import {
   classifyQueueFlushStatus,
   beginAuthLogin,
@@ -10,6 +16,7 @@ import {
   isAuthEpochStale,
   loadCachedWorkspace,
   loadOfflineQueue,
+  loadRegisteredPushDevice,
   loadSession,
   peekPkceVerifier,
   recordAuthDebugEvent,
@@ -17,7 +24,10 @@ import {
   resolveSessionUserId,
   saveCachedWorkspace,
   savePkceVerifier,
+  saveRegisteredPushDevice,
   saveSession,
+  updateCachedReminders,
+  upsertCachedLinkItem,
   type MobileFolderItem,
   type MobileLinkItem,
   type MobileReminderItem,
@@ -26,7 +36,15 @@ import {
   type WorkflowStatus,
 } from "./storage";
 
-export const API_BASE = "https://just-save-it-api.onrender.com";
+const RAW_ENV_API_BASE = (
+  typeof process !== "undefined" && process.env?.EXPO_PUBLIC_API_BASE_URL
+    ? String(process.env.EXPO_PUBLIC_API_BASE_URL).trim()
+    : ""
+).replace(/\/+$/, "");
+
+export const API_BASE = /^https?:\/\//i.test(RAW_ENV_API_BASE)
+  ? RAW_ENV_API_BASE
+  : "https://just-save-it-api.onrender.com";
 export const SUPABASE_URL = "https://pnqjamwhgzqzvpiytcln.supabase.co";
 export const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBucWphbXdoZ3pxenZwaXl0Y2xuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ2NjAzMjIsImV4cCI6MjExMDIzNjMyMn0.4RfZtHD9-23dSQw2P6tWRz45mty5BumKWAKKBifbebw";
@@ -882,9 +900,48 @@ export async function fetchWorkspace(): Promise<WorkspacePayload> {
   }
 }
 
+export interface PreviewUrlResponsePayload {
+  url: string;
+  canonical_url?: string;
+  title?: string | null;
+  description?: string | null;
+  image_url?: string | null;
+  thumbnail_url?: string | null;
+  media_items?: string[];
+  embed_type?: string;
+  embed_url?: string | null;
+  site_name?: string | null;
+  content_type?: string | null;
+  platform?: string;
+  preview_status?: string;
+  cached?: boolean;
+}
+
+export async function previewLinkUrl(rawUrl: string): Promise<ApiResult<PreviewUrlResponsePayload>> {
+  return apiFetch<PreviewUrlResponsePayload>("/api/preview", {
+    method: "POST",
+    body: { url: rawUrl.trim() },
+  });
+}
+
+export async function resolveItemVideo(
+  itemId: string,
+): Promise<ApiResult<{ item_id?: string; video_url?: string | null }>> {
+  return apiFetch<{ item_id?: string; video_url?: string | null }>(
+    `/api/items/${encodeURIComponent(itemId)}/video`,
+  );
+}
+
 export async function saveLinkItem(payload: {
   url: string;
   title?: string;
+  description?: string | null;
+  thumbnail_url?: string | null;
+  image_url?: string | null;
+  media_items?: string[];
+  embed_url?: string | null;
+  embed_type?: string | null;
+  platform?: string;
   note?: string;
   tags?: string[];
   folder_id?: string | null;
@@ -943,8 +1000,43 @@ export async function getOfflineQueueCount(): Promise<number> {
   return q.length;
 }
 
+export interface LocalSyncOccurrence {
+  reminder_id?: string | null;
+  item_id: string;
+  schedule_type?: "once" | "every_n_days" | string;
+  occurrence_at: string;
+  repeat_every_days?: number | null;
+  timezone?: string;
+  title: string;
+  item_url?: string | null;
+  is_overdue?: boolean;
+}
+
+export interface LocalSyncResponsePayload {
+  ios_remote_push_active: boolean;
+  max_slots: number;
+  total_active_rules: number;
+  notifications: LocalSyncOccurrence[];
+  overdue: LocalSyncOccurrence[];
+  truncated: boolean;
+  generated_at?: string;
+}
+
+export interface RefreshPreviewResponsePayload {
+  status?: string;
+  cached?: boolean;
+  storage_uploaded?: boolean;
+  error?: string;
+  item?: MobileLinkItem;
+}
+
 export async function patchLinkItem(itemId: string, patch: Record<string, unknown>): Promise<ApiResult<MobileLinkItem>> {
-  return apiFetch<MobileLinkItem>(`/api/items/${encodeURIComponent(itemId)}`, { method: "PATCH", body: patch });
+  const startGen = getAuthGeneration();
+  const res = await apiFetch<MobileLinkItem>(`/api/items/${encodeURIComponent(itemId)}`, { method: "PATCH", body: patch });
+  if (res.ok && res.data && getAuthGeneration() === startGen) {
+    await upsertCachedLinkItem(res.data).catch(() => {});
+  }
+  return res;
 }
 
 export async function deleteLinkItem(itemId: string): Promise<ApiResult<JsonRecord>> {
@@ -956,11 +1048,16 @@ export async function deleteLinkItem(itemId: string): Promise<ApiResult<JsonReco
   return res;
 }
 
-export async function refreshLinkPreview(itemId: string): Promise<ApiResult<MobileLinkItem>> {
-  return apiFetch<MobileLinkItem>(`/api/items/${encodeURIComponent(itemId)}/refresh-preview`, {
-    method: "POST",
-    body: {},
-  });
+export async function refreshLinkPreview(
+  itemId: string,
+): Promise<ApiResult<RefreshPreviewResponsePayload & Partial<MobileLinkItem>>> {
+  return apiFetch<RefreshPreviewResponsePayload & Partial<MobileLinkItem>>(
+    `/api/items/${encodeURIComponent(itemId)}/refresh-preview`,
+    {
+      method: "POST",
+      body: {},
+    },
+  );
 }
 
 export async function summarizeLinkItem(itemId: string, forceRefresh = false): Promise<ApiResult<JsonRecord>> {
@@ -996,15 +1093,101 @@ export async function acceptFolderInvite(token: string): Promise<ApiResult<JsonR
   });
 }
 
+export async function fetchLocalSyncReminders(): Promise<ApiResult<LocalSyncResponsePayload>> {
+  return apiFetch<LocalSyncResponsePayload>("/api/reminders/local-sync");
+}
+
+export async function syncRemindersFromServer(
+  fallbackReminders?: MobileReminderItem[],
+): Promise<{
+  syncedCount: number;
+  iosRemoteActive: boolean;
+  fromLocalSync: boolean;
+  occurrences: LocalSyncOccurrence[];
+  overdue: LocalSyncOccurrence[];
+  reminders: MobileReminderItem[];
+}> {
+  const startGen = getAuthGeneration();
+  const startClearEpoch = getClearEpoch();
+
+  const localSyncRes = await fetchLocalSyncReminders();
+  if (getAuthGeneration() !== startGen || getClearEpoch() !== startClearEpoch) {
+    return {
+      syncedCount: 0,
+      iosRemoteActive: false,
+      fromLocalSync: false,
+      occurrences: [],
+      overdue: [],
+      reminders: [],
+    };
+  }
+
+  if (localSyncRes.ok && localSyncRes.data && Array.isArray(localSyncRes.data.notifications)) {
+    const iosRemoteActive = Boolean(localSyncRes.data.ios_remote_push_active);
+    const occurrences = localSyncRes.data.notifications;
+    const overdue = Array.isArray(localSyncRes.data.overdue) ? localSyncRes.data.overdue : [];
+    const syncedCount = await syncLocalRemindersWithOs(
+      iosRemoteActive ? [] : (occurrences as ReminderInput[]),
+    );
+    return {
+      syncedCount,
+      iosRemoteActive,
+      fromLocalSync: true,
+      occurrences,
+      overdue,
+      reminders: [],
+    };
+  }
+
+  let remList = Array.isArray(fallbackReminders) ? fallbackReminders : [];
+  if (!Array.isArray(fallbackReminders)) {
+    const remRes = await apiFetch<{ reminders?: MobileReminderItem[] }>("/api/reminders");
+    if (getAuthGeneration() !== startGen || getClearEpoch() !== startClearEpoch) {
+      return {
+        syncedCount: 0,
+        iosRemoteActive: false,
+        fromLocalSync: false,
+        occurrences: [],
+        overdue: [],
+        reminders: [],
+      };
+    }
+    if (remRes.ok && Array.isArray(remRes.data?.reminders)) {
+      remList = remRes.data.reminders;
+      await updateCachedReminders(remList).catch(() => {});
+    } else {
+      const cached = await loadCachedWorkspace().catch(() => null);
+      remList = Array.isArray(cached?.reminders) ? cached.reminders : [];
+    }
+  }
+
+  const syncedCount = await syncLocalRemindersWithOs(remList as ReminderInput[]);
+  return {
+    syncedCount,
+    iosRemoteActive: false,
+    fromLocalSync: false,
+    occurrences: [],
+    overdue: [],
+    reminders: remList,
+  };
+}
+
 export async function saveReminder(
   itemId: string,
   payload: {
     schedule_type?: "once" | "every_n_days";
     remind_at: string;
     remind_time?: string;
+    timezone?: string;
     repeat_every_days?: number | null;
   },
 ): Promise<ApiResult<MobileReminderItem>> {
+  const parsedDate = new Date(payload.remind_at);
+  const validDate = !Number.isNaN(parsedDate.getTime());
+  const computed = validDate
+    ? formatRemindTimeAndZone(parsedDate, payload.timezone)
+    : { remind_time: "18:00:00", timezone: payload.timezone || getDeviceTimezone() };
+
   return apiFetch<MobileReminderItem>(`/api/reminders/${encodeURIComponent(itemId)}`, {
     method: "PUT",
     body: {
@@ -1013,8 +1196,8 @@ export async function saveReminder(
       next_remind_at: payload.remind_at,
       remind_at: payload.remind_at,
       repeat_every_days: payload.schedule_type === "every_n_days" ? payload.repeat_every_days || 3 : null,
-      remind_time: payload.remind_time || "18:00:00",
-      timezone: "Asia/Bangkok",
+      remind_time: payload.remind_time || computed.remind_time,
+      timezone: payload.timezone || computed.timezone,
       is_enabled: true,
     },
   });
@@ -1029,7 +1212,9 @@ export async function registerPushDevice(payload: {
   delivery_mode: "remote" | "local_sync";
   push_token?: string | null;
 }): Promise<ApiResult<JsonRecord>> {
-  return apiFetch<JsonRecord>("/api/devices", {
+  const startGen = getAuthGeneration();
+  const startClearEpoch = getClearEpoch();
+  const res = await apiFetch<JsonRecord>("/api/devices", {
     method: "POST",
     body: {
       platform: payload.platform,
@@ -1037,6 +1222,29 @@ export async function registerPushDevice(payload: {
       push_token: payload.push_token ?? null,
       is_active: true,
     },
+  });
+  if (res.ok && getAuthGeneration() === startGen && getClearEpoch() === startClearEpoch) {
+    await saveRegisteredPushDevice({
+      platform: payload.platform,
+      delivery_mode: payload.delivery_mode,
+      push_token: payload.push_token ?? null,
+    }).catch(() => {});
+  }
+  return res;
+}
+
+export async function deactivatePushDevice(payload: {
+  platform: "android" | "ios";
+  push_token?: string | null;
+}): Promise<ApiResult<JsonRecord>> {
+  return apiFetch<JsonRecord>("/api/devices/deactivate", {
+    method: "POST",
+    body: {
+      platform: payload.platform,
+      push_token: payload.push_token ?? null,
+    },
+    skipRetry: true,
+    skipClearOn401: true,
   });
 }
 
@@ -1064,6 +1272,7 @@ export async function deleteMyAccount(): Promise<ApiResult<JsonRecord>> {
   const startClearEpoch = getClearEpoch();
   const res = await apiFetch<JsonRecord>("/api/auth/me", { method: "DELETE" });
   if (res.ok && getAuthGeneration() === startGen && getClearEpoch() === startClearEpoch) {
+    await cancelAllLocalRemindersSafe();
     await clearSession();
   }
   return res;
@@ -1074,7 +1283,24 @@ export async function logoutAccount(): Promise<void> {
   const startSession = await loadSession().catch(() => null);
   const startUid = resolveSessionUserId(startSession);
   const startAccessToken = startSession?.access_token || "";
-  await apiFetch("/api/auth/logout", { method: "POST", body: {}, skipRetry: true, skipClearOn401: true });
+  const registeredDevice = await loadRegisteredPushDevice().catch(() => null);
+  const logoutReq = apiFetch("/api/auth/logout", {
+    method: "POST",
+    body: {},
+    skipRetry: true,
+    skipClearOn401: true,
+  });
+  if (registeredDevice) {
+    await Promise.allSettled([
+      logoutReq,
+      deactivatePushDevice({
+        platform: registeredDevice.platform,
+        push_token: registeredDevice.push_token,
+      }),
+    ]);
+  } else {
+    await logoutReq;
+  }
   if (getClearEpoch() !== startClearEpoch) {
     return;
   }
@@ -1089,5 +1315,6 @@ export async function logoutAccount(): Promise<void> {
   if (switchedUser) {
     return;
   }
+  await cancelAllLocalRemindersSafe();
   await clearSession();
 }

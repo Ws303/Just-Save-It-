@@ -4,7 +4,9 @@ import {
   Alert,
   FlatList,
   Image,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -13,15 +15,31 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
 import {
+  createFolder,
   fetchWorkspace,
   flushOfflineQueue,
   getOfflineQueueCount,
   patchLinkItem,
+  previewLinkUrl,
   saveLinkItem,
+  type PreviewUrlResponsePayload,
 } from "../../src/api";
+import {
+  formatCardDisplayTitle,
+  getSocialPostLinkWarning,
+  inferMobileContentType,
+  inferMobileDomain,
+  inferMobilePlatform,
+  isGenericOrNoisyTitle,
+  matchesItemSearch,
+  matchesPlatformFilter,
+  resolveMobileThumbUrl,
+  scrubGenericPlatformTitle,
+} from "../../src/itemHelpers";
 import {
   getAuthGeneration,
   getMemoryCachedWorkspace,
@@ -31,6 +49,8 @@ import {
   type MobileLinkItem,
   type WorkflowStatus,
 } from "../../src/storage";
+
+const QUICK_FOLDER_ICONS = ["📁", "🍜", "☕", "🎬", "💻", "✈️", "🛍️", "💡"];
 
 const STATUS_LABELS: Record<WorkflowStatus, string> = {
   inbox: "กล่องรับ",
@@ -57,6 +77,7 @@ function inferDomain(url: string): string {
 
 export default function HomeFeedScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ sharedUrl?: string; sharedTitle?: string }>();
   const initialCache = getMemoryCachedWorkspace();
 
@@ -83,7 +104,15 @@ export default function HomeFeedScreen() {
   const [saveFolderId, setSaveFolderId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<WorkflowStatus>("inbox");
   const [saving, setSaving] = useState(false);
+  const [inlineFolderOpen, setInlineFolderOpen] = useState(false);
+  const [inlineFolderName, setInlineFolderName] = useState("");
+  const [inlineFolderIcon, setInlineFolderIcon] = useState("📁");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewData, setPreviewData] = useState<PreviewUrlResponsePayload | null>(null);
   const saveSeqRef = useRef(0);
+  const previewSeqRef = useRef(0);
+  const socialWarning = useMemo(() => getSocialPostLinkWarning(saveUrl), [saveUrl]);
 
   const loadAll = useCallback(async () => {
     const startGen = getAuthGeneration();
@@ -145,30 +174,89 @@ export default function HomeFeedScreen() {
     }, [loadAll]),
   );
 
+  const handleFetchPreview = useCallback(async (rawTargetUrl: string) => {
+    const cleanUrl = rawTargetUrl.trim();
+    if (!/^https?:\/\//i.test(cleanUrl) || getSocialPostLinkWarning(cleanUrl)) return;
+    await runGuardedBusyAction(previewSeqRef, setPreviewing, async (isStale) => {
+      const res = await previewLinkUrl(cleanUrl);
+      if (isStale() || !res.ok || !res.data) return;
+      setPreviewData(res.data);
+      const pvTitle = formatCardDisplayTitle(res.data);
+      setSaveTitle((prev) => {
+        if (!prev.trim() || isGenericOrNoisyTitle(prev, res.data?.platform || "", cleanUrl)) {
+          return scrubGenericPlatformTitle(pvTitle, res.data?.platform || "", cleanUrl) || pvTitle;
+        }
+        return prev;
+      });
+    });
+  }, []);
+
   useEffect(() => {
     if (typeof params.sharedUrl === "string" && params.sharedUrl.trim()) {
-      setSaveUrl(params.sharedUrl.trim());
-      setSaveTitle(typeof params.sharedTitle === "string" ? params.sharedTitle : "");
+      const sharedClean = params.sharedUrl.trim();
+      const rawSharedTitle = typeof params.sharedTitle === "string" ? params.sharedTitle : "";
+      const cleanSharedTitle = scrubGenericPlatformTitle(rawSharedTitle, "", sharedClean);
+      setSaveUrl(sharedClean);
+      setSaveTitle(cleanSharedTitle);
+      setPreviewData(null);
       setModalOpen(true);
+      void handleFetchPreview(sharedClean);
     }
-  }, [params.sharedUrl, params.sharedTitle]);
+  }, [params.sharedUrl, params.sharedTitle, handleFetchPreview]);
+
+  const folderNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const f of folders) {
+      if (f?.id) map.set(f.id, f.name || "");
+    }
+    return map;
+  }, [folders]);
 
   const filteredItems = useMemo(() => {
-    const q = searchText.trim().toLowerCase();
     return items.filter((item) => {
       const wf = normalizeStatus(item.status);
       if (statusFilter !== "all" && wf !== statusFilter) return false;
-      const plat = String(item.platform || "web").toLowerCase();
-      if (platformFilter !== "all" && plat !== platformFilter.toLowerCase()) return false;
-      const ct = String(item.content_type || "article").toLowerCase();
+      if (!matchesPlatformFilter(item, platformFilter)) return false;
+      const ct = inferMobileContentType(item);
       if (contentTypeFilter !== "all" && ct !== contentTypeFilter.toLowerCase()) return false;
-      if (q) {
-        const hay = `${item.title || ""} ${item.url || ""} ${item.note || ""} ${(item.tags || []).join(" ")}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
+      const fName = item.folder_id ? folderNameById.get(item.folder_id) || "" : "";
+      if (!matchesItemSearch(item, searchText, fName)) return false;
       return true;
     });
-  }, [items, searchText, statusFilter, platformFilter, contentTypeFilter]);
+  }, [items, folderNameById, searchText, statusFilter, platformFilter, contentTypeFilter]);
+
+  function closeQuickSaveModal() {
+    setModalOpen(false);
+    setInlineFolderOpen(false);
+    setInlineFolderName("");
+    setInlineFolderIcon("📁");
+  }
+
+  async function handleInlineCreateFolder() {
+    const name = inlineFolderName.trim();
+    if (!name) {
+      Alert.alert("กรุณาระบุชื่อโฟลเดอร์");
+      return;
+    }
+    const startGen = getAuthGeneration();
+    setCreatingFolder(true);
+    try {
+      const res = await createFolder(name, inlineFolderIcon || "📁");
+      if (getAuthGeneration() !== startGen) return;
+      if (!res.ok || !res.data) {
+        Alert.alert("สร้างโฟลเดอร์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+        return;
+      }
+      const created = res.data;
+      setFolders((prev) => [...prev.filter((f) => f.id !== created.id), created]);
+      setSaveFolderId(created.id);
+      setInlineFolderName("");
+      setInlineFolderIcon("📁");
+      setInlineFolderOpen(false);
+    } finally {
+      setCreatingFolder(false);
+    }
+  }
 
   async function handleQuickSave() {
     const cleanUrl = saveUrl.trim();
@@ -182,9 +270,24 @@ export default function HomeFeedScreen() {
         .map((t) => t.replace(/^#/, "").trim())
         .filter(Boolean);
 
+      const cleanedTitle = scrubGenericPlatformTitle(
+        saveTitle.trim(),
+        previewData?.platform || "",
+        cleanUrl,
+      );
+      const matchedPv = previewData && previewData.url === cleanUrl ? previewData : null;
+      const pvThumb = matchedPv ? resolveMobileThumbUrl(matchedPv) : "";
+
       const res = await saveLinkItem({
         url: cleanUrl,
-        title: saveTitle.trim() || undefined,
+        title: cleanedTitle || (matchedPv?.title ? formatCardDisplayTitle(matchedPv) : undefined),
+        description: matchedPv?.description ?? undefined,
+        thumbnail_url: pvThumb || undefined,
+        image_url: matchedPv?.image_url ?? undefined,
+        media_items: Array.isArray(matchedPv?.media_items) ? matchedPv.media_items : undefined,
+        embed_url: matchedPv?.embed_url ?? undefined,
+        embed_type: matchedPv?.embed_type ?? undefined,
+        platform: matchedPv?.platform ?? undefined,
         note: saveNote.trim() || undefined,
         tags: parsedTags.length ? parsedTags : undefined,
         folder_id: saveFolderId,
@@ -195,13 +298,14 @@ export default function HomeFeedScreen() {
         Alert.alert("บันทึกไม่สำเร็จ", res.error || "กรุณาลองใหม่อีกครั้ง");
         return;
       }
-      setModalOpen(false);
+      closeQuickSaveModal();
       setSaveUrl("");
       setSaveTitle("");
       setSaveNote("");
       setSaveTags("");
       setSaveFolderId(null);
       setSaveStatus("inbox");
+      setPreviewData(null);
       if (res.queued) {
         Alert.alert("บันทึกเข้า Offline Queue แล้ว", "ระบบจะอัปโหลดขึ้น Cloud อัตโนมัติเมื่อออนไลน์");
       }
@@ -274,17 +378,23 @@ export default function HomeFeedScreen() {
         {showFilters ? (
           <View style={styles.drawer}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.subStrip}>
-              {["all", "tiktok", "youtube", "facebook", "instagram", "web"].map((pl) => {
-                const active = platformFilter === pl;
+              {[
+                { id: "all", label: "ทุกแพลตฟอร์ม" },
+                { id: "youtube", label: "YouTube" },
+                { id: "tiktok", label: "TikTok" },
+                { id: "instagram", label: "IG" },
+                { id: "facebook", label: "Facebook" },
+                { id: "x", label: "X" },
+                { id: "web", label: "เว็บไซต์" },
+              ].map((pl) => {
+                const active = platformFilter === pl.id;
                 return (
                   <Pressable
-                    key={pl}
+                    key={pl.id}
                     style={[styles.smallChip, active && styles.chipActive]}
-                    onPress={() => setPlatformFilter(pl)}
+                    onPress={() => setPlatformFilter(pl.id)}
                   >
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                      {pl === "all" ? "ทุกแพลตฟอร์ม" : pl}
-                    </Text>
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{pl.label}</Text>
                   </Pressable>
                 );
               })}
@@ -340,33 +450,35 @@ export default function HomeFeedScreen() {
           }
           renderItem={({ item }) => {
             const wf = normalizeStatus(item.status);
+            const thumbUri = resolveMobileThumbUrl(item);
+            const platLabel = inferMobilePlatform(item);
             return (
               <Pressable
                 style={styles.card}
                 onPress={() => router.push(`/item/${encodeURIComponent(item.id)}`)}
               >
-                {item.thumbnail_url ? (
-                  <Image source={{ uri: item.thumbnail_url }} style={styles.thumb} resizeMode="cover" />
+                {thumbUri ? (
+                  <Image source={{ uri: thumbUri }} style={styles.thumb} resizeMode="cover" />
                 ) : null}
                 <View style={styles.cardBody}>
                   <View style={styles.cardMetaRow}>
-                    <Text style={styles.platformBadge}>{item.platform || inferDomain(item.url)}</Text>
+                    <Text style={styles.platformBadge}>{platLabel || inferDomain(item.url)}</Text>
                     <View style={styles.statusPill}>
                       <Text style={styles.statusPillText}>{STATUS_LABELS[wf]}</Text>
                     </View>
-                    <Pressable hitSlop={8} onPress={() => void toggleFavorite(item)}>
+                    <Pressable style={styles.starBtnWrap} hitSlop={8} onPress={() => void toggleFavorite(item)}>
                       <Text style={styles.starBtn}>{item.is_favorite ? "⭐" : "☆"}</Text>
                     </Pressable>
                   </View>
                   <Text style={styles.cardTitle} numberOfLines={2}>
-                    {item.title || item.url}
+                    {formatCardDisplayTitle(item) || item.url}
                   </Text>
                   <Text style={styles.cardDomain} numberOfLines={1}>
-                    {inferDomain(item.url)}
+                    {inferMobileDomain(item.url) || inferDomain(item.url)}
                   </Text>
-                  {item.note ? (
+                  {item.note || item.user_note ? (
                     <Text style={styles.cardNote} numberOfLines={2}>
-                      {item.note}
+                      {item.note || item.user_note}
                     </Text>
                   ) : null}
                 </View>
@@ -376,25 +488,68 @@ export default function HomeFeedScreen() {
         />
       )}
 
-      <Modal visible={modalOpen} animationType="slide" transparent>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
+      <Modal visible={modalOpen} animationType="slide" transparent onRequestClose={closeQuickSaveModal}>
+        <KeyboardAvoidingView
+          style={styles.modalBackdrop}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          <View style={[styles.modalCard, { paddingBottom: Math.max(20, insets.bottom + 12) }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>+ เก็บลิงก์ด่วน</Text>
-              <Pressable onPress={() => setModalOpen(false)}>
+              <Pressable onPress={closeQuickSaveModal}>
                 <Text style={styles.modalClose}>✕</Text>
               </Pressable>
             </View>
             <ScrollView keyboardShouldPersistTaps="handled">
-              <Text style={styles.label}>URL ลิงก์</Text>
+              <View style={styles.urlLabelRow}>
+                <Text style={styles.label}>URL ลิงก์</Text>
+                <Pressable
+                  style={[styles.previewBtn, previewing && { opacity: 0.6 }]}
+                  disabled={previewing || !saveUrl.trim()}
+                  onPress={() => void handleFetchPreview(saveUrl)}
+                >
+                  <Text style={styles.previewBtnText}>
+                    {previewing ? "กำลังดึง..." : "🔍 ดึงพรีวิว"}
+                  </Text>
+                </Pressable>
+              </View>
               <TextInput
                 style={styles.input}
                 placeholder="https://..."
                 placeholderTextColor="#A8A29E"
                 autoCapitalize="none"
                 value={saveUrl}
-                onChangeText={setSaveUrl}
+                onChangeText={(next) => {
+                  setSaveUrl(next);
+                  if (previewData && previewData.url !== next.trim()) {
+                    setPreviewData(null);
+                  }
+                }}
               />
+              {socialWarning ? (
+                <View style={styles.warningBox}>
+                  <Text style={styles.warningTitle}>⚠️ ลิงก์หน้าฟีด {socialWarning.platform}</Text>
+                  <Text style={styles.warningText}>{socialWarning.message}</Text>
+                  <Text style={styles.warningHint}>ตัวอย่าง: {socialWarning.example}</Text>
+                </View>
+              ) : null}
+              {previewData ? (
+                <View style={styles.previewCard}>
+                  {resolveMobileThumbUrl(previewData) ? (
+                    <Image
+                      source={{ uri: resolveMobileThumbUrl(previewData) }}
+                      style={styles.previewThumb}
+                      resizeMode="cover"
+                    />
+                  ) : null}
+                  <View style={styles.previewBody}>
+                    <Text style={styles.previewPlat}>{previewData.platform || "web"}</Text>
+                    <Text style={styles.previewTitle} numberOfLines={2}>
+                      {formatCardDisplayTitle(previewData)}
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
               <Text style={styles.label}>ชื่อเรื่อง (ไม่บังคับ)</Text>
               <TextInput
                 style={styles.input}
@@ -434,31 +589,68 @@ export default function HomeFeedScreen() {
                   </Pressable>
                 ))}
               </View>
-              {folders.length > 0 ? (
-                <>
-                  <Text style={styles.label}>โฟลเดอร์</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.subStrip}>
-                    <Pressable
-                      style={[styles.smallChip, saveFolderId === null && styles.chipActive]}
-                      onPress={() => setSaveFolderId(null)}
-                    >
-                      <Text style={[styles.chipText, saveFolderId === null && styles.chipTextActive]}>
-                        รวมไว้ดูทีหลัง
-                      </Text>
-                    </Pressable>
-                    {folders.map((f) => (
+              <Text style={styles.label}>โฟลเดอร์</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.subStrip}>
+                <Pressable
+                  style={[styles.smallChip, saveFolderId === null && styles.chipActive]}
+                  onPress={() => setSaveFolderId(null)}
+                >
+                  <Text style={[styles.chipText, saveFolderId === null && styles.chipTextActive]}>
+                    รวมไว้ดูทีหลัง
+                  </Text>
+                </Pressable>
+                {folders.map((f) => (
+                  <Pressable
+                    key={f.id}
+                    style={[styles.smallChip, saveFolderId === f.id && styles.chipActive]}
+                    onPress={() => setSaveFolderId(f.id)}
+                  >
+                    <Text style={[styles.chipText, saveFolderId === f.id && styles.chipTextActive]}>
+                      {f.emoji || f.icon || "📁"} {f.name}
+                    </Text>
+                  </Pressable>
+                ))}
+                <Pressable
+                  style={[styles.smallChip, styles.newFolderChip, inlineFolderOpen && styles.chipActive]}
+                  onPress={() => setInlineFolderOpen((prev) => !prev)}
+                >
+                  <Text style={[styles.chipText, styles.newFolderChipText, inlineFolderOpen && styles.chipTextActive]}>
+                    + สร้างโฟลเดอร์ใหม่
+                  </Text>
+                </Pressable>
+              </ScrollView>
+              {inlineFolderOpen ? (
+                <View style={styles.inlineFolderBox}>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.emojiStrip}>
+                    {QUICK_FOLDER_ICONS.map((ic) => (
                       <Pressable
-                        key={f.id}
-                        style={[styles.smallChip, saveFolderId === f.id && styles.chipActive]}
-                        onPress={() => setSaveFolderId(f.id)}
+                        key={ic}
+                        style={[styles.emojiChip, inlineFolderIcon === ic && styles.emojiChipActive]}
+                        onPress={() => setInlineFolderIcon(ic)}
                       >
-                        <Text style={[styles.chipText, saveFolderId === f.id && styles.chipTextActive]}>
-                          {f.emoji || f.icon || "📁"} {f.name}
-                        </Text>
+                        <Text style={styles.emojiChipText}>{ic}</Text>
                       </Pressable>
                     ))}
                   </ScrollView>
-                </>
+                  <View style={styles.inlineFolderRow}>
+                    <TextInput
+                      style={[styles.input, { flex: 1 }]}
+                      placeholder="ชื่อโฟลเดอร์ใหม่ เช่น คาเฟ่"
+                      placeholderTextColor="#A8A29E"
+                      value={inlineFolderName}
+                      onChangeText={setInlineFolderName}
+                    />
+                    <Pressable
+                      style={[styles.inlineCreateBtn, creatingFolder && { opacity: 0.65 }]}
+                      disabled={creatingFolder}
+                      onPress={() => void handleInlineCreateFolder()}
+                    >
+                      <Text style={styles.inlineCreateBtnText}>
+                        {creatingFolder ? "..." : "สร้าง"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
               ) : null}
 
               <Pressable
@@ -474,7 +666,7 @@ export default function HomeFeedScreen() {
               </Pressable>
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -568,7 +760,8 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   statusPillText: { fontSize: 11, fontWeight: "600", color: "#57534E" },
-  starBtn: { fontSize: 18, marginLeft: "auto" },
+  starBtnWrap: { marginLeft: "auto" },
+  starBtn: { fontSize: 18 },
   cardTitle: { fontSize: 16, fontWeight: "700", color: "#1C1917", marginBottom: 4 },
   cardDomain: { fontSize: 12, color: "#78716C" },
   cardNote: { fontSize: 13, color: "#44403C", marginTop: 6 },
@@ -587,6 +780,43 @@ const styles = StyleSheet.create({
   modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
   modalTitle: { fontSize: 18, fontWeight: "800", color: "#1C1917" },
   modalClose: { fontSize: 20, color: "#78716C", paddingHorizontal: 6 },
+  urlLabelRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 6, marginBottom: 4 },
+  previewBtn: {
+    backgroundColor: "#F3EFE6",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#D6CFC4",
+  },
+  previewBtnText: { fontSize: 12, fontWeight: "700", color: "#9B2C2C" },
+  warningBox: {
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 8,
+    gap: 4,
+  },
+  warningTitle: { fontSize: 13, fontWeight: "800", color: "#92400E" },
+  warningText: { fontSize: 12, color: "#78350F", lineHeight: 18 },
+  warningHint: { fontSize: 11, color: "#B45309", fontWeight: "600" },
+  previewCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#F3EFE6",
+    borderRadius: 12,
+    padding: 10,
+    marginTop: 8,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: "#EAE4DB",
+  },
+  previewThumb: { width: 54, height: 54, borderRadius: 8, backgroundColor: "#E7E0D5" },
+  previewBody: { flex: 1, gap: 2 },
+  previewPlat: { fontSize: 10, fontWeight: "700", color: "#9B2C2C", textTransform: "uppercase" },
+  previewTitle: { fontSize: 13, fontWeight: "700", color: "#1C1917" },
   label: { fontSize: 13, fontWeight: "600", color: "#44403C", marginTop: 10, marginBottom: 6 },
   input: {
     backgroundColor: "#FFFFFF",
@@ -600,6 +830,41 @@ const styles = StyleSheet.create({
   },
   textArea: { minHeight: 72, textAlignVertical: "top" },
   inlinePills: { flexDirection: "row", marginTop: 2 },
+  newFolderChip: { borderWidth: 1, borderColor: "#D6CFC4", backgroundColor: "#FFFFFF" },
+  newFolderChipText: { color: "#9B2C2C" },
+  inlineFolderBox: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: "#F3EFE6",
+    borderWidth: 1,
+    borderColor: "#E7E0D5",
+    gap: 8,
+  },
+  emojiStrip: { marginBottom: 2 },
+  emojiChip: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 6,
+    borderWidth: 1,
+    borderColor: "#E7E0D5",
+  },
+  emojiChipActive: { borderColor: "#9B2C2C", backgroundColor: "#FEF2F2" },
+  emojiChipText: { fontSize: 16 },
+  inlineFolderRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  inlineCreateBtn: {
+    backgroundColor: "#9B2C2C",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  inlineCreateBtnText: { color: "#FDFBF7", fontWeight: "700", fontSize: 13 },
   saveCta: {
     backgroundColor: "#9B2C2C",
     borderRadius: 14,

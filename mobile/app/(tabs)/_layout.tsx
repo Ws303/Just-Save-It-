@@ -1,12 +1,16 @@
 import React from "react";
 import { Text } from "react-native";
 import { Tabs } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 function TabEmoji({ symbol, focused }: { symbol: string; focused: boolean }) {
   return <Text style={{ fontSize: 18, opacity: focused ? 1 : 0.65 }}>{symbol}</Text>;
 }
 
 export default function TabsLayout() {
+  const insets = useSafeAreaInsets();
+  const bottomPad = Math.max(8, insets.bottom);
+
   return (
     <Tabs
       screenOptions={{
@@ -19,8 +23,8 @@ export default function TabsLayout() {
         tabBarStyle: {
           backgroundColor: "#FDFBF7",
           borderTopColor: "#EAE4DB",
-          height: 62,
-          paddingBottom: 8,
+          height: 54 + bottomPad,
+          paddingBottom: bottomPad,
           paddingTop: 6,
         },
         tabBarLabelStyle: {

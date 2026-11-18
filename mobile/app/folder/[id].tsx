@@ -13,6 +13,7 @@ import {
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
 import { createFolderInvite, fetchWorkspace } from "../../src/api";
+import { formatCardDisplayTitle, matchesItemSearch } from "../../src/itemHelpers";
 import {
   getAuthGeneration,
   getMemoryCachedWorkspace,
@@ -85,12 +86,8 @@ export default function FolderDetailScreen() {
   );
 
   const visibleItems = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((it) =>
-      `${it.title || ""} ${it.url || ""} ${it.note || ""}`.toLowerCase().includes(q),
-    );
-  }, [items, query]);
+    return items.filter((it) => matchesItemSearch(it, query, folder?.name || ""));
+  }, [items, query, folder?.name]);
 
   async function handleShareInvite() {
     if (!id || isVirtualInbox) return;
@@ -157,7 +154,7 @@ export default function FolderDetailScreen() {
               onPress={() => router.push(`/item/${encodeURIComponent(item.id)}`)}
             >
               <Text style={styles.cardTitle} numberOfLines={2}>
-                {item.title || item.url}
+                {formatCardDisplayTitle(item) || item.url}
               </Text>
               <Text style={styles.cardUrl} numberOfLines={1}>
                 {item.url}

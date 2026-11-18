@@ -19,6 +19,8 @@ services:
         value: "false"
       - key: FREE_TIER_MONTHLY_AI_LIMIT
         value: "50"
+      - key: ALLOW_META_CRAWLER_UA
+        value: "true"
       - key: GEMINI_MODEL
         value: gemini-3.1-flash-lite
       - key: GROQ_MODEL

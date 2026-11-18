@@ -9,8 +9,17 @@ import {
   View,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
-import { fetchWorkspace, patchLinkItem } from "../../src/api";
-import { planIosLocalNotifications } from "../../src/notifications";
+import {
+  fetchLocalSyncReminders,
+  fetchWorkspace,
+  patchLinkItem,
+  type LocalSyncOccurrence,
+} from "../../src/api";
+import { formatCardDisplayTitle, inferMobilePlatform } from "../../src/itemHelpers";
+import {
+  planIosLocalNotifications,
+  type ReminderInput,
+} from "../../src/notifications";
 import {
   getAuthGeneration,
   getMemoryCachedWorkspace,
@@ -27,6 +36,7 @@ export default function FavoritesScreen() {
     (initialCache?.items || []).filter((it) => Boolean(it.is_favorite)),
   );
   const [reminders, setReminders] = useState<MobileReminderItem[]>(() => initialCache?.reminders || []);
+  const [serverOccurrences, setServerOccurrences] = useState<LocalSyncOccurrence[] | null>(null);
   const [loading, setLoading] = useState<boolean>(() => !(initialCache?.items?.length || initialCache?.reminders?.length));
   const [refreshing, setRefreshing] = useState(false);
   const [tab, setTab] = useState<"fav" | "rem">("fav");
@@ -50,7 +60,10 @@ export default function FavoritesScreen() {
       setReminders((prev) => (prev.length ? prev : cached.reminders));
       setLoading(false);
     }
-    const ws = await fetchWorkspace();
+    const [ws, syncRes] = await Promise.all([
+      fetchWorkspace(),
+      fetchLocalSyncReminders().catch(() => ({ ok: false as const, status: 0, data: null })),
+    ]);
     if (getAuthGeneration() !== startGen) {
       setLoading(false);
       setRefreshing(false);
@@ -58,6 +71,11 @@ export default function FavoritesScreen() {
     }
     setFavorites(ws.items.filter((it) => Boolean(it.is_favorite)));
     setReminders(ws.reminders);
+    if (syncRes.ok && syncRes.data && Array.isArray(syncRes.data.notifications)) {
+      setServerOccurrences(syncRes.data.notifications);
+    } else {
+      setServerOccurrences(null);
+    }
     setLoading(false);
     setRefreshing(false);
   }, []);
@@ -78,7 +96,11 @@ export default function FavoritesScreen() {
     }
   }
 
-  const plannedNotifications = planIosLocalNotifications(reminders, Date.now(), 64);
+  const plannedNotifications = planIosLocalNotifications(
+    (serverOccurrences ?? reminders) as ReminderInput[],
+    Date.now(),
+    64,
+  );
 
   return (
     <View style={styles.root}>
@@ -132,13 +154,13 @@ export default function FavoritesScreen() {
               onPress={() => router.push(`/item/${encodeURIComponent(item.id)}`)}
             >
               <View style={styles.cardTop}>
-                <Text style={styles.platform}>{item.platform || "web"}</Text>
+                <Text style={styles.platform}>{inferMobilePlatform(item) || "web"}</Text>
                 <Pressable onPress={() => void removeFavorite(item)}>
                   <Text style={styles.star}>⭐</Text>
                 </Pressable>
               </View>
               <Text style={styles.cardTitle} numberOfLines={2}>
-                {item.title || item.url}
+                {formatCardDisplayTitle(item) || item.url}
               </Text>
               <Text style={styles.cardUrl} numberOfLines={1}>
                 {item.url}
@@ -150,6 +172,16 @@ export default function FavoritesScreen() {
         <FlatList
           data={plannedNotifications}
           keyExtractor={(r) => `${r.reminderId}-${r.triggerAtMs}`}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              tintColor="#9B2C2C"
+              onRefresh={() => {
+                setRefreshing(true);
+                void loadData();
+              }}
+            />
+          }
           contentContainerStyle={styles.listContent}
           ListEmptyComponent={
             <View style={styles.emptyBox}>

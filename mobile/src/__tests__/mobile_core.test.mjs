@@ -7,11 +7,6 @@ import assert from "node:assert/strict";
 
 import { planIosLocalNotifications } from "../notifications.ts";
 import {
-  extractInviteTokenFromUrl,
-  extractSharedUrlFromIntent,
-  parseOAuthCallbackUrl,
-} from "../shareIntent.ts";
-import {
   buildBoundedExportPayloadJson,
   classifyQueueFlushStatus,
   clearAuthDebugEvents,
@@ -46,6 +41,12 @@ registerHooks({
     return nextResolve(specifier, context);
   },
 });
+
+const {
+  extractInviteTokenFromUrl,
+  extractSharedUrlFromIntent,
+  parseOAuthCallbackUrl,
+} = await import("../shareIntent.ts");
 
 const {
   apiFetch,
@@ -1797,4 +1798,452 @@ test("19. Cycle 18 LOW-3: signupWithPassword email confirmation yields empty acc
     /typeof res\.data\?\.access_token === "string" && res\.data\.access_token\.trim\(\)\.length > 0/,
     "mobile/app/login.tsx must require non-empty access_token before redirecting into /(tabs)",
   );
+});
+
+test("20. Set A fixes: thumb fallback, social/image/x filters, dynamic reminder time/local-sync, push deactivation, and iOS UI/entitlement guards", async () => {
+  const {
+    formatRemindTimeAndZone,
+    inferMobileContentType,
+    matchesItemSearch,
+    matchesPlatformFilter,
+    resolveMobileThumbUrl,
+  } = await import("../itemHelpers.ts");
+  const {
+    logoutAccount,
+    registerPushDevice,
+    saveReminder,
+    syncRemindersFromServer,
+  } = await import("../api.ts");
+  const {
+    __setStorageBackendsForTests,
+    clearSession,
+    loadCachedWorkspace,
+    loadRegisteredPushDevice,
+    saveCachedWorkspace,
+    saveSession,
+    upsertCachedLinkItem,
+  } = await import("../storage.ts");
+
+  // 1. Thumbnail fallback: thumbnail_url -> image_url -> media_items[0], blocking unsafe URLs
+  assert.equal(resolveMobileThumbUrl({ image_url: "https://cdn.test/cover.webp" }), "https://cdn.test/cover.webp");
+  assert.equal(
+    resolveMobileThumbUrl({ media_items: [{ media_url: "https://cdn.test/slide1.jpg" }] }),
+    "https://cdn.test/slide1.jpg",
+  );
+  assert.equal(resolveMobileThumbUrl({ image_url: "javascript:alert(1)" }), "");
+
+  // 2. Content type & platform filter parity with backend/web
+  assert.equal(inferMobileContentType({ url: "https://instagram.com/p/abc", platform: "instagram", content_type: "post" }), "social");
+  assert.equal(inferMobileContentType({ url: "https://x.com/user/status/1", platform: "twitter", content_type: "link" }), "social");
+  assert.equal(
+    inferMobileContentType({ url: "https://blog.example/post", platform: "web", embed_type: "none", media_items: ["https://cdn.test/pic.png"] }),
+    "image",
+  );
+  assert.equal(inferMobileContentType({ url: "https://youtu.be/xyz", platform: "youtube", content_type: "link" }), "video");
+  assert.equal(matchesPlatformFilter({ platform: "twitter", url: "https://twitter.com/a" }, "x"), true);
+  assert.equal(matchesPlatformFilter({ platform: "medium.com", url: "https://medium.com/a" }, "web"), true);
+  assert.equal(matchesPlatformFilter({ platform: "instagram", url: "https://instagram.com/a" }, "web"), false);
+  assert.equal(
+    matchesItemSearch(
+      { url: "https://ex.com", title: "Alpha", description: "Bangkok coffee guide", tag_names: ["cafe"] },
+      "coffee",
+      "Travel",
+    ),
+    true,
+  );
+  assert.equal(matchesItemSearch({ url: "https://ex.com", title: "Alpha" }, "Travel", "Travel"), true);
+
+  // 3. planIosLocalNotifications handles LocalSyncOccurrence (`occurrence_at`, `item_url`) and skips done items
+  const futureOcc = new Date(Date.now() + 3600_000).toISOString();
+  const plannedOcc = planIosLocalNotifications([
+    {
+      reminder_id: "r-occ-1",
+      item_id: "it-occ-1",
+      title: "Read later",
+      item_url: "https://example.com/read",
+      occurrence_at: futureOcc,
+      schedule_type: "once",
+    },
+    {
+      id: "r-done",
+      item_id: "it-done",
+      item_title: "Completed",
+      item_status: "done",
+      remind_at: futureOcc,
+      schedule_type: "once",
+    },
+  ]);
+  assert.equal(plannedOcc.length, 1);
+  assert.equal(plannedOcc[0].itemId, "it-occ-1");
+  assert.equal(plannedOcc[0].url, "https://example.com/read");
+
+  // 4. Dynamic remind_time & timezone calculation (not hardcoded 18:00:00)
+  const testDt = new Date("2026-11-18T02:15:30.000Z");
+  const formattedTz = formatRemindTimeAndZone(testDt, "Asia/Bangkok");
+  assert.equal(formattedTz.remind_time, "09:15:30");
+  assert.equal(formattedTz.timezone, "Asia/Bangkok");
+
+  // 5. Network behaviors: saveReminder dynamic time, syncRemindersFromServer, upsertCachedLinkItem, logout push deactivation
+  const mem = new Map();
+  const memBackend = {
+    getItem: async (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: async (k, v) => { mem.set(k, String(v)); },
+    removeItem: async (k) => { mem.delete(k); },
+  };
+  __setStorageBackendsForTests({ standard: memBackend, secure: memBackend });
+  const origFetch = globalThis.fetch;
+  const makeJwt = (sub) => {
+    const body = btoa(JSON.stringify({ sub })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return `eyJhbGciOiJIUzI1NiJ9.${body}.sig`;
+  };
+
+  try {
+    await clearSession();
+    await saveSession({
+      access_token: makeJwt("mob-seta-u1"),
+      refresh_token: "",
+      user: { id: "mob-seta-u1", email: "seta@mob.test" },
+    });
+    await saveCachedWorkspace({
+      user_id: "mob-seta-u1",
+      items: [{ id: "it-1", url: "https://example.com/1", title: "Old" }],
+      folders: [],
+      reminders: [],
+    });
+    await upsertCachedLinkItem({
+      id: "it-1",
+      url: "https://example.com/1",
+      title: "Refreshed Title",
+      image_url: "https://cdn.test/new-cover.webp",
+    });
+    const afterUpsert = await loadCachedWorkspace();
+    assert.equal(afterUpsert.items[0].title, "Refreshed Title");
+    assert.equal(afterUpsert.items[0].image_url, "https://cdn.test/new-cover.webp");
+
+    let capturedReminderBody = null;
+    const calledPaths = [];
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      calledPaths.push(u);
+      if (u.includes("/api/reminders/local-sync")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            ios_remote_push_active: false,
+            max_slots: 64,
+            total_active_rules: 1,
+            notifications: [
+              {
+                reminder_id: "rem-1",
+                item_id: "it-1",
+                occurrence_at: new Date(Date.now() + 7200_000).toISOString(),
+                schedule_type: "once",
+                timezone: "Asia/Bangkok",
+                title: "Refreshed Title",
+                item_url: "https://example.com/1",
+              },
+            ],
+            overdue: [],
+            truncated: false,
+          }),
+        };
+      }
+      if (u.includes("/api/reminders/it-1") && init?.method === "PUT") {
+        capturedReminderBody = JSON.parse(String(init.body));
+        return { ok: true, status: 200, text: async () => JSON.stringify({ id: "rem-1", item_id: "it-1" }) };
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    };
+
+    const remSaveRes = await saveReminder("it-1", {
+      schedule_type: "every_n_days",
+      remind_at: "2026-11-18T02:15:30.000Z",
+      timezone: "Asia/Bangkok",
+      repeat_every_days: 3,
+    });
+    assert.equal(remSaveRes.ok, true);
+    assert.equal(capturedReminderBody?.remind_time, "09:15:30");
+    assert.equal(capturedReminderBody?.timezone, "Asia/Bangkok");
+
+    const syncRes = await syncRemindersFromServer();
+    assert.equal(syncRes.fromLocalSync, true);
+    assert.equal(syncRes.occurrences.length, 1);
+
+    await registerPushDevice({ platform: "ios", delivery_mode: "remote", push_token: "ExponentPushToken[abc]" });
+    assert.equal((await loadRegisteredPushDevice())?.push_token, "ExponentPushToken[abc]");
+
+    calledPaths.length = 0;
+    await logoutAccount();
+    assert.ok(calledPaths.some((p) => p.includes("/api/devices/deactivate")), "logoutAccount must deactivate registered push device");
+    assert.ok(calledPaths.some((p) => p.includes("/api/auth/logout")), "logoutAccount must call /api/auth/logout");
+    assert.equal(await loadRegisteredPushDevice(), null);
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+    __setStorageBackendsForTests(null);
+  }
+
+  // 6. Source checks for UI/iOS guards
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const mobileRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+  const itemDetailSrc = fs.readFileSync(path.join(mobileRoot, "app/item/[id].tsx"), "utf8");
+  assert.match(itemDetailSrc, /resolveMobileThumbUrl\(item\)/);
+  assert.match(itemDetailSrc, /payloadStatus === "failed"/);
+  assert.match(itemDetailSrc, /async function handleClearReminder[\s\S]{0,600}syncRemindersFromServer/);
+  assert.match(itemDetailSrc, /KeyboardAvoidingView/);
+
+  const homeSrc = fs.readFileSync(path.join(mobileRoot, "app/(tabs)/index.tsx"), "utf8");
+  assert.match(homeSrc, /resolveMobileThumbUrl\(item\)/);
+  assert.match(homeSrc, /inferMobileContentType\(item\)/);
+  assert.match(homeSrc, /matchesPlatformFilter\(item, platformFilter\)/);
+  assert.match(homeSrc, /KeyboardAvoidingView/);
+
+  const tabsLayoutSrc = fs.readFileSync(path.join(mobileRoot, "app/(tabs)/_layout.tsx"), "utf8");
+  assert.match(tabsLayoutSrc, /useSafeAreaInsets/);
+
+  const profileSrc = fs.readFileSync(path.join(mobileRoot, "app/(tabs)/profile.tsx"), "utf8");
+  assert.match(profileSrc, /Platform\.select\(\{\s*ios:\s*"Menlo"/);
+
+  const rootLayoutSrc = fs.readFileSync(path.join(mobileRoot, "app/_layout.tsx"), "utf8");
+  assert.match(rootLayoutSrc, /syncRemindersFromServer\(Array\.isArray\(ws\.reminders\)/);
+
+  const entPath = path.join(mobileRoot, "ios/SharelyJustSaveIt/SharelyJustSaveIt.entitlements");
+  if (fs.existsSync(entPath)) {
+    const entSrc = fs.readFileSync(entPath, "utf8");
+    assert.equal(entSrc.includes("aps-environment"), false, "SharelyJustSaveIt.entitlements must not include aps-environment for Free Apple ID builds");
+  }
+});
+
+test("21. SHARE_AND_DISPLAY_ISSUES_SUMMARY parity: title/caption cleaning, feed link warning, album dedup, video resolver, and Android ACTION_SEND plugin", async () => {
+  const {
+    deriveVideoEmbedInfo,
+    formatCardDisplayTitle,
+    formatPostDetailTitleAndDesc,
+    getPreviewMediaImages,
+    getSocialPostLinkWarning,
+    isGenericOrNoisyTitle,
+    resolveAllowlistedDirectVideoUrl,
+    resolveMobilePlayUrl,
+    stripBalancedCaptionQuotes,
+  } = await import("../itemHelpers.ts");
+  const { previewLinkUrl, resolveItemVideo } = await import("../api.ts");
+
+  // 1. (2.2 & 2.3) Clean generic/noisy titles, YouTube notification prefix, FB stats, and IG trailing `".`
+  assert.equal(stripBalancedCaptionQuotes('"คาเฟ่เปิดใหม่ย่านอารีย์".'), "คาเฟ่เปิดใหม่ย่านอารีย์");
+  assert.equal(isGenericOrNoisyTitle("Instagram", "instagram", "https://www.instagram.com/reel/ABC/"), true);
+  assert.equal(isGenericOrNoisyTitle("Watch trending videos for you | TikTok", "tiktok", "https://www.tiktok.com/@a/video/1"), true);
+
+  const ytFormatted = formatPostDetailTitleAndDesc({
+    url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    platform: "youtube",
+    title: "(584) สรุปเทคนิคจัดโต๊ะทำงาน 2026 - YouTube",
+    description: "คลิปสอนจัดโต๊ะทำงานสไตล์มินิมอล",
+  });
+  assert.equal(ytFormatted.displayTitle, "สรุปเทคนิคจัดโต๊ะทำงาน 2026");
+
+  const igFormatted = formatPostDetailTitleAndDesc({
+    url: "https://www.instagram.com/reel/DfzabQmDTBe/",
+    platform: "instagram",
+    title: "Instagram",
+    description: '1,240 likes, 18 comments - bkkcafe on November 15, 2026: "ร้านกาแฟเปิดใหม่สุขุมวิท! มุมถ่ายรูปสวยมาก\nเปิดทุกวัน 08:00-17:00".',
+  });
+  assert.equal(igFormatted.displayTitle, "ร้านกาแฟเปิดใหม่สุขุมวิท!");
+  assert.equal(igFormatted.displayDesc.endsWith('".'), false);
+
+  const fbDupFormatted = formatPostDetailTitleAndDesc({
+    url: "https://www.facebook.com/share/p/1CT7y7W7h3/",
+    platform: "facebook",
+    title: "1.2 หมื่น ยอดดู · 540 ความรู้สึก | แจกพิกัดที่เที่ยวหน้าหนาวเชียงใหม่ ครบจบในโพสต์เดียว | TravelTH | Facebook",
+    description: "แจกพิกัดที่เที่ยวหน้าหนาวเชียงใหม่ ครบจบในโพสต์เดียว",
+  });
+  assert.equal(fbDupFormatted.displayTitle, "แจกพิกัดที่เที่ยวหน้าหนาวเชียงใหม่ ครบจบในโพสต์เดียว");
+  assert.equal(formatCardDisplayTitle({ url: "https://x.com/u/status/1", title: "x.com", description: "อัปเดตข่าวเทคโนโลยีวันนี้!" }), "อัปเดตข่าวเทคโนโลยีวันนี้!");
+
+  // 2. (1.2 & 1.4) Feed link warning & generic shared title scrubbing
+  assert.ok(getSocialPostLinkWarning("https://www.instagram.com/"));
+  assert.ok(getSocialPostLinkWarning("https://www.facebook.com/"));
+  assert.ok(getSocialPostLinkWarning("https://www.tiktok.com/foryou"));
+  assert.equal(getSocialPostLinkWarning("https://www.instagram.com/reel/DYowlO2v1ww/"), null);
+  assert.equal(getSocialPostLinkWarning("https://www.facebook.com/share/p/1CT7y7W7h3/"), null);
+  assert.equal(getSocialPostLinkWarning("https://vt.tiktok.com/ZS12345/"), null);
+
+  const genericShared = extractSharedUrlFromIntent("Instagram https://www.instagram.com/reel/DYowlO2v1ww/");
+  assert.equal(genericShared?.url, "https://www.instagram.com/reel/DYowlO2v1ww/");
+  assert.equal(genericShared?.title, "", "Generic platform title in share text must be scrubbed to empty");
+
+  // 3. (3.1, 3.3, 3.4) Multi-image album deduplication, uncropped replacement, and non-video FB post.php rejection
+  const igSingleDedup = getPreviewMediaImages({
+    media_items: [
+      "https://scontent.cdninstagram.com/v/t51.29350-15/465001122_111_222_n.jpg?stp=c0.180.720.720a_dst-jpg_s640x640",
+      "https://instagram.fbkk5-1.fna.fbcdn.net/v/t51.29350-15/465001122_111_222_n.jpg?stp=dst-jpg_e35_p1080x1080",
+    ],
+  });
+  assert.equal(igSingleDedup.length, 1, "Same Meta asset across CDN hosts must deduplicate to 1 image");
+  assert.equal(igSingleDedup[0].includes("stp=c0.180"), false, "Uncropped Meta image must replace cropped og:image");
+
+  const legacyWebpDedup = getPreviewMediaImages({
+    media_items: [
+      "https://pnqjamwhgzqzvpiytcln.supabase.co/storage/v1/object/public/thumbnails/a1b2c3d4e5f600112233.webp",
+      "https://scontent.cdninstagram.com/v/t51.2885-15/999_111_222_n.jpg?stp=c0.120.640.640_s640x640",
+      "https://lookaside.fbsbx.com/lookaside/crawler/media/?media_id=123",
+    ],
+  });
+  assert.equal(legacyWebpDedup.length, 1, "Legacy cropped s640x640 and lookaside duplicates behind .webp cover must be filtered");
+
+  const fbAlbumVideoInfo = deriveVideoEmbedInfo({
+    url: "https://www.facebook.com/share/p/1CT7y7W7h3/",
+    platform: "facebook",
+    content_type: "post",
+    embed_url: "https://www.facebook.com/plugins/post.php?href=https%3A%2F%2Fwww.facebook.com%2Fshare%2Fp%2F1CT7y7W7h3%2F",
+  });
+  assert.equal(fbAlbumVideoInfo.embedUrl, null, "Facebook plugins/post.php photo album must not be treated as playable video");
+
+  // 4. (4.1 & 4.2) IG /reels/ & direct .mp4 video resolver
+  const igReelsVideoInfo = deriveVideoEmbedInfo({
+    url: "https://www.instagram.com/reels/DYowlO2v1ww/",
+    platform: "instagram",
+    content_type: "video",
+  });
+  assert.equal(igReelsVideoInfo.embedUrl, "https://www.instagram.com/reel/DYowlO2v1ww/embed");
+  assert.equal(igReelsVideoInfo.isVertical, true);
+  assert.equal(
+    resolveAllowlistedDirectVideoUrl("https://scontent.cdninstagram.com/v/t66.30100-16/reel.mp4"),
+    "https://scontent.cdninstagram.com/v/t66.30100-16/reel.mp4",
+  );
+  assert.equal(resolveAllowlistedDirectVideoUrl("https://evil.example.com/reel.mp4"), null);
+
+  const origFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("/api/items/it-reel-1/video")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            item_id: "it-reel-1",
+            video_url: "https://scontent.cdninstagram.com/v/t66.30100-16/1000_n.mp4",
+          }),
+        };
+      }
+      if (u.includes("/api/preview")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            url: "https://www.instagram.com/p/DfwmFqjEuGf/",
+            title: "อัลบั้มคาเฟ่เชียงใหม่",
+            platform: "instagram",
+            media_items: ["https://cdn.test/1.jpg", "https://cdn.test/2.jpg"],
+          }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    };
+    const vidRes = await resolveItemVideo("it-reel-1");
+    assert.equal(vidRes.ok, true);
+    assert.equal(vidRes.data?.video_url, "https://scontent.cdninstagram.com/v/t66.30100-16/1000_n.mp4");
+
+    const pvRes = await previewLinkUrl("https://www.instagram.com/p/DfwmFqjEuGf/");
+    assert.equal(pvRes.ok, true);
+    assert.equal(pvRes.data?.media_items?.length, 2);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  // 5. Android Share Intent Config Plugin verification
+  const { createRequire } = await import("node:module");
+  const req = createRequire(import.meta.url);
+  const pluginMod = req("../../plugins/withAndroidShareIntent.js");
+  const sampleMainActivity = `package com.woraset.justsaveit
+import android.os.Bundle
+import com.facebook.react.ReactActivity
+
+class MainActivity : ReactActivity() {
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(null)
+  }
+}
+`;
+  const injected = pluginMod.injectAndroidShareIntentIntoKotlin(sampleMainActivity);
+  assert.ok(injected.includes("intent = rewriteShareSendIntent(intent)"));
+  assert.ok(injected.includes("android.content.Intent.ACTION_SEND"));
+  assert.ok(injected.includes('Uri.parse("sharely://share")'));
+  assert.equal(
+    pluginMod.injectAndroidShareIntentIntoKotlin(injected),
+    injected,
+    "Android share intent injection must be idempotent",
+  );
+
+  // 6. Mobile Error 153 fix (resolveMobilePlayUrl) & always-visible Folder selector + inline creation in Quick Save
+  assert.equal(
+    resolveMobilePlayUrl(
+      { url: "https://youtu.be/oGllKRE1oFA" },
+      "https://www.youtube.com/embed/oGllKRE1oFA?feature=oembed",
+    ),
+    "https://www.youtube.com/watch?v=oGllKRE1oFA",
+    "YouTube embed URL must convert to watch?v= when opened in SFSafariViewController to prevent Error 153",
+  );
+  assert.equal(
+    resolveMobilePlayUrl(
+      { url: "https://www.youtube.com/shorts/dQw4w9WgXcQ" },
+      "https://www.youtube.com/embed/dQw4w9WgXcQ",
+    ),
+    "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+  );
+  assert.equal(
+    resolveMobilePlayUrl(
+      { url: "https://vimeo.com/123456" },
+      "https://player.vimeo.com/video/123456",
+    ),
+    "https://vimeo.com/123456",
+  );
+  assert.equal(
+    resolveMobilePlayUrl(
+      { url: "https://www.instagram.com/reels/DYowlO2v1ww/" },
+      "https://www.instagram.com/reel/DYowlO2v1ww/embed",
+      "https://scontent.cdninstagram.com/v/t66.30100-16/1000_n.mp4",
+    ),
+    "https://scontent.cdninstagram.com/v/t66.30100-16/1000_n.mp4",
+  );
+  assert.equal(
+    resolveMobilePlayUrl(
+      { url: "https://www.instagram.com/reels/DfzqfsjyQkb/" },
+      "https://www.instagram.com/reel/DfzqfsjyQkb/embed",
+      null,
+    ),
+    "https://www.instagram.com/reels/DfzqfsjyQkb/",
+  );
+  assert.equal(
+    resolveMobilePlayUrl(
+      { url: "https://www.tiktok.com/@creator/video/7703529186639547656" },
+      "https://www.tiktok.com/embed/v2/7703529186639547656",
+    ),
+    "https://www.tiktok.com/player/v1/7703529186639547656?autoplay=1&music_info=0&description=0&rel=0",
+  );
+
+  const fs = await import("node:fs");
+  const indexSrc = fs.readFileSync(new URL("../../app/(tabs)/index.tsx", import.meta.url), "utf8");
+  assert.equal(indexSrc.includes("folders.length > 0 ?"), false, "Quick Save folder section must remain visible when 0 folders exist");
+  assert.ok(indexSrc.includes("+ สร้างโฟลเดอร์ใหม่"));
+  assert.ok(indexSrc.includes("handleInlineCreateFolder"));
+
+  // 7. EXPO_PUBLIC_API_BASE_URL override (for local LAN backend testing) with safe Render fallback
+  const prevEnvBase = process.env.EXPO_PUBLIC_API_BASE_URL;
+  try {
+    process.env.EXPO_PUBLIC_API_BASE_URL = "http://10.44.163.236:8000/";
+    const apiLocalMod = await import(`../api.ts?case=local_${Date.now()}`);
+    assert.equal(apiLocalMod.API_BASE, "http://10.44.163.236:8000");
+
+    delete process.env.EXPO_PUBLIC_API_BASE_URL;
+    const apiDefaultMod = await import(`../api.ts?case=default_${Date.now()}`);
+    assert.equal(apiDefaultMod.API_BASE, "https://just-save-it-api.onrender.com");
+  } finally {
+    if (prevEnvBase === undefined) delete process.env.EXPO_PUBLIC_API_BASE_URL;
+    else process.env.EXPO_PUBLIC_API_BASE_URL = prevEnvBase;
+  }
 });

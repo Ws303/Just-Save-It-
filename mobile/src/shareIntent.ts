@@ -1,3 +1,5 @@
+import { scrubGenericPlatformTitle } from "./itemHelpers";
+
 export interface ExtractedSharePayload {
   url: string;
   title: string;
@@ -113,7 +115,7 @@ export function extractSharedUrlFromIntent(rawInput: string | null | undefined):
     if (/^https?:\/\//i.test(paramUrl)) {
       return {
         url: paramUrl,
-        title: paramTitle,
+        title: scrubGenericPlatformTitle(paramTitle, "", paramUrl),
         sourceText: trimmed,
       };
     }
@@ -125,7 +127,7 @@ export function extractSharedUrlFromIntent(rawInput: string | null | undefined):
         const remainderTitle = paramTitle || paramText.replace(matchInText[0], "").trim();
         return {
           url: extractedUrl,
-          title: remainderTitle,
+          title: scrubGenericPlatformTitle(remainderTitle, "", extractedUrl),
           sourceText: trimmed,
         };
       }
@@ -145,7 +147,7 @@ export function extractSharedUrlFromIntent(rawInput: string | null | undefined):
 
   return {
     url,
-    title: titleCandidate,
+    title: scrubGenericPlatformTitle(titleCandidate, "", url),
     sourceText: trimmed,
   };
 }

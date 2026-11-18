@@ -2,7 +2,9 @@ import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   Share,
@@ -28,9 +30,10 @@ import {
   logoutAccount,
   registerPushDevice,
   revokeMcpToken,
+  syncRemindersFromServer,
   type McpTokenRecord,
 } from "../../src/api";
-import { registerMobilePushToken, syncLocalRemindersWithOs } from "../../src/notifications";
+import { registerMobilePushToken } from "../../src/notifications";
 import {
   buildBoundedExportPayloadJson,
   getAuthGeneration,
@@ -138,8 +141,9 @@ export default function ProfileScreen() {
         if (isStale()) return;
         const ws = await fetchWorkspace();
         if (isStale()) return;
-        const synced = await syncLocalRemindersWithOs(ws.reminders);
+        const syncRes = await syncRemindersFromServer(ws.reminders);
         if (isStale()) return;
+        const synced = syncRes.syncedCount;
         if (apiRes.ok) {
           setPushStatus(
             reg.delivery_mode === "remote"
@@ -420,8 +424,11 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      <Modal visible={deleteOpen} animationType="fade" transparent>
-        <View style={styles.backdrop}>
+      <Modal visible={deleteOpen} animationType="fade" transparent onRequestClose={() => setDeleteOpen(false)}>
+        <KeyboardAvoidingView
+          style={styles.backdrop}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>ยืนยันการลบบัญชีถาวร</Text>
             <Text style={styles.modalBody}>
@@ -450,7 +457,7 @@ export default function ProfileScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </ScrollView>
   );
@@ -531,7 +538,11 @@ const styles = StyleSheet.create({
     borderColor: "#FECACA",
   },
   tokenSecretLabel: { fontSize: 12, fontWeight: "700", color: "#9B2C2C", marginBottom: 4 },
-  tokenSecretValue: { fontSize: 12, color: "#1C1917", fontFamily: "monospace" },
+  tokenSecretValue: {
+    fontSize: 12,
+    color: "#1C1917",
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+  },
   tokenRow: {
     flexDirection: "row",
     justifyContent: "space-between",

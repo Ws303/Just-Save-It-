@@ -1,9 +1,12 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
+  KeyboardAvoidingView,
   Linking,
+  Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,6 +14,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import * as WebBrowser from "expo-web-browser";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
 import {
@@ -19,13 +23,26 @@ import {
   deleteReminder,
   patchLinkItem,
   refreshLinkPreview,
+  resolveItemVideo,
   saveReminder,
   summarizeLinkItem,
+  syncRemindersFromServer,
 } from "../../src/api";
-import { syncLocalRemindersWithOs } from "../../src/notifications";
+import {
+  deriveVideoEmbedInfo,
+  formatPostDetailTitleAndDesc,
+  formatRemindTimeAndZone,
+  getPreviewMediaImages,
+  inferMobilePlatform,
+  isGenericOrNoisyTitle,
+  isPrivateOrRestrictedItem,
+  resolveMobilePlayUrl,
+  resolveMobileThumbUrl,
+} from "../../src/itemHelpers";
 import {
   getAuthGeneration,
   getMemoryCachedWorkspace,
+  upsertCachedLinkItem,
   type MobileLinkItem,
   type WorkflowStatus,
 } from "../../src/storage";
@@ -37,16 +54,24 @@ const STATUS_ITEMS: Array<{ id: WorkflowStatus; label: string }> = [
   { id: "archived", label: "เก็บถาวร" },
 ];
 
+const _autoEnrichedItemIds = new Set<string>();
+
 export default function ItemDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const cachedMatch = getMemoryCachedWorkspace()?.items.find((it) => it.id === id) || null;
   const [item, setItem] = useState<MobileLinkItem | null>(cachedMatch);
   const [note, setNote] = useState(cachedMatch?.note || cachedMatch?.user_note || "");
-  const [tagsText, setTagsText] = useState((cachedMatch?.tags || []).join(" "));
+  const [tagsText, setTagsText] = useState(
+    (cachedMatch?.tags || cachedMatch?.tag_names || []).join(" "),
+  );
   const [aiSummary, setAiSummary] = useState(cachedMatch?.ai_summary || "");
   const [loading, setLoading] = useState(!cachedMatch);
   const [busy, setBusy] = useState("");
+  const [carouselIdx, setCarouselIdx] = useState(0);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [videoLoading, setVideoLoading] = useState(false);
+  const [imageRatios, setImageRatios] = useState<Record<string, number>>({});
   const actionSeqRef = useRef(0);
 
   const loadItem = useCallback(async () => {
@@ -58,10 +83,40 @@ export default function ItemDetailScreen() {
       return;
     }
     if (res.ok && res.data) {
-      setItem(res.data);
-      setNote(res.data.note || res.data.user_note || "");
-      setTagsText((res.data.tags || []).join(" "));
-      setAiSummary(res.data.ai_summary || "");
+      const loaded = res.data;
+      setItem(loaded);
+      setNote(loaded.note || loaded.user_note || "");
+      setTagsText((loaded.tags || loaded.tag_names || []).join(" "));
+      setAiSummary(loaded.ai_summary || "");
+      void upsertCachedLinkItem(loaded).catch(() => {});
+
+      const itemId = String(loaded.id || id);
+      const hasGenericTitle = isGenericOrNoisyTitle(loaded.title, loaded.platform || "", loaded.url);
+      const hasCover = Boolean(resolveMobileThumbUrl(loaded));
+      const hasDesc = Boolean(String(loaded.description || "").trim());
+      const isYt =
+        /youtube\.com|youtu\.be/i.test(String(loaded.url || "")) ||
+        String(loaded.platform || "").toLowerCase() === "youtube";
+      const needsAutoEnrich =
+        !isPrivateOrRestrictedItem(loaded) &&
+        loaded.enrich_status !== "failed" &&
+        (!hasCover || !hasDesc || hasGenericTitle || (isYt && !loaded.embed_url));
+
+      if (itemId && needsAutoEnrich && !_autoEnrichedItemIds.has(itemId)) {
+        _autoEnrichedItemIds.add(itemId);
+        void refreshLinkPreview(itemId)
+          .then((pvRes) => {
+            if (getAuthGeneration() !== startGen) return;
+            const st = String(pvRes.data?.status || "").toLowerCase();
+            if (pvRes.ok && st !== "failed" && pvRes.data) {
+              const rawNext = (pvRes.data.item ?? pvRes.data) as MobileLinkItem;
+              const merged: MobileLinkItem = { ...loaded, ...rawNext, id: itemId };
+              setItem(merged);
+              void upsertCachedLinkItem(merged).catch(() => {});
+            }
+          })
+          .catch(() => {});
+      }
     }
     setLoading(false);
   }, [id]);
@@ -71,6 +126,81 @@ export default function ItemDetailScreen() {
       void loadItem();
     }, [loadItem]),
   );
+
+  const mediaImages = useMemo(() => getPreviewMediaImages(item), [item]);
+  const derivedVideo = useMemo(() => deriveVideoEmbedInfo(item), [item]);
+  const coverUri = resolveMobileThumbUrl(item) || mediaImages[0] || derivedVideo.thumbUrl || "";
+  const activeSlideIndex = mediaImages.length > 0 ? ((carouselIdx % mediaImages.length) + mediaImages.length) % mediaImages.length : 0;
+  const activeSlideUri = mediaImages[activeSlideIndex] || coverUri;
+
+  useEffect(() => {
+    setCarouselIdx(0);
+  }, [item?.id]);
+
+  useEffect(() => {
+    if (!activeSlideUri || imageRatios[activeSlideUri]) return;
+    let cancelled = false;
+    Image.getSize(
+      activeSlideUri,
+      (w, h) => {
+        if (cancelled || w <= 0 || h <= 0) return;
+        const clamped = Math.max(0.72, Math.min(1.91, w / h));
+        setImageRatios((prev) => (prev[activeSlideUri] ? prev : { ...prev, [activeSlideUri]: clamped }));
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSlideUri, imageRatios]);
+
+  function openExternalUrlSafe(rawInput?: string | null) {
+    const rawUrl = String(rawInput ?? item?.url ?? "").trim();
+    if (!/^https?:\/\//i.test(rawUrl)) {
+      Alert.alert("ลิงก์ไม่ปลอดภัย", "อนุญาตเปิดเฉพาะลิงก์ http หรือ https เท่านั้น");
+      return;
+    }
+    void Linking.openURL(rawUrl);
+  }
+
+  async function handlePlayVideo() {
+    if (!item || !derivedVideo.embedUrl || videoLoading) return;
+    const startGen = getAuthGeneration();
+    const isIg =
+      String(item.platform || "").toLowerCase() === "instagram" ||
+      /instagram\.com/i.test(String(item.url || ""));
+
+    let directMp4: string | null = null;
+    if (isIg && item.id) {
+      setVideoLoading(true);
+      try {
+        const res = await resolveItemVideo(item.id);
+        if (getAuthGeneration() !== startGen) {
+          setVideoLoading(false);
+          return;
+        }
+        if (res.ok && res.data?.video_url) {
+          directMp4 = res.data.video_url;
+        }
+      } catch {
+        // Fallback below
+      } finally {
+        setVideoLoading(false);
+      }
+    }
+
+    const targetPlayUrl = resolveMobilePlayUrl(item, derivedVideo.embedUrl, directMp4);
+    if (!targetPlayUrl) return;
+
+    try {
+      await WebBrowser.openBrowserAsync(targetPlayUrl, {
+        presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET,
+        controlsColor: "#9B2C2C",
+      });
+    } catch {
+      openExternalUrlSafe(targetPlayUrl);
+    }
+  }
 
   async function handleStatusChange(nextStatus: WorkflowStatus) {
     if (!item) return;
@@ -87,18 +217,31 @@ export default function ItemDetailScreen() {
   async function handleRefreshPreview() {
     if (!item) return;
     const targetId = item.id;
+    const prevSnapshot = item;
     await runGuardedBusyAction(
       actionSeqRef,
       (isBusy) => setBusy(isBusy ? "preview" : ""),
       async (isStale) => {
         const res = await refreshLinkPreview(targetId);
         if (isStale()) return;
-        if (res.ok && res.data) {
-          const nextItem = (res.data as { item?: MobileLinkItem })?.item ?? res.data;
-          setItem(nextItem);
+        const payloadStatus = String(res.data?.status || "").toLowerCase();
+        if (!res.ok || payloadStatus === "failed") {
+          const errMsg =
+            (typeof res.data?.error === "string" && res.data.error) ||
+            res.error ||
+            "กรุณาลองใหม่";
+          Alert.alert("รีเฟรชพรีวิวไม่สำเร็จ", errMsg);
+          return;
+        }
+        if (res.data) {
+          const rawNext = (res.data.item ?? res.data) as MobileLinkItem;
+          const mergedItem: MobileLinkItem = { ...prevSnapshot, ...rawNext, id: targetId };
+          setItem(mergedItem);
+          setCarouselIdx(0);
+          await upsertCachedLinkItem(mergedItem).catch(() => {});
           Alert.alert("รีเฟรชพรีวิวสำเร็จ");
         } else {
-          Alert.alert("รีเฟรชพรีวิวไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+          Alert.alert("รีเฟรชพรีวิวไม่สำเร็จ", "ไม่พบข้อมูลพรีวิวจากเซิร์ฟเวอร์");
         }
       },
     );
@@ -107,6 +250,7 @@ export default function ItemDetailScreen() {
   async function handleAiSummarize() {
     if (!item) return;
     const targetId = item.id;
+    const prevSnapshot = item;
     await runGuardedBusyAction(
       actionSeqRef,
       (isBusy) => setBusy(isBusy ? "ai" : ""),
@@ -115,7 +259,22 @@ export default function ItemDetailScreen() {
         if (isStale()) return;
         if (res.ok && res.data) {
           const summary = typeof res.data.summary_th === "string" ? res.data.summary_th : "";
-          if (summary) setAiSummary(summary);
+          const suggested = Array.isArray(res.data.suggested_tags)
+            ? res.data.suggested_tags.map((t) => String(t).replace(/^#/, "").trim()).filter(Boolean)
+            : [];
+          if (summary) {
+            setAiSummary(summary);
+          }
+          const updatedItem: MobileLinkItem = {
+            ...prevSnapshot,
+            ...(summary ? { ai_summary: summary } : {}),
+            ...(suggested.length ? { tags: suggested, tag_names: suggested } : {}),
+          };
+          setItem(updatedItem);
+          if (suggested.length && !tagsText.trim()) {
+            setTagsText(suggested.join(" "));
+          }
+          await upsertCachedLinkItem(updatedItem).catch(() => {});
         } else {
           Alert.alert("สรุปด้วย AI ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
         }
@@ -152,29 +311,43 @@ export default function ItemDetailScreen() {
   async function handleQuickReminder(hoursAhead: number, repeatDays: number | null) {
     if (!item) return;
     const targetId = item.id;
+    const itemSt = String(item.status || "inbox").toLowerCase();
     await runGuardedBusyAction(
       actionSeqRef,
       (isBusy) => setBusy(isBusy ? "rem" : ""),
       async (isStale) => {
+        if (itemSt === "done" || itemSt === "read" || itemSt === "archived") {
+          Alert.alert(
+            "ตั้งเตือนไม่ได้",
+            "ลิงก์นี้อยู่ในสถานะอ่านแล้วหรือเก็บถาวร กรุณาเปลี่ยนสถานะเป็นกล่องรับหรือรออ่านก่อนตั้งเตือน",
+          );
+          return;
+        }
         const dt = new Date(Date.now() + hoursAhead * 3600 * 1000);
         const iso = dt.toISOString();
+        const { remind_time, timezone } = formatRemindTimeAndZone(dt);
         const res = await saveReminder(targetId, {
           schedule_type: repeatDays ? "every_n_days" : "once",
           remind_at: iso,
+          remind_time,
+          timezone,
           repeat_every_days: repeatDays,
         });
         if (isStale()) return;
-        const remRes = await apiFetch<{ reminders?: MobileLinkItem[] }>("/api/reminders");
-        if (isStale()) return;
-        if (Array.isArray(remRes.data?.reminders)) {
-          await syncLocalRemindersWithOs(remRes.data.reminders);
+        if (!res.ok) {
+          if (res.status === 409) {
+            Alert.alert(
+              "ตั้งเตือนไม่ได้",
+              "ไม่สามารถตั้งเตือนให้ลิงก์ที่อ่านแล้วหรือเก็บถาวรได้",
+            );
+          } else {
+            Alert.alert("ตั้งเตือนไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+          }
+          return;
         }
+        await syncRemindersFromServer();
         if (isStale()) return;
-        if (res.ok) {
-          Alert.alert("ตั้งเวลาเตือนความจำแล้ว", `แจ้งเตือนเมื่อ ${dt.toLocaleString("th-TH")}`);
-        } else {
-          Alert.alert("ตั้งเตือนไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-        }
+        Alert.alert("ตั้งเวลาเตือนความจำแล้ว", `แจ้งเตือนเมื่อ ${dt.toLocaleString("th-TH")}`);
       },
     );
   }
@@ -186,7 +359,13 @@ export default function ItemDetailScreen() {
       actionSeqRef,
       (isBusy) => setBusy(isBusy ? "rem" : ""),
       async (isStale) => {
-        await deleteReminder(targetId);
+        const res = await deleteReminder(targetId);
+        if (isStale()) return;
+        if (!res.ok) {
+          Alert.alert("ปิดการเตือนไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+          return;
+        }
+        await syncRemindersFromServer();
         if (isStale()) return;
         Alert.alert("ลบการแจ้งเตือนแล้ว");
       },
@@ -229,120 +408,255 @@ export default function ItemDetailScreen() {
   }
 
   const currentStatus = String(item.status || "inbox").toLowerCase();
+  const isPrivate = isPrivateOrRestrictedItem(item);
+  const platBadge = inferMobilePlatform(item);
+  const { displayTitle, displayDesc } = formatPostDetailTitleAndDesc(item);
+  const activeAspect =
+    (activeSlideUri && imageRatios[activeSlideUri]) ||
+    (derivedVideo.embedUrl && derivedVideo.isVertical ? 0.8 : 1.58);
+  const totalSlides = mediaImages.length;
+  const isLastSlide = totalSlides >= 2 && activeSlideIndex === totalSlides - 1;
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <View style={styles.card}>
-        {item.thumbnail_url ? (
-          <Image source={{ uri: item.thumbnail_url }} style={styles.cover} resizeMode="cover" />
-        ) : null}
-        <View style={styles.cardBody}>
-          <Text style={styles.platformBadge}>{item.platform || "web"}</Text>
-          <Text style={styles.title}>{item.title || item.url}</Text>
-          <Text style={styles.urlText} numberOfLines={2}>
-            {item.url}
-          </Text>
-          <View style={styles.actionRow}>
+    <KeyboardAvoidingView
+      style={styles.root}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 88 : 0}
+    >
+      <ScrollView style={styles.root} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <View style={styles.card}>
+          {derivedVideo.embedUrl ? (
             <Pressable
-              style={styles.primaryBtn}
-              onPress={() => {
-                const rawUrl = String(item.url || "").trim();
-                if (!/^https?:\/\//i.test(rawUrl)) {
-                  Alert.alert("ลิงก์ไม่ปลอดภัย", "อนุญาตเปิดเฉพาะลิงก์ http หรือ https เท่านั้น");
-                  return;
-                }
-                void Linking.openURL(rawUrl);
-              }}
+              style={[styles.mediaContainer, { aspectRatio: activeAspect }]}
+              onPress={() => void handlePlayVideo()}
             >
-              <Text style={styles.primaryBtnText}>เปิดลิงก์ ↗</Text>
+              {coverUri ? (
+                <Image source={{ uri: coverUri }} style={styles.mediaFill} resizeMode="cover" />
+              ) : (
+                <View style={styles.videoFallbackPoster} />
+              )}
+              <View style={styles.playBtnCircle}>
+                {videoLoading ? (
+                  <ActivityIndicator color="#FDFBF7" />
+                ) : (
+                  <Text style={styles.playBtnIcon}>▶</Text>
+                )}
+              </View>
+              <View style={styles.mediaBadge}>
+                <Text style={styles.mediaBadgeText}>
+                  {derivedVideo.platform || platBadge || "Video"} ·{" "}
+                  {videoLoading ? "กำลังเตรียมคลิป..." : "แตะเพื่อเล่น"}
+                </Text>
+              </View>
             </Pressable>
-            <Pressable style={styles.secondaryBtn} onPress={() => void handleRefreshPreview()}>
-              <Text style={styles.secondaryBtnText}>
-                {busy === "preview" ? "กำลังดึง..." : "รีเฟรชพรีวิว"}
+          ) : totalSlides >= 2 ? (
+            <View style={[styles.mediaContainer, { aspectRatio: activeAspect }]}>
+              <Pressable style={styles.mediaFill} onPress={() => setLightboxOpen(true)}>
+                <Image source={{ uri: activeSlideUri }} style={styles.mediaFill} resizeMode="cover" />
+              </Pressable>
+              <Pressable
+                style={[styles.carouselArrow, styles.carouselArrowLeft]}
+                hitSlop={8}
+                onPress={() => setCarouselIdx((prev) => (prev - 1 + totalSlides) % totalSlides)}
+              >
+                <Text style={styles.carouselArrowText}>‹</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.carouselArrow, styles.carouselArrowRight]}
+                hitSlop={8}
+                onPress={() => setCarouselIdx((prev) => (prev + 1) % totalSlides)}
+              >
+                <Text style={styles.carouselArrowText}>›</Text>
+              </Pressable>
+              <View style={styles.mediaBadge}>
+                <Text style={styles.mediaBadgeText}>
+                  {activeSlideIndex + 1}/{totalSlides}
+                </Text>
+              </View>
+              <Pressable style={styles.zoomBtn} onPress={() => setLightboxOpen(true)}>
+                <Text style={styles.zoomBtnText}>⤢ ขยาย</Text>
+              </Pressable>
+              {isLastSlide ? (
+                <Pressable style={styles.moreInPostBtn} onPress={() => openExternalUrlSafe(item.url)}>
+                  <Text style={styles.moreInPostText}>ดูรูปทั้งหมดในโพสต์ต้นฉบับ ↗</Text>
+                </Pressable>
+              ) : null}
+              <View style={styles.dotsRow}>
+                {mediaImages.map((_, idx) => (
+                  <Pressable
+                    key={`dot-${idx}`}
+                    hitSlop={6}
+                    onPress={() => setCarouselIdx(idx)}
+                    style={[styles.dot, idx === activeSlideIndex && styles.dotActive]}
+                  />
+                ))}
+              </View>
+            </View>
+          ) : coverUri ? (
+            <View style={[styles.mediaContainer, { aspectRatio: activeAspect }]}>
+              <Pressable style={styles.mediaFill} onPress={() => setLightboxOpen(true)}>
+                <Image source={{ uri: coverUri }} style={styles.mediaFill} resizeMode="cover" />
+              </Pressable>
+              <Pressable style={styles.zoomBtn} onPress={() => setLightboxOpen(true)}>
+                <Text style={styles.zoomBtnText}>⤢ ขยาย</Text>
+              </Pressable>
+            </View>
+          ) : isPrivate ? (
+            <View style={styles.privateBox}>
+              <Text style={styles.privateTitle}>ไม่สามารถแสดงตัวอย่างได้</Text>
+              <Text style={styles.privateSub}>
+                โพสต์นี้เป็นแบบส่วนตัว (Private) หรือถูกจำกัดสิทธิ์การเข้าถึง กรุณากดเปิดลิงก์ต้นฉบับเพื่อดูเนื้อหา
+              </Text>
+            </View>
+          ) : null}
+
+          <View style={styles.cardBody}>
+            <Text style={styles.platformBadge}>{platBadge || "web"}</Text>
+            <Text style={styles.title}>{displayTitle || item.title || item.url}</Text>
+            {displayDesc ? (
+              <Text style={styles.descText} numberOfLines={6}>
+                {displayDesc}
+              </Text>
+            ) : null}
+            <Text style={styles.urlText} numberOfLines={2}>
+              {item.url}
+            </Text>
+            <View style={styles.actionRow}>
+              <Pressable style={styles.primaryBtn} onPress={() => openExternalUrlSafe(item.url)}>
+                <Text style={styles.primaryBtnText}>เปิดลิงก์ ↗</Text>
+              </Pressable>
+              <Pressable style={styles.secondaryBtn} onPress={() => void handleRefreshPreview()}>
+                <Text style={styles.secondaryBtnText}>
+                  {busy === "preview" ? "กำลังดึง..." : "รีเฟรชพรีวิว"}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionTitle}>สถานะการอ่าน (4 ขั้น)</Text>
+          <View style={styles.chipRow}>
+            {STATUS_ITEMS.map((st) => {
+              const active = currentStatus === st.id || (st.id === "done" && currentStatus === "read");
+              return (
+                <Pressable
+                  key={st.id}
+                  style={[styles.chip, active && styles.chipActive]}
+                  onPress={() => void handleStatusChange(st.id)}
+                >
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{st.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
+        <View style={styles.sectionCard}>
+          <View style={styles.rowBetween}>
+            <Text style={styles.sectionTitle}>✨ สรุปด้วย AI</Text>
+            <Pressable style={styles.smallPrimaryBtn} onPress={() => void handleAiSummarize()}>
+              <Text style={styles.smallPrimaryBtnText}>
+                {busy === "ai" ? "กำลังสรุป..." : "สรุปเนื้อหา"}
               </Text>
             </Pressable>
           </View>
+          <Text style={styles.summaryText}>
+            {aiSummary || "แตะ 'สรุปเนื้อหา' เพื่อให้ AI สรุปสาระสำคัญจากลิงก์นี้เป็นภาษาไทย"}
+          </Text>
         </View>
-      </View>
 
-      <View style={styles.sectionCard}>
-        <Text style={styles.sectionTitle}>สถานะการอ่าน (4 ขั้น)</Text>
-        <View style={styles.chipRow}>
-          {STATUS_ITEMS.map((st) => {
-            const active = currentStatus === st.id || (st.id === "done" && currentStatus === "read");
-            return (
-              <Pressable
-                key={st.id}
-                style={[styles.chip, active && styles.chipActive]}
-                onPress={() => void handleStatusChange(st.id)}
-              >
-                <Text style={[styles.chipText, active && styles.chipTextActive]}>{st.label}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </View>
-
-      <View style={styles.sectionCard}>
-        <View style={styles.rowBetween}>
-          <Text style={styles.sectionTitle}>✨ สรุปด้วย AI</Text>
-          <Pressable style={styles.smallPrimaryBtn} onPress={() => void handleAiSummarize()}>
-            <Text style={styles.smallPrimaryBtnText}>
-              {busy === "ai" ? "กำลังสรุป..." : "สรุปเนื้อหา"}
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionTitle}>โน้ตและแท็ก</Text>
+          <TextInput
+            style={[styles.input, styles.textArea]}
+            placeholder="บันทึกส่วนตัว..."
+            placeholderTextColor="#A8A29E"
+            multiline
+            value={note}
+            onChangeText={setNote}
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="#แท็ก คั่นด้วยเว้นวรรค"
+            placeholderTextColor="#A8A29E"
+            value={tagsText}
+            onChangeText={setTagsText}
+          />
+          <Pressable style={styles.primaryBtn} onPress={() => void handleSaveEdits()}>
+            <Text style={styles.primaryBtnText}>
+              {busy === "save" ? "กำลังบันทึก..." : "บันทึกโน้ตและแท็ก"}
             </Text>
           </Pressable>
         </View>
-        <Text style={styles.summaryText}>
-          {aiSummary || "แตะ 'สรุปเนื้อหา' เพื่อให้ AI สรุปสาระสำคัญจากลิงก์นี้เป็นภาษาไทย"}
-        </Text>
-      </View>
 
-      <View style={styles.sectionCard}>
-        <Text style={styles.sectionTitle}>โน้ตและแท็ก</Text>
-        <TextInput
-          style={[styles.input, styles.textArea]}
-          placeholder="บันทึกส่วนตัว..."
-          placeholderTextColor="#A8A29E"
-          multiline
-          value={note}
-          onChangeText={setNote}
-        />
-        <TextInput
-          style={styles.input}
-          placeholder="#แท็ก คั่นด้วยเว้นวรรค"
-          placeholderTextColor="#A8A29E"
-          value={tagsText}
-          onChangeText={setTagsText}
-        />
-        <Pressable style={styles.primaryBtn} onPress={() => void handleSaveEdits()}>
-          <Text style={styles.primaryBtnText}>
-            {busy === "save" ? "กำลังบันทึก..." : "บันทึกโน้ตและแท็ก"}
-          </Text>
-        </Pressable>
-      </View>
-
-      <View style={styles.sectionCard}>
-        <Text style={styles.sectionTitle}>🔔 เตือนความจำ</Text>
-        <View style={styles.chipRow}>
-          <Pressable style={styles.chip} onPress={() => void handleQuickReminder(2, null)}>
-            <Text style={styles.chipText}>อีก 2 ชม.</Text>
-          </Pressable>
-          <Pressable style={styles.chip} onPress={() => void handleQuickReminder(24, null)}>
-            <Text style={styles.chipText}>พรุ่งนี้เวลานี้</Text>
-          </Pressable>
-          <Pressable style={styles.chip} onPress={() => void handleQuickReminder(72, 3)}>
-            <Text style={styles.chipText}>ทวนทุก 3 วัน</Text>
-          </Pressable>
-          <Pressable style={styles.chip} onPress={() => void handleClearReminder()}>
-            <Text style={styles.chipText}>ปิดการเตือน</Text>
-          </Pressable>
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionTitle}>🔔 เตือนความจำ</Text>
+          <View style={styles.chipRow}>
+            <Pressable style={styles.chip} onPress={() => void handleQuickReminder(2, null)}>
+              <Text style={styles.chipText}>อีก 2 ชม.</Text>
+            </Pressable>
+            <Pressable style={styles.chip} onPress={() => void handleQuickReminder(24, null)}>
+              <Text style={styles.chipText}>พรุ่งนี้เวลานี้</Text>
+            </Pressable>
+            <Pressable style={styles.chip} onPress={() => void handleQuickReminder(72, 3)}>
+              <Text style={styles.chipText}>ทวนทุก 3 วัน</Text>
+            </Pressable>
+            <Pressable style={styles.chip} onPress={() => void handleClearReminder()}>
+              <Text style={styles.chipText}>ปิดการเตือน</Text>
+            </Pressable>
+          </View>
         </View>
-      </View>
 
-      <Pressable style={styles.deleteBtn} onPress={confirmDelete}>
-        <Text style={styles.deleteBtnText}>ลบลิงก์นี้ออก</Text>
-      </Pressable>
-    </ScrollView>
+        <Pressable style={styles.deleteBtn} onPress={confirmDelete}>
+          <Text style={styles.deleteBtnText}>ลบลิงก์นี้ออก</Text>
+        </Pressable>
+      </ScrollView>
+
+      <Modal
+        visible={lightboxOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setLightboxOpen(false)}
+      >
+        <View style={styles.lightboxBackdrop}>
+          <View style={styles.lightboxTopBar}>
+            <Text style={styles.lightboxCounter}>
+              {totalSlides > 1 ? `${activeSlideIndex + 1} / ${totalSlides}` : "1 / 1"}
+            </Text>
+            <Pressable style={styles.lightboxCloseBtn} onPress={() => setLightboxOpen(false)}>
+              <Text style={styles.lightboxCloseText}>✕ ปิด</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.lightboxStage}>
+            {activeSlideUri ? (
+              <Image
+                source={{ uri: activeSlideUri }}
+                style={styles.lightboxImage}
+                resizeMode="contain"
+              />
+            ) : null}
+            {totalSlides > 1 ? (
+              <>
+                <Pressable
+                  style={[styles.carouselArrow, styles.carouselArrowLeft]}
+                  onPress={() => setCarouselIdx((prev) => (prev - 1 + totalSlides) % totalSlides)}
+                >
+                  <Text style={styles.carouselArrowText}>‹</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.carouselArrow, styles.carouselArrowRight]}
+                  onPress={() => setCarouselIdx((prev) => (prev + 1) % totalSlides)}
+                >
+                  <Text style={styles.carouselArrowText}>›</Text>
+                </Pressable>
+              </>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -358,7 +672,125 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#EAE4DB",
   },
-  cover: { width: "100%", height: 190, backgroundColor: "#EAE4DB" },
+  mediaContainer: {
+    width: "100%",
+    backgroundColor: "#1C1917",
+    position: "relative",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  mediaFill: {
+    width: "100%",
+    height: "100%",
+  },
+  videoFallbackPoster: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#292524",
+  },
+  playBtnCircle: {
+    position: "absolute",
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: "rgba(155, 44, 44, 0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#FDFBF7",
+  },
+  playBtnIcon: {
+    color: "#FDFBF7",
+    fontSize: 22,
+    fontWeight: "800",
+    marginLeft: 3,
+  },
+  mediaBadge: {
+    position: "absolute",
+    top: 10,
+    left: 10,
+    backgroundColor: "rgba(28, 25, 23, 0.78)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  mediaBadgeText: {
+    color: "#FDFBF7",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  zoomBtn: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    backgroundColor: "rgba(28, 25, 23, 0.78)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  zoomBtnText: {
+    color: "#FDFBF7",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  carouselArrow: {
+    position: "absolute",
+    top: "42%",
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(28, 25, 23, 0.75)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  carouselArrowLeft: { left: 10 },
+  carouselArrowRight: { right: 10 },
+  carouselArrowText: {
+    color: "#FFFFFF",
+    fontSize: 22,
+    fontWeight: "700",
+    lineHeight: 24,
+  },
+  moreInPostBtn: {
+    position: "absolute",
+    bottom: 28,
+    backgroundColor: "rgba(155, 44, 44, 0.92)",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  moreInPostText: {
+    color: "#FDFBF7",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  dotsRow: {
+    position: "absolute",
+    bottom: 10,
+    flexDirection: "row",
+    gap: 6,
+    alignItems: "center",
+  },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: "rgba(255,255,255,0.45)",
+  },
+  dotActive: {
+    width: 18,
+    backgroundColor: "#FDFBF7",
+  },
+  privateBox: {
+    backgroundColor: "#F3EFE6",
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#EAE4DB",
+    gap: 4,
+  },
+  privateTitle: { fontSize: 13, fontWeight: "700", color: "#9B2C2C" },
+  privateSub: { fontSize: 12, color: "#57534E", lineHeight: 18 },
   cardBody: { padding: 16, gap: 8 },
   platformBadge: {
     alignSelf: "flex-start",
@@ -372,6 +804,7 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   title: { fontSize: 18, fontWeight: "800", color: "#1C1917" },
+  descText: { fontSize: 13, color: "#44403C", lineHeight: 19 },
   urlText: { fontSize: 12, color: "#78716C" },
   actionRow: { flexDirection: "row", gap: 10, marginTop: 6 },
   primaryBtn: {
@@ -428,4 +861,42 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   deleteBtnText: { color: "#B91C1C", fontWeight: "700", fontSize: 15 },
+  lightboxBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(12, 10, 9, 0.95)",
+    justifyContent: "space-between",
+    paddingVertical: 48,
+  },
+  lightboxTopBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+  },
+  lightboxCounter: {
+    color: "#FAFAF9",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  lightboxCloseBtn: {
+    backgroundColor: "rgba(255,255,255,0.16)",
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 999,
+  },
+  lightboxCloseText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  lightboxStage: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  lightboxImage: {
+    width: "100%",
+    height: "100%",
+  },
 });

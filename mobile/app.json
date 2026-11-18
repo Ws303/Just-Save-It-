@@ -70,7 +70,10 @@
           "color": "#BA0E1A"
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      "./plugins/withAndroidShareIntent",
+      "expo-asset",
+      "expo-font"
     ],
     "extra": {
       "apiBaseUrl": "https://just-save-it-api.onrender.com",

@@ -3,7 +3,9 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -155,8 +157,11 @@ export default function FoldersScreen() {
         />
       )}
 
-      <Modal visible={modalOpen} animationType="fade" transparent>
-        <View style={styles.backdrop}>
+      <Modal visible={modalOpen} animationType="fade" transparent onRequestClose={() => setModalOpen(false)}>
+        <KeyboardAvoidingView
+          style={styles.backdrop}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>+ สร้างโฟลเดอร์ใหม่</Text>
             <Text style={styles.label}>เลือกไอคอน</Text>
@@ -192,7 +197,7 @@ export default function FoldersScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
