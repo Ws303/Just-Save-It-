@@ -1,5 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const frontendRoot = path.resolve(__dirname, "..");
 
 import { resolveMediaThumbUrl } from "../src/components/icons.js";
 import {
@@ -141,7 +147,7 @@ test("Desktop PC views (Cherry split auth, 2-col home, 2-card link detail) & inv
   store.state.ui.viewportMode = "web";
   const authHtml = renderWebView(store.state);
   assert.match(authHtml, /class="pc-auth-shell"/);
-  assert.match(authHtml, /Sharely/);
+  assert.match(authHtml, /Sherlink/);
 
   store.resetSeed();
   store.state.data.user.isAuthenticated = true;
@@ -344,7 +350,7 @@ test("Web Push helper decodes VAPID key, deactivates safely, and Profile renders
   const secHtml = renderSecurityBody(store.state);
   assert.match(secHtml, /data-copy-extension-token="1"/);
   assert.match(secHtml, /data-action="connect-extension"/);
-  assert.match(secHtml, /data-action="create-mcp-token"/);
+  assert.doesNotMatch(secHtml, /data-action="create-mcp-token"/);
   assert.match(secHtml, /data-action="open-delete-account"/);
   const profHtml = renderProfileBody(store.state);
   assert.match(profHtml, /data-toggle-notif-setting="1"/);
@@ -370,8 +376,11 @@ test("Phase C: 4-state workflow status mapping, platform/contentType filtering, 
   assert.equal(filterLinks(sampleLinks, "", "todo").length, 1);
 
   const menuHtml = renderPostMenuAndDialog({ activeSheet: { type: "postMenu", linkId: "1" } }, sampleLinks);
-  assert.match(menuHtml, /data-refresh-preview-sheet="1"/);
-  assert.match(menuHtml, /data-set-workflow-status="todo"/);
+  assert.match(menuHtml, /data-open-link="1"/);
+  assert.match(menuHtml, /data-toggle-status-sheet="1"/);
+  assert.match(menuHtml, /data-trigger-ai-sheet="1"/);
+  assert.doesNotMatch(menuHtml, /data-refresh-preview-sheet="1"/);
+  assert.doesNotMatch(menuHtml, /data-set-workflow-status=/);
 });
 
 test("v2 Polish: YouTube URL derives playable embed + thumbnail, Link Detail shows description, and AI summarize keeps Note isolated", async () => {
@@ -739,4 +748,117 @@ test("C3 WebApp SWR user-scoped cache, /api/workspace hydration, optimistic crea
     globalThis.fetch = origFetch;
     globalThis.localStorage = origLocalStorage;
   }
+});
+
+test("Sherlink Batch 2: branding, iOS PWA shell, simultaneous Description + AI summary, Prev/Next CSS, custom cover reset & Discord invites", async () => {
+  const { resolveRuntimeApiConfig } = await import("../src/state/store.js");
+  const { renderLinkDetailScreen, resolveDetailNavIds } = await import("../src/screens/links.js");
+  const { renderFolderSheets } = await import("../src/screens/folders.js");
+  const { renderPcFoldersGridInner } = await import("../src/screens/webExtension.js");
+  const { buildInviteCreatePayload } = await import("../src/services/apiClient.js");
+
+  // 1) SHERLINK_CONFIG + legacy SHARELY_CONFIG fallback
+  const cfgSherlink = resolveRuntimeApiConfig({
+    location: { hostname: "sherlink.onrender.com", protocol: "https:", origin: "https://sherlink.onrender.com" },
+    SHERLINK_CONFIG: { apiBaseUrl: "https://api.sherlink.example.com" },
+  });
+  assert.equal(cfgSherlink.baseUrl, "https://api.sherlink.example.com");
+
+  const cfgFallback = resolveRuntimeApiConfig({
+    location: { hostname: "sherlink.onrender.com", protocol: "https:", origin: "https://sherlink.onrender.com" },
+    SHARELY_CONFIG: { apiBaseUrl: "https://legacy.sharely.example.com" },
+  });
+  assert.equal(cfgFallback.baseUrl, "https://legacy.sharely.example.com");
+
+  // 2) iOS PWA meta tags & Sherlink manifest
+  const indexHtml = fs.readFileSync(path.join(frontendRoot, "index.html"), "utf8");
+  assert.match(indexHtml, /viewport-fit=cover/);
+  assert.match(indexHtml, /name="apple-mobile-web-app-capable" content="yes"/);
+  assert.match(indexHtml, /name="apple-mobile-web-app-title" content="Sherlink"/);
+  assert.match(indexHtml, /apple-touch-icon\.png/);
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(frontendRoot, "manifest.webmanifest"), "utf8"));
+  assert.equal(manifest.name, "Sherlink");
+  assert.equal(manifest.short_name, "Sherlink");
+  assert.ok(manifest.icons.some((ic) => String(ic.src).includes("sherlink-icon-192.png")));
+
+  // 3) Description + AI Summary coexist on Mobile & Desktop with Read More / Collapse toggle
+  store.resetSeed();
+  store.state.ui.descExpanded = false;
+  const longDescItem = {
+    id: "yt-desc-coexist",
+    folderId: store.state.data.folders[0].id,
+    url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    title: "Long Description Video",
+    description: "บทที่ 1 การเริ่มต้นชงกาแฟดริปอย่างละเอียด\n".repeat(12),
+    aiSummary: "• สรุปจุดสำคัญจากคลิปโดย AI",
+    platform: "YouTube",
+    tags: [],
+  };
+  store.state.data.links.unshift(longDescItem);
+  store.state.ui.activeLinkId = longDescItem.id;
+  store.state.ui.detailNavIds = [longDescItem.id, store.state.data.links[1].id];
+  store.state.ui.screen = "linkDetail";
+  const mobileHtml = renderLinkDetailScreen(store.state);
+  assert.match(mobileHtml, /คำอธิบายจากโพสต์ต้นฉบับ/);
+  assert.match(mobileHtml, /อ่านเพิ่มเติม/);
+  assert.match(mobileHtml, /สรุปจากต้นฉบับ/);
+  assert.match(mobileHtml, /สรุปจุดสำคัญจากคลิปโดย AI/);
+  assert.match(mobileHtml, /class="figma-detail-desc-block clamped"/);
+
+  store.state.ui.descExpanded = true;
+  store.state.ui.viewportMode = "web";
+  store.state.ui.pcSection = "linkDetail";
+  const desktopHtml = renderWebView(store.state);
+  assert.match(desktopHtml, /คำอธิบายจากโพสต์ต้นฉบับ/);
+  assert.match(desktopHtml, /ย่อข้อความ/);
+  assert.match(desktopHtml, /สรุปจุดสำคัญจากคลิปโดย AI/);
+  assert.deepEqual(resolveDetailNavIds(store.state).slice(0, 2), [longDescItem.id, store.state.data.links[1].id]);
+
+  // 4) Desktop Prev/Next arrow NOT hidden at <=1279px
+  const appCss = fs.readFileSync(path.join(frontendRoot, "styles", "app.css"), "utf8");
+  const media1279 = appCss.slice(appCss.lastIndexOf("@media (max-width: 1279px)"), appCss.lastIndexOf("@media (max-width: 1023px)"));
+  assert.doesNotMatch(media1279, /\.pc-detail-arrow\s*\{\s*display:\s*none;/);
+
+  // 5) Discord invite options & custom cover reset payload
+  assert.deepEqual(buildInviteCreatePayload({ role: "viewer", expiry: "30m", maxUses: "5" }), {
+    role: "viewer",
+    expires_in_minutes: 30,
+    max_uses: 5,
+  });
+  assert.deepEqual(buildInviteCreatePayload({ role: "editor", expiry: "never" }), {
+    role: "editor",
+    never_expires: true,
+  });
+
+  store.state.ui.activeSheet = { type: "invite", folderId: store.state.data.folders[0].id };
+  const shareHtml = renderFolderSheets(store.state);
+  assert.match(shareHtml, /data-invite-expiry="1"/);
+  assert.match(shareHtml, /data-invite-max-uses="1"/);
+  assert.match(shareHtml, /value="never"/);
+
+  store.state.ui.activeSheet = { type: "editFolder", folderId: store.state.data.folders[0].id, nameDraft: "Test", coverDraft: "./assets/covers/coffee.png" };
+  const editFolderHtml = renderFolderSheets(store.state);
+  assert.match(editFolderHtml, /data-folder-cover-input="1"/);
+  assert.match(editFolderHtml, /data-action="reset-folder-cover"/);
+
+  store.state.api.mode = "mock";
+  const resetSaved = await apiClient.saveFolder({
+    folderId: store.state.data.folders[0].id,
+    name: "Test Reset",
+    cover: null,
+    resetCover: true,
+  });
+  assert.equal(resetSaved.cover, null);
+
+  // Desktop custom cover takes priority over >=2 link collage (CHRIS H-1)
+  store.state.ui.folderSearch = "";
+  store.state.data.folders = [{ id: "f-cov", name: "My Custom Folder", cover: "https://cdn.example.com/custom-cover.webp" }];
+  store.state.data.links = [
+    { id: "l1", folderId: "f-cov", url: "https://example.com/1", thumbnail_url: "https://cdn.example.com/1.jpg" },
+    { id: "l2", folderId: "f-cov", url: "https://example.com/2", thumbnail_url: "https://cdn.example.com/2.jpg" },
+  ];
+  const desktopGrid = renderPcFoldersGridInner(store.state);
+  assert.match(desktopGrid, /https:\/\/cdn\.example\.com\/custom-cover\.webp/);
+  assert.doesNotMatch(desktopGrid, /pc-folder-collage/);
 });

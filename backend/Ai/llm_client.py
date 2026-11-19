@@ -29,7 +29,7 @@ class UpstreamLLMError(ValueError):
     """Raised when an upstream LLM provider returns malformed, empty, or invalid JSON/schema output."""
     pass
 
-SYSTEM_PROMPT = """คุณคือผู้ช่วยสรุปเนื้อหาอัจฉริยะของแอป Just-Save-It
+SYSTEM_PROMPT = """คุณคือผู้ช่วยสรุปเนื้อหาอัจฉริยะของแอป Sherlink
 เป้าหมายของคุณคือสรุปเนื้อหาที่ได้รับให้เข้าใจง่ายและรวดเร็วที่สุดสำหรับผู้ใช้
 
 กฎเหล็ก:
@@ -45,7 +45,7 @@ SYSTEM_PROMPT = """คุณคือผู้ช่วยสรุปเนื�
 def _build_system_prompt(summary_language: str = "th") -> str:
     """Build system prompt matching target summary language ('th', 'en', or 'auto')."""
     if summary_language == "en":
-        return """You are the intelligent content summarizer for Just-Save-It.
+        return """You are the intelligent content summarizer for Sherlink.
 Your goal is to summarize the provided content clearly and concisely.
 
 Rules:
@@ -57,7 +57,7 @@ Rules:
 4. Respond strictly as JSON matching the schema (`summary_th` holds the 3-bullet summary text), with zero preamble.
 """
     if summary_language == "auto":
-        return """You are the intelligent content summarizer for Just-Save-It.
+        return """You are the intelligent content summarizer for Sherlink.
 Your goal is to summarize the provided content clearly in the primary language of the source content.
 
 Rules:

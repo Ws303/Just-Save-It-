@@ -1,5 +1,6 @@
 """Repository functions for Items, Folders, Invites, Tags, Devices, Reminders, and JSON Export."""
 
+import base64
 from datetime import datetime, timedelta, timezone
 import logging
 import os
@@ -15,6 +16,7 @@ from fastapi import HTTPException, status
 from .schemas import (
     DeviceRegisterRequest,
     FeedbackCreateRequest,
+    FolderCoverUploadRequest,
     FolderCreateRequest,
     FolderUpdateRequest,
     InviteCreateRequest,
@@ -958,6 +960,67 @@ def delete_folder_for_user(db: Any, user_id: str, folder_id: str) -> Dict[str, A
     return {"deleted": True, "folder_id": folder_id}
 
 
+def upload_folder_cover_for_user(
+    db: Any,
+    user_id: str,
+    req: FolderCoverUploadRequest,
+) -> Dict[str, Any]:
+    """Decode base64 raster image, compress to WebP, upload to Storage, and optionally update folder."""
+    if req.folder_id:
+        f_res = db.table("folders").select("id, owner_id").eq("id", req.folder_id).execute()
+        if not f_res.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found.")
+        if f_res.data[0].get("owner_id") != user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only folder owner can update folder cover.")
+
+    raw_str = (req.image_base64 or "").strip()
+    if raw_str.lower().startswith("data:"):
+        comma_idx = raw_str.find(",")
+        if comma_idx == -1:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid data URI image payload.")
+        header = raw_str[:comma_idx].lower()
+        if ";base64" not in header or "image/svg" in header or not header.startswith("data:image/"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported image data URI format.")
+        raw_str = raw_str[comma_idx + 1 :].strip()
+
+    try:
+        raw_bytes = base64.b64decode(raw_str, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid base64 image payload.") from exc
+
+    from Unfurl.webp_storage import MAX_RAW_IMAGE_BYTES, upload_custom_folder_cover
+
+    if len(raw_bytes) > MAX_RAW_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Image size exceeds {MAX_RAW_IMAGE_BYTES // (1024 * 1024)} MB limit.",
+        )
+
+    try:
+        uploaded = upload_custom_folder_cover(raw_bytes, user_id=user_id, db=db)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    cover_url = uploaded["cover_url"]
+    if req.folder_id:
+        try:
+            db.table("folders").update({"cover_url": cover_url, "updated_at": _now_iso()}).eq(
+                "id", req.folder_id
+            ).execute()
+        except Exception as exc:
+            if "cover_url" not in str(exc) and "PGRST204" not in str(exc):
+                raise
+
+    return {
+        "cover_url": cover_url,
+        "folder_id": req.folder_id,
+        "size_bytes": uploaded["size_bytes"],
+        "content_type": uploaded["content_type"],
+    }
+
+
 def create_folder_invite(db: Any, user_id: str, folder_id: str, req: InviteCreateRequest) -> Dict[str, Any]:
     f_res = db.table("folders").select("id, owner_id").eq("id", folder_id).execute()
     if not f_res.data:
@@ -966,7 +1029,16 @@ def create_folder_invite(db: Any, user_id: str, folder_id: str, req: InviteCreat
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only folder owner can create invites.")
 
     token = secrets.token_hex(16)
-    expires_at = datetime.now(timezone.utc) + timedelta(days=req.expires_in_days)
+    now_utc = datetime.now(timezone.utc)
+    is_never_expires = bool(req.never_expires or req.expires_in_minutes == 0 or req.expires_in_days == 0)
+    expires_at_iso: Optional[str] = None
+    if not is_never_expires:
+        if req.expires_in_minutes is not None:
+            expires_at_iso = (now_utc + timedelta(minutes=req.expires_in_minutes)).isoformat()
+        else:
+            days = req.expires_in_days if req.expires_in_days is not None else 7
+            expires_at_iso = (now_utc + timedelta(days=days)).isoformat()
+
     payload: Dict[str, Any] = {
         "token": token,
         "folder_id": folder_id,
@@ -975,10 +1047,18 @@ def create_folder_invite(db: Any, user_id: str, folder_id: str, req: InviteCreat
         "max_uses": req.max_uses,
         "use_count": 0,
         "revoked_at": None,
-        "expires_at": expires_at.isoformat(),
+        "expires_at": expires_at_iso,
         "created_at": _now_iso(),
     }
-    db.table("folder_invites").insert(payload).execute()
+    try:
+        db.table("folder_invites").insert(payload).execute()
+    except Exception as exc:
+        err_lower = str(exc).lower()
+        if expires_at_iso is None and ("expires_at" in err_lower or "23502" in err_lower or "not-null" in err_lower):
+            payload["expires_at"] = (now_utc + timedelta(days=36500)).isoformat()
+            db.table("folder_invites").insert(payload).execute()
+        else:
+            raise
     db.table("folders").update({"is_shared": True, "updated_at": _now_iso()}).eq("id", folder_id).execute()
 
     app_url = os.getenv("APP_URL", "https://just-save-it-web.onrender.com").rstrip("/")
@@ -987,7 +1067,9 @@ def create_folder_invite(db: Any, user_id: str, folder_id: str, req: InviteCreat
         "folder_id": folder_id,
         "role": req.role,
         "max_uses": req.max_uses,
-        "expires_at": expires_at.isoformat(),
+        "use_count": 0,
+        "expires_at": None if is_never_expires else expires_at_iso,
+        "never_expires": is_never_expires,
         "invite_url": f"{app_url}/invite/{token}",
     }
 
@@ -1027,21 +1109,30 @@ def preview_folder_invite(db: Any, invite_token: str) -> Dict[str, Any]:
     folder = f_res.data[0]
 
     owner_id = folder.get("owner_id")
-    inviter_name = "สมาชิก Sharely"
+    inviter_name = "สมาชิก Sherlink"
     if owner_id:
         try:
             prof_res = db.table("profiles").select("display_name").eq("id", owner_id).execute()
             if prof_res.data and prof_res.data[0].get("display_name"):
                 inviter_name = str(prof_res.data[0]["display_name"]).strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Invite preview profile lookup skipped for %s: %s", owner_id, exc)
 
     item_count = 0
     try:
         items_res = db.table("items").select("id").eq("folder_id", folder_id).execute()
         item_count = len(items_res.data or [])
-    except Exception:
+    except Exception as exc:
+        logger.debug("Invite preview item count lookup skipped for %s: %s", folder_id, exc)
         item_count = 0
+
+    member_count = 0
+    try:
+        mem_res = db.table("folder_members").select("user_id, role").eq("folder_id", folder_id).execute()
+        member_count = sum(1 for row in (mem_res.data or []) if row.get("role") != "owner")
+    except Exception as exc:
+        logger.debug("Invite preview member count lookup skipped for %s: %s", folder_id, exc)
+        member_count = 0
 
     return {
         "token": clean_tok,
@@ -1054,6 +1145,11 @@ def preview_folder_invite(db: Any, invite_token: str) -> Dict[str, Any]:
         "role": inv.get("role") or "viewer",
         "inviter_name": inviter_name,
         "item_count": item_count,
+        "member_count": member_count,
+        "expires_at": inv.get("expires_at"),
+        "never_expires": inv.get("expires_at") is None,
+        "max_uses": inv.get("max_uses"),
+        "use_count": int(inv.get("use_count") or 0),
     }
 
 
@@ -1364,7 +1460,12 @@ def _sync_folder_is_shared(db: Any, folder_id: str, owner_id: str) -> bool:
     members_res = db.table("folder_members").select("user_id").eq("folder_id", folder_id).execute()
     has_members = any(m.get("user_id") != owner_id for m in (members_res.data or []))
 
-    invites_res = db.table("folder_invites").select("revoked_at, expires_at").eq("folder_id", folder_id).execute()
+    invites_res = (
+        db.table("folder_invites")
+        .select("revoked_at, expires_at, max_uses, use_count")
+        .eq("folder_id", folder_id)
+        .execute()
+    )
     now_utc = datetime.now(timezone.utc)
     has_active_invites = False
     for inv in invites_res.data or []:
@@ -1372,6 +1473,10 @@ def _sync_folder_is_shared(db: Any, folder_id: str, owner_id: str) -> bool:
             continue
         exp = _parse_iso(inv.get("expires_at"))
         if exp is not None and exp <= now_utc:
+            continue
+        max_uses = inv.get("max_uses")
+        use_count = int(inv.get("use_count") or 0)
+        if max_uses is not None and use_count >= int(max_uses):
             continue
         has_active_invites = True
         break
@@ -1382,7 +1487,7 @@ def _sync_folder_is_shared(db: Any, folder_id: str, owner_id: str) -> bool:
 
 
 def list_folder_members(db: Any, user_id: str, folder_id: str) -> Dict[str, Any]:
-    """List folder owner, members, and (for owners) invites."""
+    """List folder owner, members, and (for owners) valid active Discord-style invites."""
     role = get_folder_role(db, user_id, folder_id)
     if role is None:
         f_exists = db.table("folders").select("id").eq("id", folder_id).execute()
@@ -1396,17 +1501,51 @@ def list_folder_members(db: Any, user_id: str, folder_id: str) -> Dict[str, Any]
     folder = f_res.data[0]
 
     mem_res = db.table("folder_members").select("*").eq("folder_id", folder_id).execute()
+    members = [dict(m) for m in (mem_res.data or [])]
+    member_user_ids = [str(m["user_id"]) for m in members if m.get("user_id")]
+    if member_user_ids:
+        try:
+            prof_res = db.table("profiles").select("id, display_name").in_("id", member_user_ids).execute()
+            name_by_uid = {
+                str(p["id"]): str(p.get("display_name") or "").strip()
+                for p in (prof_res.data or [])
+                if p.get("id")
+            }
+            for m in members:
+                uid = str(m.get("user_id") or "")
+                if uid and name_by_uid.get(uid) and not m.get("display_name"):
+                    m["display_name"] = name_by_uid[uid]
+        except Exception as exc:
+            logger.debug("Folder members display_name enrichment skipped for %s: %s", folder_id, exc)
+
     active_invites: List[Dict[str, Any]] = []
     if role == "owner":
+        now_utc = datetime.now(timezone.utc)
+        app_url = os.getenv("APP_URL", "https://just-save-it-web.onrender.com").rstrip("/")
         inv_res = db.table("folder_invites").select("*").eq("folder_id", folder_id).execute()
-        active_invites = [dict(inv) for inv in (inv_res.data or []) if inv.get("revoked_at") is None]
+        for raw_inv in inv_res.data or []:
+            if raw_inv.get("revoked_at") is not None:
+                continue
+            exp_dt = _parse_iso(raw_inv.get("expires_at"))
+            if exp_dt is not None and exp_dt <= now_utc:
+                continue
+            max_uses = raw_inv.get("max_uses")
+            use_count = int(raw_inv.get("use_count") or 0)
+            if max_uses is not None and use_count >= int(max_uses):
+                continue
+            inv_dict = dict(raw_inv)
+            tok = str(inv_dict.get("token") or "")
+            if tok and not inv_dict.get("invite_url"):
+                inv_dict["invite_url"] = f"{app_url}/invite/{tok}"
+            inv_dict["never_expires"] = inv_dict.get("expires_at") is None
+            active_invites.append(inv_dict)
 
     return {
         "folder_id": folder_id,
         "owner_id": folder.get("owner_id"),
         "caller_role": role,
         "is_shared": bool(folder.get("is_shared")),
-        "members": [dict(m) for m in (mem_res.data or [])],
+        "members": members,
         "active_invites": active_invites,
     }
 

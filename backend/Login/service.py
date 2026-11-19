@@ -643,7 +643,7 @@ class AuthService:
         return UserProfileResponse(
             id=user_id,
             email=f"user-{user_id[:8]}@example.com",
-            display_name="Just-Save-It User",
+            display_name="Sherlink User",
         )
 
     async def update_profile(self, user_id: str, req: UpdateProfileRequest) -> UserProfileResponse:
@@ -688,7 +688,7 @@ class AuthService:
         return UserProfileResponse(
             id=user_id,
             email=f"user-{user_id[:8]}@example.com",
-            display_name=req.display_name or "Just-Save-It User",
+            display_name=req.display_name or "Sherlink User",
         )
 
     async def create_api_token(self, user_id: str, name: str) -> CreateApiTokenResponse:

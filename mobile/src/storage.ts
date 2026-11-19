@@ -52,9 +52,18 @@ export interface MobileFolderItem {
   name: string;
   emoji?: string | null;
   icon?: string | null;
+  cover_url?: string | null;
   item_count?: number;
   owner_id?: string;
   role?: string;
+}
+
+export interface MobileAiConfig {
+  provider: "built-in" | "byok" | "custom";
+  vendor?: string;
+  model?: string;
+  base_url?: string;
+  api_key?: string;
 }
 
 export interface MobileReminderItem {
@@ -114,6 +123,8 @@ const KEYS = {
   theme: "jsi_mobile_theme",
   pkceVerifier: "jsi_mobile_pkce_verifier",
   pushDevice: "jsi_mobile_push_device",
+  aiConfig: "sherlink_mobile_ai_config",
+  aiApiKey: "sherlink_mobile_ai_api_key",
 };
 
 const memoryStore = new Map<string, string>();
@@ -361,6 +372,8 @@ export async function saveSession(
     }
     const fallbackBackend = await getStorageBackend();
     if (isStaleExpectedGen()) return false;
+    const secureBackend = await getSecureSessionBackend();
+    if (isStaleExpectedGen()) return false;
 
     const shouldClearStorage =
       (prevHadSession && (!nextUid || nextUid !== prevUid)) ||
@@ -373,14 +386,16 @@ export async function saveSession(
       await fallbackBackend.removeItem(KEYS.cache);
       await fallbackBackend.removeItem(KEYS.offlineQueue);
       await fallbackBackend.removeItem(KEYS.pushDevice);
+      await fallbackBackend.removeItem(KEYS.aiConfig);
+      await secureBackend.removeItem(KEYS.aiApiKey);
+      if (secureBackend !== fallbackBackend) {
+        await fallbackBackend.removeItem(KEYS.aiApiKey);
+      }
       if (isStaleExpectedGen()) return false;
     } else if (shouldBumpGen) {
       _authGeneration += 1;
       if (activeExpectedGen !== undefined) activeExpectedGen = _authGeneration;
     }
-
-    const secureBackend = await getSecureSessionBackend();
-    if (isStaleExpectedGen()) return false;
     _activeUserId = nextUid;
     await secureBackend.setItem(KEYS.session, JSON.stringify(session));
     if (secureBackend !== fallbackBackend) {
@@ -431,6 +446,11 @@ export async function clearSession(): Promise<void> {
     await fallbackBackend.removeItem(KEYS.offlineQueue);
     await fallbackBackend.removeItem(KEYS.pkceVerifier);
     await fallbackBackend.removeItem(KEYS.pushDevice);
+    await fallbackBackend.removeItem(KEYS.aiConfig);
+    await secureBackend.removeItem(KEYS.aiApiKey);
+    if (secureBackend !== fallbackBackend) {
+      await fallbackBackend.removeItem(KEYS.aiApiKey);
+    }
     _authGeneration += 1;
   });
 }
@@ -945,6 +965,46 @@ export async function saveThemeMode(mode: AppThemeMode): Promise<void> {
   await backend.setItem(KEYS.theme, mode);
   for (const listener of _themeListeners) {
     listener(mode);
+  }
+}
+
+export async function loadAiConfig(): Promise<MobileAiConfig> {
+  const backend = await getStorageBackend();
+  const secureBackend = await getSecureSessionBackend();
+  let parsed: Partial<MobileAiConfig> = {};
+  try {
+    const raw = await backend.getItem(KEYS.aiConfig);
+    if (raw) parsed = JSON.parse(raw) as Partial<MobileAiConfig>;
+  } catch {}
+  let apiKey = "";
+  try {
+    apiKey = (await secureBackend.getItem(KEYS.aiApiKey)) || "";
+  } catch {}
+  const prov = parsed.provider === "byok" || parsed.provider === "custom" ? parsed.provider : "built-in";
+  return {
+    provider: prov,
+    vendor: parsed.vendor || (prov === "built-in" ? "built-in" : "openai"),
+    model: parsed.model || (prov === "built-in" ? "gemini-3.1-flash-lite" : "gpt-4o-mini"),
+    base_url: parsed.base_url || "",
+    api_key: apiKey,
+  };
+}
+
+export async function saveAiConfig(cfg: MobileAiConfig): Promise<void> {
+  const backend = await getStorageBackend();
+  const secureBackend = await getSecureSessionBackend();
+  const meta: Omit<MobileAiConfig, "api_key"> = {
+    provider: cfg.provider,
+    vendor: cfg.vendor || (cfg.provider === "built-in" ? "built-in" : "openai"),
+    model: cfg.model || "",
+    base_url: cfg.base_url || "",
+  };
+  await backend.setItem(KEYS.aiConfig, JSON.stringify(meta));
+  const cleanKey = String(cfg.api_key || "").trim();
+  if (cleanKey && cfg.provider !== "built-in") {
+    await secureBackend.setItem(KEYS.aiApiKey, cleanKey);
+  } else {
+    await secureBackend.removeItem(KEYS.aiApiKey);
   }
 }
 

@@ -1,20 +1,20 @@
 :root {
   --sheet-bg: #ffffff;
-  --frame-bg: #f6f3ec;
-  --accent: #9b2c2c;
-  --accent-strong: #880808;
-  --accent-soft: #fdeaea;
-  --pill-bg: #eeeeee;
-  --pill-text: #444444;
-  --pill-selected-bg: #222222;
+  --frame-bg: #FDFBF7;
+  --accent: #E24C4B;
+  --accent-strong: #C52732;
+  --accent-soft: #FDECEC;
+  --pill-bg: #F3EFE8;
+  --pill-text: #47413B;
+  --pill-selected-bg: #1E1B18;
   --pill-selected-text: #ffffff;
-  --ink: #222222;
-  --ink-secondary: #666666;
-  --border-light: #dddddd;
-  --border-input: #dbe0e3;
+  --ink: #1E1B18;
+  --ink-secondary: #6E675F;
+  --border-light: #EFE9DF;
+  --border-input: #E2DACD;
   --mint: #16756a;
-  --lavender-bg: #efeafb;
-  --lavender-text: #5a38b8;
+  --lavender-bg: #F1EEFF;
+  --lavender-text: #6C5CE7;
 }
 
 * {
@@ -23,7 +23,7 @@
 
 body {
   margin: 0;
-  width: min(300px, 200vw);
+  width: min(460px, 100vw);
   min-height: 520px;
   background: var(--frame-bg);
   color: var(--ink);

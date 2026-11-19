@@ -44,20 +44,12 @@ import {
   getMemoryCachedWorkspace,
   upsertCachedLinkItem,
   type MobileLinkItem,
-  type WorkflowStatus,
 } from "../../src/storage";
-
-const STATUS_ITEMS: Array<{ id: WorkflowStatus; label: string }> = [
-  { id: "inbox", label: "กล่องรับ" },
-  { id: "todo", label: "รออ่าน" },
-  { id: "done", label: "อ่านแล้ว" },
-  { id: "archived", label: "เก็บถาวร" },
-];
 
 const _autoEnrichedItemIds = new Set<string>();
 
 export default function ItemDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, folderId } = useLocalSearchParams<{ id: string; folderId?: string }>();
   const router = useRouter();
   const cachedMatch = getMemoryCachedWorkspace()?.items.find((it) => it.id === id) || null;
   const [item, setItem] = useState<MobileLinkItem | null>(cachedMatch);
@@ -66,6 +58,7 @@ export default function ItemDetailScreen() {
     (cachedMatch?.tags || cachedMatch?.tag_names || []).join(" "),
   );
   const [aiSummary, setAiSummary] = useState(cachedMatch?.ai_summary || "");
+  const [descExpanded, setDescExpanded] = useState(false);
   const [loading, setLoading] = useState(!cachedMatch);
   const [busy, setBusy] = useState("");
   const [carouselIdx, setCarouselIdx] = useState(0);
@@ -75,6 +68,17 @@ export default function ItemDetailScreen() {
   const actionSeqRef = useRef(0);
   const activeIdRef = useRef<string | undefined>(id);
   activeIdRef.current = id;
+
+  useEffect(() => {
+    const match = getMemoryCachedWorkspace()?.items.find((it) => it.id === id) || null;
+    setItem(match);
+    setNote(match?.note || match?.user_note || "");
+    setTagsText((match?.tags || match?.tag_names || []).join(" "));
+    setAiSummary(match?.ai_summary || "");
+    setDescExpanded(false);
+    setCarouselIdx(0);
+    setLoading(!match);
+  }, [id]);
 
   const loadItem = useCallback(async () => {
     if (!id) return;
@@ -209,49 +213,22 @@ export default function ItemDetailScreen() {
     }
   }
 
-  async function handleStatusChange(nextStatus: WorkflowStatus) {
+  async function handleToggleSeen() {
     if (!item) return;
     const prevItem = item;
+    const cur = String(item.status || "inbox").toLowerCase();
+    const currentlySeen = cur === "done" || cur === "read";
+    const nextStatus = currentlySeen ? "inbox" : "done";
     const startGen = getAuthGeneration();
-    setItem({ ...item, status: nextStatus });
+    const optimistic: MobileLinkItem = { ...item, status: nextStatus };
+    setItem(optimistic);
     const res = await patchLinkItem(item.id, { status: nextStatus });
     if (getAuthGeneration() !== startGen) return;
     if (!res.ok) {
       setItem(prevItem);
+      return;
     }
-  }
-
-  async function handleRefreshPreview() {
-    if (!item) return;
-    const targetId = item.id;
-    const prevSnapshot = item;
-    await runGuardedBusyAction(
-      actionSeqRef,
-      (isBusy) => setBusy(isBusy ? "preview" : ""),
-      async (isStale) => {
-        const res = await refreshLinkPreview(targetId);
-        if (isStale()) return;
-        const payloadStatus = String(res.data?.status || "").toLowerCase();
-        if (!res.ok || payloadStatus === "failed") {
-          const errMsg =
-            (typeof res.data?.error === "string" && res.data.error) ||
-            res.error ||
-            "กรุณาลองใหม่";
-          Alert.alert("รีเฟรชพรีวิวไม่สำเร็จ", errMsg);
-          return;
-        }
-        if (res.data) {
-          const rawNext = (res.data.item ?? res.data) as MobileLinkItem;
-          const mergedItem: MobileLinkItem = { ...prevSnapshot, ...rawNext, id: targetId };
-          setItem(mergedItem);
-          setCarouselIdx(0);
-          await upsertCachedLinkItem(mergedItem).catch(() => {});
-          Alert.alert("รีเฟรชพรีวิวสำเร็จ");
-        } else {
-          Alert.alert("รีเฟรชพรีวิวไม่สำเร็จ", "ไม่พบข้อมูลพรีวิวจากเซิร์ฟเวอร์");
-        }
-      },
-    );
+    void upsertCachedLinkItem(optimistic).catch(() => {});
   }
 
   async function handleAiSummarize() {
@@ -415,9 +392,30 @@ export default function ItemDetailScreen() {
   }
 
   const currentStatus = String(item.status || "inbox").toLowerCase();
+  const isSeen = currentStatus === "done" || currentStatus === "read";
   const isPrivate = isPrivateOrRestrictedItem(item);
   const platBadge = inferMobilePlatform(item);
   const { displayTitle, displayDesc } = formatPostDetailTitleAndDesc(item);
+  const originalDescription = (displayDesc || String(item.description || "").trim()).trim();
+  const showDescToggle = originalDescription.length > 160 || originalDescription.includes("\n");
+  const allCachedItems = getMemoryCachedWorkspace()?.items || [];
+  const scopedItems = folderId
+    ? folderId === "virtual-inbox"
+      ? allCachedItems.filter((it) => !it.folder_id)
+      : allCachedItems.filter((it) => it.folder_id === folderId)
+    : allCachedItems;
+  const navIds = scopedItems.map((it) => it.id).filter(Boolean);
+  const navIdx = id ? navIds.indexOf(id) : -1;
+  const prevNavId = navIdx > 0 ? navIds[navIdx - 1] : null;
+  const nextNavId = navIdx >= 0 && navIdx < navIds.length - 1 ? navIds[navIdx + 1] : null;
+  const goToAdjacentItem = (targetId: string | null) => {
+    if (!targetId) return;
+    router.replace(
+      folderId
+        ? (`/item/${encodeURIComponent(targetId)}?folderId=${encodeURIComponent(folderId)}` as never)
+        : (`/item/${encodeURIComponent(targetId)}` as never),
+    );
+  };
   const activeAspect =
     (activeSlideUri && imageRatios[activeSlideUri]) ||
     (derivedVideo.embedUrl && derivedVideo.isVertical ? 0.8 : 1.58);
@@ -431,6 +429,27 @@ export default function ItemDetailScreen() {
       keyboardVerticalOffset={Platform.OS === "ios" ? 88 : 0}
     >
       <ScrollView style={styles.root} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {navIds.length > 1 && navIdx >= 0 ? (
+          <View style={styles.navBar}>
+            <Pressable
+              style={[styles.navBtn, !prevNavId && styles.navBtnDisabled]}
+              disabled={!prevNavId}
+              onPress={() => goToAdjacentItem(prevNavId)}
+            >
+              <Text style={[styles.navBtnText, !prevNavId && styles.navBtnTextDisabled]}>‹ ก่อนหน้า</Text>
+            </Pressable>
+            <Text style={styles.navCounter}>
+              {navIdx + 1} / {navIds.length}
+            </Text>
+            <Pressable
+              style={[styles.navBtn, !nextNavId && styles.navBtnDisabled]}
+              disabled={!nextNavId}
+              onPress={() => goToAdjacentItem(nextNavId)}
+            >
+              <Text style={[styles.navBtnText, !nextNavId && styles.navBtnTextDisabled]}>ถัดไป ›</Text>
+            </Pressable>
+          </View>
+        ) : null}
         <View style={styles.card}>
           {derivedVideo.embedUrl ? (
             <Pressable
@@ -520,11 +539,6 @@ export default function ItemDetailScreen() {
           <View style={styles.cardBody}>
             <Text style={styles.platformBadge}>{platBadge || "web"}</Text>
             <Text style={styles.title}>{displayTitle || item.title || item.url}</Text>
-            {displayDesc ? (
-              <Text style={styles.descText} numberOfLines={6}>
-                {displayDesc}
-              </Text>
-            ) : null}
             <Text style={styles.urlText} numberOfLines={2}>
               {item.url}
             </Text>
@@ -532,9 +546,12 @@ export default function ItemDetailScreen() {
               <Pressable style={styles.primaryBtn} onPress={() => openExternalUrlSafe(item.url)}>
                 <Text style={styles.primaryBtnText}>เปิดลิงก์ ↗</Text>
               </Pressable>
-              <Pressable style={styles.secondaryBtn} onPress={() => void handleRefreshPreview()}>
-                <Text style={styles.secondaryBtnText}>
-                  {busy === "preview" ? "กำลังดึง..." : "รีเฟรชพรีวิว"}
+              <Pressable
+                style={[styles.secondaryBtn, isSeen && styles.seenBtnActive]}
+                onPress={() => void handleToggleSeen()}
+              >
+                <Text style={[styles.secondaryBtnText, isSeen && styles.seenBtnTextActive]}>
+                  {isSeen ? "✓ ดูแล้ว" : "○ ยังไม่ดู"}
                 </Text>
               </Pressable>
             </View>
@@ -542,29 +559,31 @@ export default function ItemDetailScreen() {
         </View>
 
         <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>สถานะการอ่าน (4 ขั้น)</Text>
-          <View style={styles.chipRow}>
-            {STATUS_ITEMS.map((st) => {
-              const active = currentStatus === st.id || (st.id === "done" && currentStatus === "read");
-              return (
-                <Pressable
-                  key={st.id}
-                  style={[styles.chip, active && styles.chipActive]}
-                  onPress={() => void handleStatusChange(st.id)}
-                >
-                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{st.label}</Text>
+          <Text style={styles.sectionTitle}>คำอธิบายจากโพสต์ต้นฉบับ</Text>
+          {originalDescription ? (
+            <>
+              <Text style={styles.descText} numberOfLines={descExpanded ? undefined : 4}>
+                {originalDescription}
+              </Text>
+              {showDescToggle ? (
+                <Pressable style={styles.descToggleBtn} onPress={() => setDescExpanded((v) => !v)}>
+                  <Text style={styles.descToggleText}>
+                    {descExpanded ? "ย่อข้อความ ▲" : "อ่านเพิ่มเติม ▼"}
+                  </Text>
                 </Pressable>
-              );
-            })}
-          </View>
+              ) : null}
+            </>
+          ) : (
+            <Text style={styles.emptyDescText}>ไม่มีคำอธิบายจากโพสต์ต้นฉบับ</Text>
+          )}
         </View>
 
-        <View style={styles.sectionCard}>
+        <View style={[styles.sectionCard, styles.aiSectionCard]}>
           <View style={styles.rowBetween}>
-            <Text style={styles.sectionTitle}>✨ สรุปด้วย AI</Text>
+            <Text style={[styles.sectionTitle, styles.aiSectionTitle]}>✨ สรุปจากต้นฉบับ</Text>
             <Pressable style={styles.smallPrimaryBtn} onPress={() => void handleAiSummarize()}>
               <Text style={styles.smallPrimaryBtnText}>
-                {busy === "ai" ? "กำลังสรุป..." : "สรุปเนื้อหา"}
+                {busy === "ai" ? "กำลังสรุป..." : aiSummary ? "สรุปใหม่" : "สรุปเนื้อหา"}
               </Text>
             </Pressable>
           </View>
@@ -606,8 +625,8 @@ export default function ItemDetailScreen() {
             <Pressable style={styles.chip} onPress={() => void handleQuickReminder(24, null)}>
               <Text style={styles.chipText}>พรุ่งนี้เวลานี้</Text>
             </Pressable>
-            <Pressable style={styles.chip} onPress={() => void handleQuickReminder(72, 3)}>
-              <Text style={styles.chipText}>ทวนทุก 3 วัน</Text>
+            <Pressable style={styles.chip} onPress={() => void handleQuickReminder(72, null)}>
+              <Text style={styles.chipText}>อีก 3 วัน</Text>
             </Pressable>
             <Pressable style={styles.chip} onPress={() => void handleClearReminder()}>
               <Text style={styles.chipText}>ปิดการเตือน</Text>
@@ -905,5 +924,65 @@ const styles = StyleSheet.create({
   lightboxImage: {
     width: "100%",
     height: "100%",
+  },
+  navBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#FDFBF7",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#EAE4DB",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  navBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: "#F3EFE6",
+  },
+  navBtnDisabled: {
+    opacity: 0.4,
+  },
+  navBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#1C1917",
+  },
+  navBtnTextDisabled: {
+    color: "#78716C",
+  },
+  navCounter: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#78716C",
+  },
+  seenBtnActive: {
+    backgroundColor: "#ECFDF5",
+    borderColor: "#A7F3D0",
+  },
+  seenBtnTextActive: {
+    color: "#065F46",
+  },
+  descToggleBtn: {
+    alignSelf: "flex-start",
+    paddingVertical: 4,
+  },
+  descToggleText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#9B2C2C",
+  },
+  emptyDescText: {
+    fontSize: 13,
+    color: "#78716C",
+  },
+  aiSectionCard: {
+    backgroundColor: "#F1EEFF",
+    borderColor: "#DDD6FE",
+  },
+  aiSectionTitle: {
+    color: "#4C1D95",
   },
 });

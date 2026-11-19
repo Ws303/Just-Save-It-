@@ -7,7 +7,7 @@
 import { icons, escHtml, safeImgUrl, resolveMediaThumbUrl } from "../components/icons.js";
 import { COVER_CHOICES } from "../data/seed.js";
 import { filterLinks, getFolderById, getFolderCount, buildFolderInviteUrl } from "../state/store.js";
-import { renderBottomNav, renderFilterChips, renderLinkCard, renderAdvancedFilterDrawer } from "./common.js";
+import { renderBottomNav, renderFilterChips, renderLinkCard } from "./common.js";
 
 function renderMobileFolderCover(folder, links = [], isWatchLater = false) {
   const linkThumbs = (links || [])
@@ -86,10 +86,7 @@ export function renderFolderDetailLinksInner(state, folderOverride = null) {
   const folder = folderOverride || getFolderById(state.ui.activeFolderId) || state.data.folders[0];
   if (!folder) return "";
   const folderLinks = state.data.links.filter((l) => l.folderId === folder.id);
-  const filtered = filterLinks(folderLinks, state.ui.folderDetailSearch, state.ui.folderDetailFilter, {
-    platform: state.ui.folderPlatformFilter,
-    contentType: state.ui.folderContentTypeFilter,
-  });
+  const filtered = filterLinks(folderLinks, state.ui.folderDetailSearch, state.ui.folderDetailFilter);
   return filtered.length === 0
     ? `<div class="ai-summary-card" style="text-align:center;color:var(--ink-secondary);">
          ยังไม่มีลิงก์ที่ตรงกับตัวกรองในโฟลเดอร์นี้
@@ -150,9 +147,6 @@ export function renderFolderDetailScreen(state) {
           </h1>
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
-          <button type="button" class="icon-btn" style="width:34px;height:34px;" data-open-edit-folder="${escHtml(folder.id)}" title="แก้ไขโฟลเดอร์">
-            ${icons.pencil(15)}
-          </button>
           <button type="button" class="btn-outline-pill" style="height:36px;padding:0 14px;font-size:13px;" data-open-invite-sheet="${escHtml(folder.id)}">
             เชิญเพื่อน
           </button>
@@ -194,7 +188,6 @@ export function renderFolderDetailScreen(state) {
         </div>
 
         ${renderFilterChips(state.ui.folderDetailFilter, "dark", state)}
-        ${renderAdvancedFilterDrawer(state, "folder")}
 
         <div class="section-header-row" style="margin-bottom:0;margin-top:4px;">
           <h2 class="section-title">ลิงก์ในโฟลเดอร์ (${count})</h2>
@@ -239,22 +232,55 @@ export function renderFolderSheets(state) {
                 placeholder="ตั้งชื่อโฟลเดอร์ของคุณ"
                 data-bind-folder-name="1"
               />
-              <button type="button" class="figma-red-inline-action" data-suggest-folder-name="1">
-                สุ่มชื่อ
-              </button>
             </div>
           </div>
 
           <div class="figma-sheet-field">
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-              <label class="figma-sheet-label">รูปปก (ไม่บังคับ)</label>
-              <button type="button" class="btn-outline-pill" style="height:32px;padding:0 12px;font-size:12px;" data-open-pick-cover="1">
-                เลือกรูปปก
-              </button>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+              <label class="figma-sheet-label">รูปปกโฟลเดอร์</label>
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  data-folder-cover-input="1"
+                  hidden
+                />
+                <button
+                  type="button"
+                  class="btn-outline-pill"
+                  style="height:32px;padding:0 12px;font-size:12px;"
+                  data-action="trigger-folder-cover-upload"
+                  ${state.ui.folderCoverUploading ? "disabled" : ""}
+                >
+                  ${state.ui.folderCoverUploading ? "กำลังอัปโหลด…" : "อัปโหลดรูปปก"}
+                </button>
+                <button type="button" class="btn-outline-pill" style="height:32px;padding:0 12px;font-size:12px;" data-open-pick-cover="1">
+                  เลือกรูปสำเร็จรูป
+                </button>
+                ${
+                  sheet.coverDraft
+                    ? `<button type="button" class="btn-outline-pill" style="height:32px;padding:0 10px;font-size:12px;color:var(--theme-accent-text);" data-action="reset-folder-cover">
+                         ใช้ภาพปกอัตโนมัติ
+                       </button>`
+                    : ""
+                }
+              </div>
             </div>
-            <div style="height:124px;border-radius:14px;overflow:hidden;background:#d7cdec;border:1px solid #dbe0e3;">
-              <img src="${escHtml(safeImgUrl(sheet.coverDraft))}" alt="Cover preview" style="width:100%;height:100%;object-fit:cover;" />
+            <div class="folder-cover-preview-box">
+              ${
+                safeImgUrl(sheet.coverDraft)
+                  ? `<img src="${escHtml(safeImgUrl(sheet.coverDraft))}" alt="Cover preview" style="width:100%;height:100%;object-fit:cover;" />`
+                  : `<div class="folder-cover-auto-hint">
+                       ${icons.imagePlaceholder(22)}
+                       <span>ใช้ภาพปกอัตโนมัติจากลิงก์ในโฟลเดอร์</span>
+                     </div>`
+              }
             </div>
+            ${
+              state.ui.folderCoverError
+                ? `<p style="margin:0;font-size:12px;color:var(--theme-accent-text);font-weight:600;">${escHtml(state.ui.folderCoverError)}</p>`
+                : ""
+            }
           </div>
 
           <div class="figma-privacy-info-card">
@@ -309,24 +335,35 @@ export function renderFolderSheets(state) {
     `;
   }
 
-  // 24 Share Folder Sheet: 319:3107 (idle) / 319:3429 (loading) / 319:3751 (error)
+  // 24 Share Folder Sheet: 319:3107 (Discord-style expiry, max uses & role)
   if (sheet.type === "invite") {
     const folder = getFolderById(sheet.folderId) || state.data.folders[0];
     if (!folder) return "";
     const count = getFolderCount(folder);
     const sharePerm = state.ui.sharePermission === "editor" ? "editor" : "viewer";
+    const inviteExpiry = state.ui.inviteExpiry || "7d";
+    const inviteMaxUses = String(state.ui.inviteMaxUses ?? "");
     const shareState = state.ui.shareSheetState || "idle";
-    const inviteUrl = buildFolderInviteUrl(
-      folder,
-      sharePerm,
-      folder.inviteUrl
-    );
+    const inviteUrl = buildFolderInviteUrl(folder, sharePerm, folder.inviteUrl);
 
     const memberBundle = state.ui.folderMembers?.[folder.id] || null;
     const members = Array.isArray(memberBundle?.members) ? memberBundle.members : [];
     const activeInvites = Array.isArray(memberBundle?.active_invites) ? memberBundle.active_invites : [];
     const ownerId = memberBundle?.owner_id || folder.ownerId || "";
     const isOwner = !memberBundle || memberBundle.caller_role === "owner";
+    const folderCoverThumb = safeImgUrl(folder.cover) || resolveMediaThumbUrl((state.data.links || []).find((l) => l.folderId === folder.id)) || "";
+
+    const formatInvExpiry = (inv) => {
+      if (inv.never_expires || inv.expires_at === null) return "ไม่มีวันหมดอายุ";
+      if (!inv.expires_at) return "จำกัดเวลา";
+      try {
+        const dt = new Date(inv.expires_at);
+        if (!Number.isNaN(dt.getTime())) {
+          return `หมดอายุ ${new Intl.DateTimeFormat("th-TH", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(dt)}`;
+        }
+      } catch {}
+      return "จำกัดเวลา";
+    };
 
     return `
       <div class="modal-backdrop" data-close-sheet="1">
@@ -335,15 +372,19 @@ export function renderFolderSheets(state) {
           data-node-id="${shareState === "loading" ? "319:3429" : shareState === "error" ? "319:3751" : "319:3107"}"
         >
           <div class="figma-share-header">
-            <h3 class="figma-share-title">แชร์โฟลเดอร์</h3>
+            <h3 class="figma-share-title">เชิญเพื่อนเข้าโฟลเดอร์</h3>
             <button type="button" class="figma-share-close-btn" data-close-sheet="1" aria-label="ปิด">×</button>
           </div>
 
           <div class="figma-share-folder-preview">
-            <img class="figma-share-thumb" src="${escHtml(safeImgUrl(folder.cover))}" alt="${escHtml(folder.name)}" />
+            ${
+              folderCoverThumb
+                ? `<img class="figma-share-thumb" src="${escHtml(folderCoverThumb)}" alt="${escHtml(folder.name)}" />`
+                : `<div class="figma-share-thumb" style="display:flex;align-items:center;justify-content:center;font-size:22px;">${escHtml(folder.emoji || "📁")}</div>`
+            }
             <div class="figma-share-folder-meta">
               <strong>${escHtml(folder.name)}</strong>
-              <span>${count} ลิงก์ที่บันทึก</span>
+              <span>${count} ลิงก์ที่บันทึก · ${members.length || 1} สมาชิก</span>
             </div>
           </div>
 
@@ -353,26 +394,52 @@ export function renderFolderSheets(state) {
               <button
                 type="button"
                 class="figma-share-perm-pill ${sharePerm === "viewer" ? "selected" : ""}"
-                data-action="set-share-permission"
+                data-action="set-invite-role"
                 data-role="viewer"
-              >ดูข้อมูลได้</button>
+              >ผู้ดู (Viewer)</button>
               <button
                 type="button"
                 class="figma-share-perm-pill ${sharePerm === "editor" ? "selected" : ""}"
-                data-action="set-share-permission"
+                data-action="set-invite-role"
                 data-role="editor"
-              >เพิ่มและแก้ไขได้</button>
+              >ผู้แก้ไข (Editor)</button>
+            </div>
+          </div>
+
+          <div class="invite-config-grid">
+            <div class="figma-sheet-field">
+              <label class="figma-share-label" for="invite-expiry-select">หมดอายุลิงก์</label>
+              <select id="invite-expiry-select" class="invite-select" data-invite-expiry="1">
+                <option value="30m" ${inviteExpiry === "30m" ? "selected" : ""}>30 นาที</option>
+                <option value="1h" ${inviteExpiry === "1h" ? "selected" : ""}>1 ชั่วโมง</option>
+                <option value="6h" ${inviteExpiry === "6h" ? "selected" : ""}>6 ชั่วโมง</option>
+                <option value="12h" ${inviteExpiry === "12h" ? "selected" : ""}>12 ชั่วโมง</option>
+                <option value="1d" ${inviteExpiry === "1d" ? "selected" : ""}>1 วัน</option>
+                <option value="7d" ${inviteExpiry === "7d" ? "selected" : ""}>7 วัน</option>
+                <option value="never" ${inviteExpiry === "never" ? "selected" : ""}>ไม่มีวันหมดอายุ</option>
+              </select>
+            </div>
+            <div class="figma-sheet-field">
+              <label class="figma-share-label" for="invite-uses-select">จำนวนครั้งที่ใช้ได้</label>
+              <select id="invite-uses-select" class="invite-select" data-invite-max-uses="1">
+                <option value="" ${inviteMaxUses === "" ? "selected" : ""}>ไม่จำกัด</option>
+                <option value="1" ${inviteMaxUses === "1" ? "selected" : ""}>1 ครั้ง</option>
+                <option value="5" ${inviteMaxUses === "5" ? "selected" : ""}>5 ครั้ง</option>
+                <option value="10" ${inviteMaxUses === "10" ? "selected" : ""}>10 ครั้ง</option>
+                <option value="25" ${inviteMaxUses === "25" ? "selected" : ""}>25 ครั้ง</option>
+                <option value="50" ${inviteMaxUses === "50" ? "selected" : ""}>50 ครั้ง</option>
+              </select>
             </div>
           </div>
 
           <div class="figma-sheet-field">
-            <span class="figma-share-label">ลิงก์คำเชิญ</span>
+            <span class="figma-share-label">ลิงก์คำเชิญล่าสุด</span>
             <div class="figma-share-url-box">
               ${
                 shareState === "loading"
                   ? `<span class="figma-share-url-muted">กำลังสร้างลิงก์คำเชิญ…</span>`
                   : shareState === "error"
-                    ? `<span class="figma-share-url-error">โหลดลิงก์ไม่สำเร็จ กรุณาลองอีกครั้ง</span>`
+                    ? `<span class="figma-share-url-error">สร้างลิงก์ไม่สำเร็จ กรุณาลองอีกครั้ง</span>`
                     : `
                   <span class="figma-share-url-text">${escHtml(inviteUrl)}</span>
                   <button type="button" class="figma-red-inline-action" data-copy-invite="${escHtml(inviteUrl)}">คัดลอก</button>`
@@ -380,13 +447,20 @@ export function renderFolderSheets(state) {
             </div>
           </div>
 
-          ${
-            shareState === "loading"
-              ? `<button type="button" class="figma-sheet-submit-btn is-muted" disabled>กำลังสร้างลิงก์…</button>`
-              : shareState === "error"
-                ? `<button type="button" class="figma-sheet-submit-btn" data-action="generate-share-link">ลองอีกครั้ง</button>`
-                : `<button type="button" class="figma-sheet-submit-btn" data-copy-invite="${escHtml(inviteUrl)}">คัดลอกลิงก์เชิญ</button>`
-          }
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;">
+            <button
+              type="button"
+              class="figma-btn-outline-48"
+              data-action="generate-share-link"
+              ${shareState === "loading" ? "disabled" : ""}
+            >สร้างลิงก์ใหม่</button>
+            <button
+              type="button"
+              class="figma-btn-red-48"
+              data-copy-invite="${escHtml(inviteUrl)}"
+              ${shareState === "loading" ? "disabled" : ""}
+            >คัดลอกลิงก์เชิญ</button>
+          </div>
 
           <button
             type="button"
@@ -396,14 +470,14 @@ export function renderFolderSheets(state) {
           >แชร์ผ่านแอปอื่น</button>
 
           <p class="figma-share-footnote">
-            คำเชิญสร้างลิงก์ผ่าน API พร้อมกำหนดสิทธิ์ (${sharePerm === "editor" ? "แก้ไขได้" : "ดูอย่างเดียว"})
+            สิทธิ์ที่เลือก: ${sharePerm === "editor" ? "ผู้แก้ไข (เพิ่ม/แก้ไขลิงก์ได้)" : "ผู้ดู (อ่านอย่างเดียว)"}
           </p>
 
           ${
             members.length > 0 || activeInvites.length > 0
               ? `
             <div class="figma-sheet-field" style="width:100%;">
-              <span class="figma-share-label">สมาชิกที่เข้าร่วม (${members.length})</span>
+              <span class="figma-share-label">สมาชิกที่เข้าร่วม (${members.length}) · ลิงก์ที่ใช้งานอยู่ (${activeInvites.length})</span>
               <div class="figma-member-list">
                 ${members
                   .map((m) => {
@@ -415,7 +489,7 @@ export function renderFolderSheets(state) {
                       <div class="figma-member-row">
                         <div class="figma-member-meta">
                           <strong>${escHtml(label)}</strong>
-                          <span>${isMemberOwner ? "เจ้าของโฟลเดอร์" : m.role === "editor" ? "เพิ่มและแก้ไขได้" : "ดูอย่างเดียว"}</span>
+                          <span>${isMemberOwner ? "เจ้าของโฟลเดอร์" : m.role === "editor" ? "ผู้แก้ไข (Editor)" : "ผู้ดู (Viewer)"}</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:6px;">
                           ${
@@ -434,20 +508,27 @@ export function renderFolderSheets(state) {
                   })
                   .join("")}
                 ${activeInvites
-                  .map(
-                    (inv) => `
+                  .map((inv) => {
+                    const invLink = inv.invite_url || buildFolderInviteUrl({ id: folder.id, inviteSlug: inv.token }, inv.role);
+                    const usesText = inv.max_uses
+                      ? `ใช้ไป ${Number(inv.use_count || 0)}/${Number(inv.max_uses)} ครั้ง`
+                      : `${Number(inv.use_count || 0) > 0 ? `ใช้ไป ${Number(inv.use_count)} ครั้ง · ` : ""}ไม่จำกัดครั้ง`;
+                    return `
                   <div class="figma-member-row">
                     <div class="figma-member-meta">
-                      <strong>ลิงก์คำเชิญ (${inv.role === "editor" ? "แก้ไขได้" : "ดูอย่างเดียว"})</strong>
-                      <span>${escHtml((inv.token || "").slice(0, 12))}…</span>
+                      <strong>${inv.role === "editor" ? "Editor" : "Viewer"} · ${escHtml(formatInvExpiry(inv))}</strong>
+                      <span>${escHtml(usesText)} · ${escHtml((inv.token || "").slice(0, 10))}…</span>
                     </div>
-                    ${
-                      isOwner && inv.token
-                        ? `<button type="button" class="btn-outline-pill" style="height:28px;padding:0 10px;font-size:11.5px;color:var(--theme-accent-text);" data-revoke-invite="${escHtml(inv.token)}">ยกเลิกลิงก์</button>`
-                        : ""
-                    }
-                  </div>`
-                  )
+                    <div style="display:flex;align-items:center;gap:6px;">
+                      <button type="button" class="btn-outline-pill" style="height:28px;padding:0 10px;font-size:11.5px;" data-copy-invite="${escHtml(invLink)}">คัดลอก</button>
+                      ${
+                        isOwner && inv.token
+                          ? `<button type="button" class="btn-outline-pill" style="height:28px;padding:0 10px;font-size:11.5px;color:var(--theme-accent-text);" data-revoke-invite="${escHtml(inv.token)}">ยกเลิก</button>`
+                          : ""
+                      }
+                    </div>
+                  </div>`;
+                  })
                   .join("")}
               </div>
             </div>`
@@ -504,7 +585,7 @@ export function renderFolderSheets(state) {
           </div>
           <span style="font-size:13px;font-weight:700;color:#55596a;">ผ่าน ${escHtml(sheet.appName || "LINE")}</span>
           <div style="background:#f7f5f0;border-radius:12px;padding:12px;font-size:13px;width:100%;">
-            <div>ชวนมาดูและช่วยกันเก็บลิงก์ในโฟลเดอร์ "${escHtml(folder.name)}" บน Sharely</div>
+            <div>ชวนมาดูและช่วยกันเก็บลิงก์ในโฟลเดอร์ "${escHtml(folder.name)}" บน Sherlink</div>
             <div style="color:var(--theme-accent-text);margin-top:4px;font-weight:600;word-break:break-all;">${escHtml(inviteUrl)}</div>
           </div>
           <button type="button" class="figma-sheet-submit-btn" data-preview-recipient-invite="${escHtml(folder.id)}">

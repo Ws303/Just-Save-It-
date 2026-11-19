@@ -1,12 +1,73 @@
 /**
- * Sharely / Just-Save-It Service Worker for RFC 8291 Web Push notifications.
+ * Sherlink Service Worker for PWA shell caching & RFC 8291 Web Push notifications.
  */
-self.addEventListener("install", () => {
-  self.skipWaiting();
+const CACHE_NAME = "sherlink-shell-v1";
+const PRECACHE_URLS = [
+  "/",
+  "/index.html",
+  "/manifest.webmanifest",
+  "/styles/tokens.css",
+  "/styles/app.css",
+  "/assets/apple-touch-icon.png",
+  "/assets/sherlink-icon-192.png",
+];
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches
+      .open(CACHE_NAME)
+      .then((cache) => cache.addAll(PRECACHE_URLS).catch(() => {}))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+      )
+      .then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener("fetch", (event) => {
+  const req = event.request;
+  if (req.method !== "GET") return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/local-media/")) return;
+
+  if (req.mode === "navigate" || url.pathname === "/" || url.pathname === "/index.html") {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          if (res && res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE_NAME).then((c) => c.put(req, copy)).catch(() => {});
+          }
+          return res;
+        })
+        .catch(() => caches.match(req).then((r) => r || caches.match("/index.html")))
+    );
+    return;
+  }
+
+  event.respondWith(
+    caches.match(req).then((cached) => {
+      const netFetch = fetch(req)
+        .then((res) => {
+          if (res && res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE_NAME).then((c) => c.put(req, copy)).catch(() => {});
+          }
+          return res;
+        })
+        .catch(() => cached);
+      return cached || netFetch;
+    })
+  );
 });
 
 self.addEventListener("push", (event) => {
@@ -19,10 +80,10 @@ self.addEventListener("push", (event) => {
     }
   }
 
-  const title = String(payload.title || "Just-Save-It เตือนอ่านลิงก์").slice(0, 160);
+  const title = String(payload.title || "Sherlink เตือนอ่านลิงก์").slice(0, 160);
   const body = String(payload.body || "ถึงเวลาทบทวนลิงก์ที่คุณบันทึกไว้แล้ว").slice(0, 400);
   const data = payload.data && typeof payload.data === "object" ? payload.data : {};
-  const tag = String(data.reminder_id || data.item_id || "sharely-reminder");
+  const tag = String(data.reminder_id || data.item_id || "sherlink-reminder");
 
   event.waitUntil(
     self.registration.showNotification(title, {

@@ -243,52 +243,7 @@ export function renderSecurityBody(state) {
 
         <hr style="border:none;border-top:1px solid var(--border-divider);width:100%;" />
 
-        <div style="display:flex;flex-direction:column;gap:10px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-            <strong style="font-size:15px;">MCP API Tokens</strong>
-            <button type="button" class="chip-pill" data-action="refresh-mcp-tokens">รีเฟรช</button>
-          </div>
-          <p class="tiny-hint" style="margin:0;">สร้าง Token สำหรับเชื่อมต่อ Claude Desktop, Cursor หรือ AI Agent ผ่าน <code>/mcp</code></p>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input class="field-input" type="text" placeholder="ชื่อ Client เช่น Claude Desktop" id="mcpTokenNameInput" style="flex:1;" />
-            <button type="button" class="btn-outline-pill" data-action="create-mcp-token">สร้าง Token</button>
-          </div>
-          ${
-            state.ui.latestMcpRawToken
-              ? `<div style="background:var(--bg-muted);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;">
-                   <span class="tiny-hint" style="font-weight:700;color:var(--theme-accent-text);">Token ใหม่ (แสดงครั้งเดียว กรุณาคัดลอกเก็บไว้):</span>
-                   <code style="font-size:12px;word-break:break-all;background:var(--bg-surface);padding:6px 8px;border-radius:8px;border:1px solid var(--border-light);">${escHtml(state.ui.latestMcpRawToken)}</code>
-                   <button type="button" class="btn-outline-pill" style="width:100%;" data-action="copy-mcp-raw-token">คัดลอก MCP Token</button>
-                 </div>`
-              : ""
-          }
-          <div class="settings-card">
-            ${
-              (state.ui.mcpTokens || []).length === 0
-                ? `<div class="settings-row"><span class="tiny-hint">ยังไม่มี MCP Token ที่ใช้งานอยู่</span></div>`
-                : (state.ui.mcpTokens || [])
-                    .map(
-                      (tok) => `
-                <div class="settings-row">
-                  <div class="settings-row-left" style="flex-direction:column;align-items:flex-start;gap:2px;">
-                    <span class="settings-row-label" style="font-size:13.5px;font-weight:600;">${escHtml(tok.name || "MCP Client")}</span>
-                    <span class="tiny-hint">${escHtml(tok.token_prefix || "jsi_live_...")}</span>
-                  </div>
-                  <button type="button" class="chip-pill" style="color:var(--theme-accent-text);border-color:var(--theme-accent);" data-revoke-mcp-token="${escHtml(tok.id)}">เพิกถอน</button>
-                </div>`
-                    )
-                    .join("")
-            }
-          </div>
-        </div>
-
-        <hr style="border:none;border-top:1px solid var(--border-divider);width:100%;" />
-
         <div class="settings-card">
-          <button type="button" class="settings-row" data-action="open-pdpa-policy">
-            <span>นโยบายความเป็นส่วนตัว (PDPA)</span>
-            ${icons.chevronRight(16)}
-          </button>
           <button type="button" class="settings-row" style="color:var(--theme-accent-text);font-weight:700;" data-action="open-delete-account">
             <span>ลบบัญชีผู้ใช้และข้อมูลทั้งหมด</span>
             ${icons.close(16)}
@@ -317,6 +272,15 @@ export function renderSecurityScreen(state) {
 export function renderHelpBody() {
   return `
         <div style="background:var(--bg-muted);border-radius:14px;padding:14px;">
+          <strong style="font-size:14.5px;display:block;margin-bottom:4px;">ติดตั้ง Sherlink บน iPhone / iPad (iOS Web App)</strong>
+          <p class="tiny-hint" style="margin:0;line-height:1.6;">
+            1. เปิดหน้าเว็บนี้ด้วย <strong>Safari</strong><br />
+            2. แตะปุ่ม <strong>แชร์ (Share)</strong> ที่แถบด้านล่าง<br />
+            3. เลือก <strong>เพิ่มไปยังหน้าจอโฮม (Add to Home Screen)</strong> เพื่อใช้งานแบบเต็มจอเหมือนแอป
+          </p>
+        </div>
+
+        <div style="background:var(--bg-muted);border-radius:14px;padding:14px;">
           <strong style="font-size:14.5px;display:block;margin-bottom:4px;">เปิดโพสต์ต้นฉบับไม่ได้ทำอย่างไร?</strong>
           <p class="tiny-hint" style="margin:0;line-height:1.55;">
             ลองเปิดจากลิงก์ต้นฉบับอีกครั้ง<br />
@@ -337,13 +301,6 @@ export function renderHelpBody() {
         </div>
 
         <button type="button" class="btn-accent-pill full48" data-submit-support="1">ส่งรายงาน</button>
-
-        <div class="settings-card">
-          <button type="button" class="settings-row" data-action="open-pdpa-policy">
-            <span>นโยบายความเป็นส่วนตัวและ PDPA</span>
-            ${icons.chevronRight(16)}
-          </button>
-        </div>
   `;
 }
 
@@ -418,32 +375,12 @@ export function renderProfileSheets(state) {
           </label>
           <div>
             <strong style="font-size:15px;">จำนวนที่จะส่งออก (${matchingLinks.length} รายการ)</strong>
-            <p class="tiny-hint" style="margin:4px 0 0;">ไฟล์ CSV รวมชื่อโพสต์ URL โฟลเดอร์ แท็ก และโน้ต · หรือดาวน์โหลด JSON ครบทุกข้อมูลตามสิทธิ์ PDPA</p>
+            <p class="tiny-hint" style="margin:4px 0 0;">ไฟล์ CSV รวมชื่อโพสต์ URL โฟลเดอร์ แท็ก โน้ต และสรุป</p>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
             <button class="btn-outline-pill" data-close-sheet="1">ยกเลิก</button>
             <button class="btn-accent-pill lg" data-download-csv="1">ส่งออก CSV</button>
           </div>
-          <button type="button" class="btn-outline-pill" style="width:100%;" data-download-json="1">ส่งออกเป็น JSON (ข้อมูลครบถ้วน)</button>
-        </div>
-      </div>
-    `;
-  }
-
-  if (sheet.type === "pdpaPolicy") {
-    return `
-      <div class="modal-backdrop" data-close-sheet="1">
-        <div class="bottom-sheet" style="max-height:82vh;overflow-y:auto;">
-          <h3 style="margin:0;font-size:20px;">นโยบายความเป็นส่วนตัว (PDPA)</h3>
-          <p class="tiny-hint" style="margin:6px 0 0;line-height:1.6;">
-            Sharely / Just Save It เก็บเฉพาะลิงก์ โน้ต แท็ก การตั้งเตือน และข้อมูลโปรไฟล์ที่คุณบันทึกไว้เท่านั้น โดยแยกสิทธิ์การเข้าถึงตาม User ID ผ่าน Row-Level Security (RLS)
-          </p>
-          <ul style="margin:8px 0;padding-left:18px;font-size:13px;color:var(--ink-secondary);line-height:1.6;">
-            <li>BYOK AI Keys ถูกใช้ส่งต่อจากเบราว์เซอร์เพื่อสรุปเนื้อหาตามคำขอของคุณโดยตรง</li>
-            <li>คุณสามารถส่งออกข้อมูลทั้งหมดเป็น CSV หรือ JSON ได้ตลอดเวลาจากเมนูส่งออกข้อมูล</li>
-            <li>คุณสามารถลบบัญชีและข้อมูลทั้งหมดอย่างถาวรได้ในหน้าบัญชีและความปลอดภัย</li>
-          </ul>
-          <button type="button" class="btn-accent-pill full48" data-close-sheet="1">รับทราบ</button>
         </div>
       </div>
     `;
@@ -455,7 +392,7 @@ export function renderProfileSheets(state) {
         <div class="center-dialog">
           <h3 style="margin:0;font-size:20px;color:var(--theme-accent-text);">ลบบัญชีผู้ใช้ถาวร?</h3>
           <p style="margin:0;font-size:13.5px;color:var(--ink-secondary);line-height:1.5;">
-            ข้อมูลลิงก์ โฟลเดอร์ แท็ก การเตือน และ MCP Token ทั้งหมดของคุณจะถูกลบถาวรและกู้คืนไม่ได้ พิมพ์ <strong>DELETE</strong> เพื่อยืนยัน
+            ข้อมูลลิงก์ โฟลเดอร์ แท็ก และการเตือนทั้งหมดใน Sherlink จะถูกลบถาวรและกู้คืนไม่ได้ พิมพ์ <strong>DELETE</strong> เพื่อยืนยัน
           </p>
           <input class="field-input" type="text" placeholder="พิมพ์ DELETE" id="deleteAccountConfirmInput" autocomplete="off" />
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;">

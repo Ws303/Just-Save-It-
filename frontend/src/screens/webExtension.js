@@ -6,26 +6,37 @@ import { icons, escHtml, safeHrefUrl, safeImgUrl, resolveMediaThumbUrl } from ".
 import { filterLinks, getFolderById, getFolderCount, getLinkById } from "../state/store.js";
 import { renderWebAuthView } from "./auth.js";
 import { renderNotificationsFullScreen } from "./home.js";
-import { renderLinkCard, renderAdvancedFilterToggle, renderAdvancedFilterDrawer } from "./common.js";
+import { renderLinkCard } from "./common.js";
 import { renderAiPanelBody } from "./ai.js";
 import { renderProfileBody, renderDisplayBody, renderSecurityBody, renderHelpBody } from "./profile.js";
-import { formatPostDetailTitleAndDesc, renderLinkDetailModals, renderRichPreviewBox, renderSavedPreviewScreen } from "./links.js";
+import {
+  formatPostDetailTitleAndDesc,
+  renderLinkDetailModals,
+  renderOriginalDescriptionBlock,
+  renderRichPreviewBox,
+  renderSavedPreviewScreen,
+  resolveDetailNavIds,
+} from "./links.js";
 
 function renderDesktopFolderThumb(folder, allLinks = [], isWatchLater = false) {
+  const customCover = !isWatchLater ? safeImgUrl(folder?.cover) : "";
+  if (customCover) {
+    return `<img src="${escHtml(customCover)}" alt="${escHtml(folder?.name || "")}" />`;
+  }
+
   const linkThumbs = (allLinks || [])
     .filter((l) => (isWatchLater ? !l.folderId || l.folderId === folder?.id : l.folderId === folder?.id))
     .map((l) => resolveMediaThumbUrl(l))
     .filter(Boolean)
     .slice(0, 4);
 
-  if (linkThumbs.length >= 2 || isWatchLater) {
-    const coverFallback = safeImgUrl(folder?.cover) || "";
+  if (isWatchLater || linkThumbs.length >= 2) {
     const slots = [0, 1, 2, 3];
     return `
       <div class="pc-folder-collage">
         ${slots
           .map((idx) => {
-            const src = linkThumbs[idx] || (idx === 0 ? coverFallback : "");
+            const src = linkThumbs[idx] || "";
             return src
               ? `<div class="pc-folder-collage-cell"><img src="${escHtml(src)}" alt="" /></div>`
               : `<div class="pc-folder-collage-cell"><span>${icons.imagePlaceholder(14)}</span></div>`;
@@ -35,9 +46,8 @@ function renderDesktopFolderThumb(folder, allLinks = [], isWatchLater = false) {
     `;
   }
 
-  const safeSrc = safeImgUrl(folder?.cover) || linkThumbs[0] || "";
-  if (safeSrc) {
-    return `<img src="${escHtml(safeSrc)}" alt="${escHtml(folder?.name || "")}" />`;
+  if (linkThumbs[0]) {
+    return `<img src="${escHtml(linkThumbs[0])}" alt="${escHtml(folder?.name || "")}" />`;
   }
   return `<div class="pc-folder-cover-empty">${escHtml(folder?.emoji || "📁")}</div>`;
 }
@@ -107,9 +117,7 @@ function renderDesktopFilterPills(activeFilter, scope, state = null) {
         </button>`
         )
         .join("")}
-      ${state ? renderAdvancedFilterToggle(state, drawerScope, "figma-filter-pill") : ""}
     </div>
-    ${state ? renderAdvancedFilterDrawer(state, drawerScope) : ""}
   `;
 }
 
@@ -139,9 +147,10 @@ function renderDesktopLinkDetail(state) {
   }
 
   const folder = getFolderById(item.folderId);
-  const idx = Math.max(0, links.findIndex((l) => l.id === item.id));
+  const navIds = resolveDetailNavIds(state);
+  const idx = Math.max(0, navIds.indexOf(item.id));
   const isSeen = item.status === "read";
-  const folderLabel = folder?.name || "ยังไม่จัดหมวด";
+  const folderLabel = ui.detailContextLabel || folder?.name || "ยังไม่จัดหมวด";
 
   return `
     <div class="pc-detail-head-bar">
@@ -149,7 +158,7 @@ function renderDesktopLinkDetail(state) {
         ${icons.back(22)}
         <span>รายละเอียด</span>
       </button>
-      <span class="figma-section-hint">${idx + 1}/${Math.max(1, links.length)} · ${escHtml(folderLabel)}</span>
+      <span class="figma-section-hint">${idx + 1}/${Math.max(1, navIds.length)} · ${escHtml(folderLabel)}</span>
     </div>
 
     <div class="pc-detail-stage" data-node-id="383:13673">
@@ -158,7 +167,7 @@ function renderDesktopLinkDetail(state) {
         class="pc-detail-arrow"
         data-link-nav="-1"
         aria-label="โพสต์ก่อนหน้า"
-        ${links.length <= 1 ? "disabled" : ""}
+        ${navIds.length <= 1 ? "disabled" : ""}
       >
         ${icons.back(20)}
       </button>
@@ -168,7 +177,7 @@ function renderDesktopLinkDetail(state) {
           ${renderRichPreviewBox(item, ui, { desktop: true })}
 
           ${(() => {
-            const { displayTitle, displayDesc } = formatPostDetailTitleAndDesc(item);
+            const { displayTitle } = formatPostDetailTitleAndDesc(item);
             return `
           <div class="figma-detail-post-info">
             <a
@@ -184,11 +193,6 @@ function renderDesktopLinkDetail(state) {
             <p class="figma-detail-post-meta">
               ${escHtml(item.platform || "Web")} · ${escHtml(folderLabel)} · ${escHtml(item.savedAgo || "เมื่อสักครู่")}
             </p>
-            ${
-              displayDesc
-                ? `<p class="figma-detail-post-desc">${escHtml(displayDesc)}</p>`
-                : ""
-            }
           </div>`;
           })()}
 
@@ -280,6 +284,8 @@ function renderDesktopLinkDetail(state) {
             </div>
           </div>
 
+          ${renderOriginalDescriptionBlock(item, ui)}
+
           <div class="figma-detail-ai-block" style="margin-top:auto;">
             ${
               item.aiSummary
@@ -307,7 +313,7 @@ function renderDesktopLinkDetail(state) {
         class="pc-detail-arrow"
         data-link-nav="1"
         aria-label="โพสต์ถัดไป"
-        ${links.length <= 1 ? "disabled" : ""}
+        ${navIds.length <= 1 ? "disabled" : ""}
       >
         ${icons.chevronRight(20)}
       </button>
@@ -320,10 +326,7 @@ function renderDesktopLinkDetail(state) {
 export function renderPcHomeLinksSectionInner(state) {
   const { links } = state.data;
   const { ui } = state;
-  const visibleLinks = filterLinks(links, ui.homeSearch, ui.homeFilter, {
-    platform: ui.homePlatformFilter,
-    contentType: ui.homeContentTypeFilter,
-  });
+  const visibleLinks = filterLinks(links, ui.homeSearch, ui.homeFilter);
   return `
     <div class="pc-section-head">
       <h2>บันทึกล่าสุด</h2>
@@ -363,10 +366,7 @@ export function renderPcFolderDetailLinksInner(state, folderOverride = null) {
   const activeFolder = folderOverride || getFolderById(ui.activeFolderId) || folders[0];
   if (!activeFolder) return "";
   const folderLinks = links.filter((l) => l.folderId === activeFolder.id);
-  const filteredFolderLinks = filterLinks(folderLinks, ui.folderDetailSearch, ui.folderDetailFilter, {
-    platform: ui.folderPlatformFilter,
-    contentType: ui.folderContentTypeFilter,
-  });
+  const filteredFolderLinks = filterLinks(folderLinks, ui.folderDetailSearch, ui.folderDetailFilter);
   return filteredFolderLinks.length === 0
     ? `<div class="figma-empty-state">
          <div class="figma-empty-icon">${icons.bookmarkSolid(22)}</div>
@@ -464,7 +464,7 @@ export function renderWebView(state) {
           </button>
         </div>
         <div class="pc-resume-mascot">
-          <img src="./assets/icons/login-cherry-illustration.svg" alt="" />
+          <img src="./assets/icons/home-cherry-mascot.svg" alt="Sherlink mascot" />
         </div>
       </div>
 
@@ -554,10 +554,6 @@ export function renderWebView(state) {
             <span>${escHtml(activeFolder.name)}</span>
           </button>
           <div class="pc-main-actions">
-            <button type="button" class="pc-invite-btn" data-open-edit-folder="${escHtml(activeFolder.id)}">
-              ${icons.pencil(14)}
-              <span>แก้ไข</span>
-            </button>
             <button type="button" class="pc-invite-btn" data-open-invite-sheet="${escHtml(activeFolder.id)}">
               <span>เชิญเพื่อน</span>
             </button>
@@ -715,7 +711,7 @@ export function renderWebView(state) {
     <div class="pc-shell" data-node-id="383:8963">
       <aside class="pc-sidebar" data-node-id="384:3028">
         <div class="pc-sidebar-brand">
-          <span class="pc-brand-title">Sharely</span>
+          <span class="pc-brand-title">Sherlink</span>
           <span class="pc-brand-cherry">${icons.cherry(22)}</span>
         </div>
 
@@ -781,7 +777,7 @@ export function renderExtensionPopup(state) {
   return `
     <div class="e1-popup">
       <div style="display:flex;align-items:center;justify-content:space-between;">
-        <strong style="font-size:18px;color:var(--ink-strong);">Sharely Extension</strong>
+        <strong style="font-size:18px;color:var(--ink-strong);">Sherlink Extension</strong>
         <div class="avatar-circle" style="width:32px;height:32px;background:var(--theme-soft);color:var(--theme-accent-text);">
           ${escHtml(userInitial)}
         </div>

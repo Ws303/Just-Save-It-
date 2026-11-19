@@ -5,7 +5,8 @@
     if (event.source !== window) return;
     if (event.origin !== window.location.origin) return;
     const msg = event.data;
-    if (!msg || msg.type !== "SHARELY_EXTENSION_CONNECT" || !msg.accessToken) return;
+    const isConnect = msg && (msg.type === "SHERLINK_EXTENSION_CONNECT" || msg.type === "SHARELY_EXTENSION_CONNECT");
+    if (!isConnect || !msg.accessToken) return;
     try {
       chrome.runtime.sendMessage(msg, () => {
         void chrome.runtime.lastError;

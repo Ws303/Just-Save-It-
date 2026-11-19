@@ -25,18 +25,17 @@ import {
   getOfflineQueueCount,
   patchLinkItem,
   previewLinkUrl,
+  resolveFolderCoverUrl,
   saveLinkItem,
   type PreviewUrlResponsePayload,
 } from "../../src/api";
 import {
   formatCardDisplayTitle,
   getSocialPostLinkWarning,
-  inferMobileContentType,
   inferMobileDomain,
   inferMobilePlatform,
   isGenericOrNoisyTitle,
   matchesItemSearch,
-  matchesPlatformFilter,
   resolveMobileThumbUrl,
   scrubGenericPlatformTitle,
 } from "../../src/itemHelpers";
@@ -52,19 +51,9 @@ import {
 
 const QUICK_FOLDER_ICONS = ["📁", "🍜", "☕", "🎬", "💻", "✈️", "🛍️", "💡"];
 
-const STATUS_LABELS: Record<WorkflowStatus, string> = {
-  inbox: "กล่องรับ",
-  todo: "รออ่าน",
-  done: "อ่านแล้ว",
-  archived: "เก็บถาวร",
-};
-
-function normalizeStatus(raw?: string): WorkflowStatus {
+function isReadStatus(raw?: string): boolean {
   const s = String(raw || "inbox").toLowerCase();
-  if (s === "done" || s === "read") return "done";
-  if (s === "todo") return "todo";
-  if (s === "archived") return "archived";
-  return "inbox";
+  return s === "done" || s === "read" || s === "archived";
 }
 
 function inferDomain(url: string): string {
@@ -90,10 +79,7 @@ export default function HomeFeedScreen() {
   const [queueCount, setQueueCount] = useState(0);
 
   const [searchText, setSearchText] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | WorkflowStatus>("all");
-  const [platformFilter, setPlatformFilter] = useState<string>("all");
-  const [contentTypeFilter, setContentTypeFilter] = useState<string>("all");
-  const [showFilters, setShowFilters] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<"all" | "unread" | "read" | "favorite">("all");
 
   // Quick Save Modal
   const [modalOpen, setModalOpen] = useState(false);
@@ -214,16 +200,15 @@ export default function HomeFeedScreen() {
 
   const filteredItems = useMemo(() => {
     return items.filter((item) => {
-      const wf = normalizeStatus(item.status);
-      if (statusFilter !== "all" && wf !== statusFilter) return false;
-      if (!matchesPlatformFilter(item, platformFilter)) return false;
-      const ct = inferMobileContentType(item);
-      if (contentTypeFilter !== "all" && ct !== contentTypeFilter.toLowerCase()) return false;
+      const seen = isReadStatus(item.status);
+      if (statusFilter === "unread" && seen) return false;
+      if (statusFilter === "read" && !seen) return false;
+      if (statusFilter === "favorite" && !item.is_favorite) return false;
       const fName = item.folder_id ? folderNameById.get(item.folder_id) || "" : "";
       if (!matchesItemSearch(item, searchText, fName)) return false;
       return true;
     });
-  }, [items, folderNameById, searchText, statusFilter, platformFilter, contentTypeFilter]);
+  }, [items, folderNameById, searchText, statusFilter]);
 
   function closeQuickSaveModal() {
     setModalOpen(false);
@@ -348,100 +333,91 @@ export default function HomeFeedScreen() {
             value={searchText}
             onChangeText={setSearchText}
           />
-          <Pressable
-            style={[styles.filterToggleBtn, showFilters && styles.filterToggleBtnActive]}
-            onPress={() => setShowFilters((v) => !v)}
-          >
-            <Text style={[styles.filterToggleText, showFilters && styles.filterToggleTextActive]}>
-              ตัวกรอง
-            </Text>
-          </Pressable>
         </View>
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.statusStrip}>
-          {(["all", "inbox", "todo", "done", "archived"] as const).map((st) => {
-            const active = statusFilter === st;
+          {(
+            [
+              { id: "all", label: "ทั้งหมด" },
+              { id: "unread", label: "ยังไม่ได้ดู" },
+              { id: "read", label: "ดูแล้ว" },
+              { id: "favorite", label: "ชื่นชอบ" },
+            ] as const
+          ).map((st) => {
+            const active = statusFilter === st.id;
             return (
               <Pressable
-                key={st}
+                key={st.id}
                 style={[styles.chip, active && styles.chipActive]}
-                onPress={() => setStatusFilter(st)}
+                onPress={() => setStatusFilter(st.id)}
               >
                 <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                  {st === "all" ? "ทั้งหมด" : STATUS_LABELS[st]}
+                  {st.label}
                 </Text>
               </Pressable>
             );
           })}
         </ScrollView>
-
-        {showFilters ? (
-          <View style={styles.drawer}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.subStrip}>
-              {[
-                { id: "all", label: "ทุกแพลตฟอร์ม" },
-                { id: "youtube", label: "YouTube" },
-                { id: "tiktok", label: "TikTok" },
-                { id: "instagram", label: "IG" },
-                { id: "facebook", label: "Facebook" },
-                { id: "x", label: "X" },
-                { id: "web", label: "เว็บไซต์" },
-              ].map((pl) => {
-                const active = platformFilter === pl.id;
-                return (
-                  <Pressable
-                    key={pl.id}
-                    style={[styles.smallChip, active && styles.chipActive]}
-                    onPress={() => setPlatformFilter(pl.id)}
-                  >
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{pl.label}</Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.subStrip}>
-              {[
-                { id: "all", label: "ทุกประเภท" },
-                { id: "video", label: "วิดีโอ" },
-                { id: "social", label: "โซเชียล" },
-                { id: "image", label: "รูปภาพ" },
-                { id: "article", label: "บทความ" },
-              ].map((ct) => {
-                const active = contentTypeFilter === ct.id;
-                return (
-                  <Pressable
-                    key={ct.id}
-                    style={[styles.smallChip, active && styles.chipActive]}
-                    onPress={() => setContentTypeFilter(ct.id)}
-                  >
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{ct.label}</Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          </View>
-        ) : null}
       </View>
 
       {loading ? (
         <View style={styles.centerBox}>
-          <ActivityIndicator size="large" color="#9B2C2C" />
+          <ActivityIndicator size="large" color="#E24C4B" />
         </View>
       ) : (
         <FlatList
           data={filteredItems}
           keyExtractor={(it) => it.id}
+          ListHeaderComponent={
+            folders.length ? (
+              <View style={styles.folderStripWrap}>
+                <View style={styles.folderStripHead}>
+                  <Text style={styles.folderStripTitle}>โฟลเดอร์ของฉัน</Text>
+                  <Pressable onPress={() => router.push("/(tabs)/folders")}>
+                    <Text style={styles.folderStripAction}>ดูทั้งหมด</Text>
+                  </Pressable>
+                </View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.folderStripRow}>
+                  {folders.slice(0, 8).map((f) => {
+                    const folderItems = items.filter((it) => it.folder_id === f.id);
+                    const thumb =
+                      resolveFolderCoverUrl(f.cover_url) ||
+                      folderItems.map((it) => resolveMobileThumbUrl(it)).find(Boolean) ||
+                      "";
+                    const cnt = typeof f.item_count === "number" ? f.item_count : folderItems.length;
+                    return (
+                      <Pressable
+                        key={f.id}
+                        style={styles.homeFolderCard}
+                        onPress={() => router.push(`/folder/${encodeURIComponent(f.id)}`)}
+                      >
+                        <View style={styles.homeFolderThumb}>
+                          {thumb ? (
+                            <Image source={{ uri: thumb }} style={styles.homeFolderThumbImg} resizeMode="cover" />
+                          ) : (
+                            <Text style={{ fontSize: 22 }}>{f.emoji || f.icon || "📁"}</Text>
+                          )}
+                        </View>
+                        <Text style={styles.homeFolderName} numberOfLines={1}>{f.name}</Text>
+                        <Text style={styles.homeFolderCount}>{cnt} รายการ</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            ) : null
+          }
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              tintColor="#9B2C2C"
+              tintColor="#E24C4B"
               onRefresh={() => {
                 setRefreshing(true);
                 void loadAll();
               }}
             />
           }
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: 100 }]}
           ListEmptyComponent={
             <View style={styles.emptyBox}>
               <Text style={styles.emptyTitle}>ยังไม่มีลิงก์ที่ตรงกับตัวกรอง</Text>
@@ -449,7 +425,7 @@ export default function HomeFeedScreen() {
             </View>
           }
           renderItem={({ item }) => {
-            const wf = normalizeStatus(item.status);
+            const seen = isReadStatus(item.status);
             const thumbUri = resolveMobileThumbUrl(item);
             const platLabel = inferMobilePlatform(item);
             return (
@@ -464,7 +440,7 @@ export default function HomeFeedScreen() {
                   <View style={styles.cardMetaRow}>
                     <Text style={styles.platformBadge}>{platLabel || inferDomain(item.url)}</Text>
                     <View style={styles.statusPill}>
-                      <Text style={styles.statusPillText}>{STATUS_LABELS[wf]}</Text>
+                      <Text style={styles.statusPillText}>{seen ? "ดูแล้ว" : "ยังไม่ดู"}</Text>
                     </View>
                     <Pressable style={styles.starBtnWrap} hitSlop={8} onPress={() => void toggleFavorite(item)}>
                       <Text style={styles.starBtn}>{item.is_favorite ? "⭐" : "☆"}</Text>
@@ -577,14 +553,14 @@ export default function HomeFeedScreen() {
               />
               <Text style={styles.label}>สถานะ</Text>
               <View style={styles.inlinePills}>
-                {(["inbox", "todo"] as const).map((st) => (
+                {(["inbox", "done"] as const).map((st) => (
                   <Pressable
                     key={st}
                     style={[styles.chip, saveStatus === st && styles.chipActive]}
                     onPress={() => setSaveStatus(st)}
                   >
                     <Text style={[styles.chipText, saveStatus === st && styles.chipTextActive]}>
-                      {STATUS_LABELS[st]}
+                      {st === "done" ? "ดูแล้ว" : "ยังไม่ดู"}
                     </Text>
                   </Pressable>
                 ))}
@@ -661,7 +637,7 @@ export default function HomeFeedScreen() {
                 {saving ? (
                   <ActivityIndicator color="#FDFBF7" />
                 ) : (
-                  <Text style={styles.saveCtaText}>บันทึกลง Sharely</Text>
+                  <Text style={styles.saveCtaText}>บันทึกลง Sherlink</Text>
                 )}
               </Pressable>
             </ScrollView>
@@ -874,4 +850,62 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   saveCtaText: { color: "#FDFBF7", fontWeight: "700", fontSize: 16 },
+  folderStripWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
+  },
+  folderStripHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  folderStripTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#1C1917",
+  },
+  folderStripAction: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#9B2C2C",
+  },
+  folderStripRow: {
+    gap: 10,
+    paddingRight: 8,
+  },
+  homeFolderCard: {
+    width: 112,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E7E5E4",
+    padding: 8,
+    alignItems: "flex-start",
+  },
+  homeFolderThumb: {
+    width: "100%",
+    height: 64,
+    borderRadius: 10,
+    backgroundColor: "#F5F0EB",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    marginBottom: 6,
+  },
+  homeFolderThumbImg: {
+    width: "100%",
+    height: "100%",
+  },
+  homeFolderName: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#1C1917",
+  },
+  homeFolderCount: {
+    fontSize: 11,
+    color: "#78716C",
+    marginTop: 2,
+  },
 });

@@ -48,12 +48,13 @@ function renderSharelyCherryWordmark({ size = "md", withCherry = false } = {}) {
     <div class="figma-brand-wordmark ${size}">
       ${withCherry ? `<span class="figma-wordmark-cherry">${icons.cherry(28)}</span>` : ""}
       <div class="figma-wordmark-row">
-        <span class="figma-wordmark-text">Sharely</span>
+        <span class="figma-wordmark-text">Sherlink</span>
         ${size === "hero" ? `<img class="figma-wordmark-rays" src="./assets/icons/login-wordmark-accent.svg" alt="" />` : ""}
       </div>
     </div>
   `;
 }
+export { renderSharelyCherryWordmark as renderSherlinkCherryWordmark };
 
 function renderAuthCardFormContent(state, { desktop = false } = {}) {
   const isInviteAuth = state.ui.authContext === "invite";
@@ -326,7 +327,7 @@ export function renderLoginScreen(state) {
           <img
             class="figma-landing-cherries"
             src="./assets/icons/login-cherry-illustration.svg"
-            alt="Sharely cherries"
+            alt="Sherlink cherries"
           />
           <div class="figma-landing-brand">
             ${renderSharelyCherryWordmark({ size: "hero" })}
@@ -396,6 +397,33 @@ export function renderCheckEmailScreen(state) {
   `;
 }
 
+function formatInviteMetaSummary(preview) {
+  if (!preview) return "";
+  const parts = [];
+  if (preview.never_expires || preview.expires_at === null) {
+    parts.push("ไม่มีวันหมดอายุ");
+  } else if (preview.expires_at) {
+    try {
+      const dt = new Date(preview.expires_at);
+      if (!Number.isNaN(dt.getTime())) {
+        const str = new Intl.DateTimeFormat("th-TH", {
+          day: "numeric",
+          month: "short",
+          hour: "2-digit",
+          minute: "2-digit",
+        }).format(dt);
+        parts.push(`หมดอายุ ${str}`);
+      }
+    } catch {}
+  }
+  if (preview.max_uses) {
+    const used = Number(preview.use_count || 0);
+    const left = Math.max(0, Number(preview.max_uses) - used);
+    parts.push(`ใช้ได้อีก ${left}/${Number(preview.max_uses)} ครั้ง`);
+  }
+  return parts.join(" · ");
+}
+
 export function renderInviteLandingScreen(state) {
   const preview = state.ui.invitePreview || null;
   const folder = getFolderById(state.ui.inviteFolderId || state.ui.activeFolderId) || state.data.folders[0] || null;
@@ -404,6 +432,7 @@ export function renderInviteLandingScreen(state) {
   const folderCover = preview?.folder_cover_url || folder?.cover || "";
   const folderEmoji = preview?.folder_emoji || folder?.emoji || "📁";
   const count = preview ? Number(preview.item_count || 0) : folder ? getFolderCount(folder) : 0;
+  const memberCount = preview?.member_count ?? folder?.sharedCount ?? 0;
   const inviterName = preview?.inviter_name || (folder && state.data.user?.isAuthenticated ? state.data.user.displayName : "เพื่อนของคุณ");
   const isInvalidInvite = Boolean(preview && preview.valid === false);
   const invalidReasonMap = {
@@ -412,7 +441,10 @@ export function renderInviteLandingScreen(state) {
     max_uses_reached: "ลิงก์คำเชิญนี้ถูกใช้งานครบตามจำนวนที่กำหนดแล้ว",
   };
   const invalidMessage = invalidReasonMap[preview?.reason] || "ลิงก์คำเชิญไม่ถูกต้องหรือหมดอายุแล้ว";
-  const roleLabel = preview?.role === "editor" ? "เพิ่มและแก้ไขลิงก์ได้" : "เปิดดูลิงก์ในโฟลเดอร์ได้";
+  const isEditor = preview?.role === "editor";
+  const roleBadge = isEditor ? "ผู้แก้ไข (Editor)" : "ผู้ดู (Viewer)";
+  const roleLabel = isEditor ? "เพิ่มและแก้ไขลิงก์ในโฟลเดอร์ได้" : "เปิดดูลิงก์ในโฟลเดอร์ได้ (อ่านอย่างเดียว)";
+  const inviteMeta = formatInviteMetaSummary(preview);
   const isLoggedIn = Boolean(state.data.user?.isAuthenticated);
   const safeCover = safeImgUrl(folderCover);
 
@@ -420,9 +452,9 @@ export function renderInviteLandingScreen(state) {
     <div class="screen-scroll">
       <div class="app-pad" style="display:flex;flex-direction:column;gap:18px;min-height:100%;">
         <div style="display:flex;align-items:center;justify-content:space-between;">
-          <span class="brand-heading" style="font-size:25px;">Sharely</span>
+          <span class="brand-heading" style="font-size:25px;">Sherlink</span>
           <span class="tb-pill-badge" style="border:none;">
-            ${icons.folder(14)} คำเชิญ
+            ${icons.folder(14)} คำเชิญ · ${escHtml(roleBadge)}
           </span>
         </div>
 
@@ -453,20 +485,25 @@ export function renderInviteLandingScreen(state) {
             <h3 style="margin:0 0 6px;font-size:20px;">${escHtml(folderName)}</h3>
             <p style="margin:0;font-size:13px;color:var(--ink-secondary);display:flex;align-items:center;gap:7px;">
               ${icons.people(17)}
-              <span>${count} ลิงก์ · สิทธิ์: ${escHtml(roleLabel)}</span>
+              <span>${count} ลิงก์${memberCount ? ` · ${Number(memberCount)} สมาชิก` : ""} · ${escHtml(roleLabel)}</span>
             </p>
+            ${
+              inviteMeta
+                ? `<p style="margin:6px 0 0;font-size:12px;color:var(--ink-muted);">${escHtml(inviteMeta)}</p>`
+                : ""
+            }
           </div>
         </div>
 
         <div style="background:var(--bg-muted);border-radius:13px;padding:13px;display:flex;flex-direction:column;gap:8px;">
-          <strong style="font-size:15px;">เมื่อเข้าร่วม คุณจะทำอะไรได้บ้าง</strong>
+          <strong style="font-size:15px;">สิทธิ์เมื่อเข้าร่วมโฟลเดอร์ (${escHtml(roleBadge)})</strong>
           <div class="inline-flex-row" style="font-size:13px;">
             <span style="color:var(--theme-accent-text);display:inline-flex;">${icons.check(17)}</span>
-            <span>เปิดดูโพสต์ที่เก็บไว้ในโฟลเดอร์</span>
+            <span>เปิดดูโพสต์และคำอธิบายที่เก็บไว้ในโฟลเดอร์</span>
           </div>
           <div class="inline-flex-row" style="font-size:13px;">
             <span style="color:var(--theme-accent-text);display:inline-flex;">${icons.check(17)}</span>
-            <span>${preview?.role === "viewer" ? "ติดตามการอัปเดตลิงก์ใหม่ร่วมกับเพื่อน" : "เพิ่มลิงก์ให้เพื่อนในโฟลเดอร์ดูได้"}</span>
+            <span>${isEditor ? "เพิ่ม ย้าย และจัดระเบียบลิงก์ร่วมกับเพื่อนได้" : "ติดตามอัปเดตลิงก์ใหม่ในโฟลเดอร์ได้ (ไม่สามารถลบหรือแก้ไขโฟลเดอร์)"}</span>
           </div>
         </div>
 
@@ -508,14 +545,14 @@ export function renderWebAuthView(state) {
 
   return `
     <div class="pc-auth-shell" data-pc-cream="1" data-node-id="390:572">
-      <img class="pc-auth-wave-red" src="./assets/icons/login-red-corner.svg" alt="" />
-      <img class="pc-auth-wave-lavender" src="./assets/icons/login-lavender-wave.svg" alt="" />
+      <img class="pc-auth-wave-red" src="./assets/icons/pc-login-red-corner.svg" alt="" />
+      <img class="pc-auth-wave-lavender" src="./assets/icons/pc-login-lavender-wave.svg" alt="" />
 
       <div class="pc-auth-inner">
         <section class="pc-auth-brand-stage">
           <div class="pc-auth-brand-copy">
             <div class="figma-wordmark-row desktop-hero">
-              <span class="pc-auth-wordmark">Sharely</span>
+              <span class="pc-auth-wordmark">Sherlink</span>
               <img class="figma-wordmark-rays pc" src="./assets/icons/login-wordmark-accent.svg" alt="" />
             </div>
             <p class="pc-auth-tagline">เซฟลิงก์ที่ชอบ กลับมาดูได้ทุกเมื่อ</p>
@@ -523,8 +560,8 @@ export function renderWebAuthView(state) {
 
           <img
             class="pc-auth-cherries-art"
-            src="./assets/icons/login-cherry-illustration.svg"
-            alt="Sharely cherries illustration"
+            src="./assets/icons/login-cherry-illustration-pc.svg"
+            alt="Sherlink cherries illustration"
           />
         </section>
 

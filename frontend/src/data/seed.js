@@ -1,5 +1,5 @@
 /**
- * Authoritative seed dataset matching Sharely Figma screens (iK9nRBTc2LWYahDIyEU8TK)
+ * Authoritative seed dataset matching Sherlink Figma screens
  * and Backend specs (PRODUCT_SPEC.md, backend/Ai/schemas.py, BACKEND_LOGIN_DB_PLAN.md).
  */
 
@@ -62,7 +62,7 @@ export const AI_PROVIDER_PRESETS = [
 export const THEME_OPTIONS = [
   {
     id: "sharely",
-    name: "Sharely",
+    name: "Sherlink",
     subtitle: "ธีมมาตรฐาน",
     swatch: "#c52732",
     softBg: "#fdf0f1",
@@ -186,6 +186,7 @@ export function createInitialSeed() {
         url: "https://www.instagram.com/reel/C8cafeAri99",
         domain: "instagram.com",
         title: "คาเฟ่น่านั่งย่านอารีย์",
+        description: "พาไปนั่งชิลล์คาเฟ่เปิดใหม่ย่านอารีย์ แสงธรรมชาติสวย ถ่ายรูปขึ้นมาก มีทั้งเมนู Dirty Coffee สูตรเฉพาะของร้านและเค้กโฮมเมด เปิดทุกวัน 08:30–18:00 น. #คาเฟ่อารีย์ #รีวิวคาเฟ่",
         savedAgo: "เซฟเมื่อ 3 วันก่อน",
         status: "unread",
         favorite: true,
@@ -294,6 +295,7 @@ export function createInitialSeed() {
         url: "https://www.youtube.com/watch?v=dQw4dripV60",
         domain: "youtube.com",
         title: "วิธีชงกาแฟดริปสำหรับมือใหม่",
+        description: "คลิปสอนชงกาแฟดริปด้วยดริปเปอร์ V60 สำหรับมือใหม่ อธิบายตั้งแต่การเลือกขนาดบดเมล็ด อุณหภูมิน้ำที่เหมาะสม 90–92°C อัตราส่วนกาแฟต่อน้ำ 1:15 และการบลูม 45 วินาที\n\nChapters:\n00:00 อุปกรณ์ที่ต้องเตรียม\n01:30 การบดเมล็ดและอุ่นกระดาษกรอง\n03:10 เทคนิคบลูม 45 วินาที\n05:20 เท 3 รอบให้รสชาติบาลานซ์",
         savedAgo: "เซฟเมื่อ 1 เดือนก่อน",
         status: "unread",
         favorite: false,

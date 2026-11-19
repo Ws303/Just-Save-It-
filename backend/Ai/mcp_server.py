@@ -139,7 +139,7 @@ def verify_mcp_token(raw_token: str, db: Any = None) -> str:
 resolve_user_id_from_token = verify_mcp_token
 
 
-mcp = FastMCP("Just-Save-It MCP Server") if FastMCP is not Any else None
+mcp = FastMCP("Sherlink MCP Server") if FastMCP is not Any else None
 
 
 # =====================================================================

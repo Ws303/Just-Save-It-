@@ -33,12 +33,12 @@ function setupContextMenus() {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: MENU_SAVE_PAGE,
-      title: "บันทึกหน้านี้ลง Sharely",
+      title: "บันทึกหน้านี้ลง Sherlink",
       contexts: ["page", "selection"],
     });
     chrome.contextMenus.create({
       id: MENU_SAVE_LINK,
-      title: "บันทึกลิงก์นี้ลง Sharely",
+      title: "บันทึกลิงก์นี้ลง Sherlink",
       contexts: ["link"],
     });
   });
@@ -95,7 +95,7 @@ async function runBackgroundSync() {
           chrome.notifications.create(`jsi_rem::${itemId}::${rem.id}`, {
             type: "basic",
             iconUrl: "icons/icon128.png",
-            title: "เตือนความจำจาก Sharely",
+            title: "เตือนความจำจาก Sherlink",
             message: rem.title_snapshot || "ถึงเวลาดูลิงก์ที่บันทึกไว้แล้ว",
             priority: 1,
           });
@@ -125,8 +125,15 @@ if (chrome.notifications && chrome.notifications.onClicked) {
   });
 }
 
+function isConnectMsg(message) {
+  return Boolean(
+    message &&
+      (message.type === "SHERLINK_EXTENSION_CONNECT" || message.type === "SHARELY_EXTENSION_CONNECT")
+  );
+}
+
 async function handleConnectMessage(message) {
-  if (!message || message.type !== "SHARELY_EXTENSION_CONNECT" || !message.accessToken) {
+  if (!isConnectMsg(message) || !message.accessToken) {
     return { ok: false, error: "Invalid message" };
   }
   const user = await JustSaveItApi.loginWithAccessToken(
@@ -139,7 +146,7 @@ async function handleConnectMessage(message) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message && message.type === "SHARELY_EXTENSION_CONNECT") {
+  if (isConnectMsg(message)) {
     handleConnectMessage(message)
       .then((res) => sendResponse(res))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
@@ -156,7 +163,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 if (chrome.runtime.onMessageExternal) {
   chrome.runtime.onMessageExternal.addListener((message, _sender, sendResponse) => {
-    if (message && message.type === "SHARELY_EXTENSION_CONNECT") {
+    if (isConnectMsg(message)) {
       handleConnectMessage(message)
         .then((res) => sendResponse(res))
         .catch((err) => sendResponse({ ok: false, error: err.message }));

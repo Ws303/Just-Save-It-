@@ -1540,3 +1540,125 @@ def test_cycle18_tag_rename_409_and_delete_local_user_purge(isolated_db, monkeyp
     finally:
         auth_dep._DELETED_USER_IDS.discard(uid)
         auth_service.purge_local_user(uid)
+
+
+@pytest.mark.asyncio
+async def test_sherlink_discord_invites_folder_cover_upload_and_ai_preserves_description(isolated_db, monkeypatch):
+    """Sherlink Batch 1: Discord-style invites, custom WebP folder cover upload, and AI summary leaving description intact."""
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    from Ai.schemas import AISummaryOutput, SummarizeRequest
+    from Ai.summarizer_service import summarize_item_once
+
+    monkeypatch.setenv("ENV", "development")
+    monkeypatch.setenv("ALLOW_DEV_AUTH_BYPASS", "true")
+
+    owner_id = "11111111-1111-4111-8111-111111111111"
+    member_id = "22222222-2222-4222-8222-222222222222"
+    isolated_db.tables["profiles"].append(
+        {"id": member_id, "email": "friend@example.com", "display_name": "เฟิร์น", "tier": "free"}
+    )
+
+    client = TestClient(app)
+    owner_hdr = {"X-User-Id": owner_id}
+    member_hdr = {"X-User-Id": member_id}
+
+    folder = create_folder_for_user(isolated_db, owner_id, FolderCreateRequest(name="รวมร้านเด็ด", emoji="☕"))
+    fid = folder["id"]
+
+    # 1. Discord-style invites: 30 min viewer + never-expires editor with max_uses=5
+    res_30m = client.post(
+        f"/api/folders/{fid}/invites",
+        json={"role": "viewer", "expires_in_minutes": 30, "max_uses": 5},
+        headers=owner_hdr,
+    )
+    assert res_30m.status_code == 201
+    b_30m = res_30m.json()
+    assert b_30m["role"] == "viewer"
+    assert b_30m["never_expires"] is False
+    assert b_30m["max_uses"] == 5
+    assert b_30m["expires_at"] is not None
+
+    res_never = client.post(
+        f"/api/folders/{fid}/invites",
+        json={"role": "editor", "expires_in_minutes": 0, "never_expires": True},
+        headers=owner_hdr,
+    )
+    assert res_never.status_code == 201
+    b_never = res_never.json()
+    assert b_never["role"] == "editor"
+    assert b_never["never_expires"] is True
+    assert b_never["expires_at"] is None
+
+    prev_never = client.get(f"/api/invites/{b_never['token']}").json()
+    assert prev_never["valid"] is True
+    assert prev_never["never_expires"] is True
+    assert prev_never["role"] == "editor"
+
+    # Member accepts never-expiring editor invite and shows display_name in members list
+    acc_res = client.post(f"/api/invites/{b_never['token']}/accept", headers=member_hdr)
+    assert acc_res.status_code == 200
+    assert acc_res.json()["role"] == "editor"
+
+    mem_res = client.get(f"/api/folders/{fid}/members", headers=owner_hdr)
+    assert mem_res.status_code == 200
+    mem_body = mem_res.json()
+    assert any(m.get("display_name") == "เฟิร์น" for m in mem_body["members"])
+    assert len(mem_body["active_invites"]) == 2
+    assert any(inv["token"] == b_never["token"] and inv["never_expires"] is True for inv in mem_body["active_invites"])
+
+    # Revoke 30m invite
+    rev_res = client.delete(f"/api/folders/{fid}/invites/{b_30m['token']}", headers=owner_hdr)
+    assert rev_res.status_code == 200
+    assert client.get(f"/api/invites/{b_30m['token']}").json()["valid"] is False
+
+    # 2. Custom folder cover upload (valid PNG -> WebP; SVG rejected 400; reset to None)
+    buf = BytesIO()
+    Image.new("RGB", (64, 64), color=(199, 45, 45)).save(buf, format="PNG")
+    png_data_uri = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    up_res = client.post(
+        "/api/folders/cover-upload",
+        json={"image_base64": png_data_uri, "folder_id": fid},
+        headers=owner_hdr,
+    )
+    assert up_res.status_code == 201
+    up_body = up_res.json()
+    assert up_body["content_type"] == "image/webp"
+    assert ".webp" in up_body["cover_url"]
+
+    listed_folders = list_folders_for_user(isolated_db, owner_id)
+    assert next(f for f in listed_folders if f["id"] == fid)["cover_url"] == up_body["cover_url"]
+
+    svg_data_uri = "data:image/svg+xml;base64," + base64.b64encode(b"<svg xmlns='http://www.w3.org/2000/svg'></svg>").decode("ascii")
+    bad_svg = client.post("/api/folders/cover-upload", json={"image_base64": svg_data_uri}, headers=owner_hdr)
+    assert bad_svg.status_code == 400
+
+    cleared = update_folder_for_user(isolated_db, owner_id, fid, FolderUpdateRequest(cover_url=None))
+    assert cleared["cover_url"] is None
+
+    # 3. AI Summarization leaves original description intact
+    orig_desc = "Full YouTube description with chapters 00:00 Intro\nhttps://example.com"
+    item = create_or_bump_item(
+        isolated_db,
+        owner_id,
+        ItemCreateRequest(url="https://www.youtube.com/watch?v=KeepDesc1234", title="Test Video", description=orig_desc),
+    )
+    with patch("Ai.summarizer_service.extract_text_for_ai", new=AsyncMock(return_value="Video transcript text")), patch(
+        "Ai.summarizer_service.generate_structured_summary",
+        new=AsyncMock(
+            return_value=(
+                AISummaryOutput(
+                    summary_th="• สรุปสั้นๆ จาก AI",
+                    suggested_tags=["#วิดีโอ"],
+                    content_type="video",
+                ),
+                "built-in:gemini-flash",
+            )
+        ),
+    ):
+        ai_res = await summarize_item_once(isolated_db, owner_id, SummarizeRequest(item_id=item["id"]))
+    assert ai_res.summary_th == "• สรุปสั้นๆ จาก AI"
+    row_after = isolated_db.table("items").select("*").eq("id", item["id"]).execute().data[0]
+    assert row_after["ai_summary"] == "• สรุปสั้นๆ จาก AI"
+    assert row_after["description"] == orig_desc

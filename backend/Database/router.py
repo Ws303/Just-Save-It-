@@ -38,10 +38,12 @@ from .repository import (
     update_folder_member_role,
     update_item_for_user,
     update_tag_for_user,
+    upload_folder_cover_for_user,
 )
 from .schemas import (
     DeviceRegisterRequest,
     FeedbackCreateRequest,
+    FolderCoverUploadRequest,
     FolderCreateRequest,
     FolderMemberRoleUpdateRequest,
     FolderUpdateRequest,
@@ -223,6 +225,15 @@ def delete_folder_endpoint(
     db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
     return delete_folder_for_user(db, user_id, folder_id)
+
+
+@router.post("/folders/cover-upload", status_code=status.HTTP_201_CREATED)
+def upload_folder_cover_endpoint(
+    req: FolderCoverUploadRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    return upload_folder_cover_for_user(db, user_id, req)
 
 
 @router.post("/folders/{folder_id}/invites", status_code=status.HTTP_201_CREATED)

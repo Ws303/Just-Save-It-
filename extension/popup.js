@@ -874,7 +874,7 @@
     }
   }
 
-  function applyWorkspaceSnapshot(ws, fallbackDisplay = "บัญชี Sharely") {
+  function applyWorkspaceSnapshot(ws, fallbackDisplay = "บัญชี Sherlink") {
     const folders = Array.isArray(ws && ws.folders) ? ws.folders : [];
     const tags = Array.isArray(ws && ws.tags) ? ws.tags : [];
     const items = Array.isArray(ws && ws.items) ? ws.items : [];
@@ -1164,7 +1164,7 @@
       state.reminder.viewYearMonth = getTodayIsoForTimezone().slice(0, 7);
     }
     renderReminderPicker();
-    const userDisplay = (cachedUser && (cachedUser.display_name || cachedUser.email)) || "บัญชี Sharely";
+    const userDisplay = (cachedUser && (cachedUser.display_name || cachedUser.email)) || "บัญชี Sherlink";
     if (els.userLabel) {
       els.userLabel.textContent = `👤 ${userDisplay}`;
     }
@@ -1249,7 +1249,7 @@
       });
       if (!tabs.length) {
         openSharelyWeb();
-        showBanner("เปิดเว็บ Sharely แล้ว — กรุณาล็อกอินในเว็บแล้วกด 'เชื่อมต่อจากหน้าเว็บ Sharely' อีกครั้ง", "info");
+        showBanner("เปิดเว็บ Sherlink แล้ว — กรุณาล็อกอินในเว็บแล้วกด 'เชื่อมต่อจากหน้าเว็บ Sherlink' อีกครั้ง", "info");
         return;
       }
       for (const tab of tabs) {
@@ -1294,7 +1294,7 @@
             const nextSession = await api.getSessionState();
             els.backendUrlInput.value = nextSession.backendUrl;
             enterSaverView({ user: profile }, await api.getWorkspaceCache(), null);
-            showBanner("เชื่อมต่อบัญชีจากหน้าเว็บ Sharely สำเร็จแล้ว!", "success");
+            showBanner("เชื่อมต่อบัญชีจากหน้าเว็บ Sherlink สำเร็จแล้ว!", "success");
             return;
           }
         } catch (err) {
@@ -1305,7 +1305,7 @@
           // Next tab
         }
       }
-      showBanner("พบแท็บ Sharely แต่ยังไม่ได้เข้าสู่ระบบ — กรุณาล็อกอินในหน้าเว็บก่อน แล้วลองอีกครั้ง", "error");
+      showBanner("พบแท็บ Sherlink แต่ยังไม่ได้เข้าสู่ระบบ — กรุณาล็อกอินในหน้าเว็บก่อน แล้วลองอีกครั้ง", "error");
     } finally {
       els.webConnectBtn.disabled = false;
     }

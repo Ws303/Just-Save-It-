@@ -250,23 +250,28 @@ async def preview_url_readonly(
         donor = find_recent_unfurl_cache(db, url_hash, user_id=user_id)
         if donor is not None:
             cached_data = _sanitize_cached_payload(donor, base_url=canon_url)
-            return {
-                "url": raw_url.strip(),
-                "canonical_url": canon_url,
-                "url_hash": url_hash,
-                "title": cached_data["title"] or canon_url,
-                "description": cached_data["description"],
-                "image_url": cached_data["image_url"],
-                "media_items": cached_data["media_items"],
-                "embed_type": cached_data["embed_type"],
-                "embed_url": cached_data["embed_url"],
-                "site_name": cached_data["site_name"],
-                "favicon_url": cached_data["favicon_url"],
-                "content_type": cached_data["content_type"] or "link",
-                "platform": cached_data["platform"] or "web",
-                "preview_status": "ok",
-                "cached": True,
-            }
+            canon_lower = canon_url.lower()
+            is_youtube_url = "youtube.com" in canon_lower or "youtu.be" in canon_lower
+            cached_desc = str(cached_data.get("description") or "").strip()
+            stale_yt_donor = is_youtube_url and (not cached_desc or cached_desc.startswith(("By ", "วิดีโอ YouTube")))
+            if not stale_yt_donor:
+                return {
+                    "url": raw_url.strip(),
+                    "canonical_url": canon_url,
+                    "url_hash": url_hash,
+                    "title": cached_data["title"] or canon_url,
+                    "description": cached_data["description"],
+                    "image_url": cached_data["image_url"],
+                    "media_items": cached_data["media_items"],
+                    "embed_type": cached_data["embed_type"],
+                    "embed_url": cached_data["embed_url"],
+                    "site_name": cached_data["site_name"],
+                    "favicon_url": cached_data["favicon_url"],
+                    "content_type": cached_data["content_type"] or "link",
+                    "platform": cached_data["platform"] or "web",
+                    "preview_status": "ok",
+                    "cached": True,
+                }
 
     try:
         result = await extract_unfurl_metadata(canon_url, fetch_full_description=True)
@@ -399,6 +404,10 @@ async def enrich_item(
         if donor is not None:
             cached_data = _sanitize_cached_payload(donor, base_url=canon_url)
             cached_plat = str(cached_data.get("platform") or old_plat or "").lower()
+            cached_desc = str(cached_data.get("description") or "").strip()
+            if needs_yt_full_desc and (not cached_desc or cached_desc.startswith(("By ", "วิดีโอ YouTube"))):
+                donor = None
+        if donor is not None:
             cached_cover, cached_media, _ = _resolve_media_with_existing(
                 cached_data["image_url"],
                 cached_data["media_items"],

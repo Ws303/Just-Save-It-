@@ -1,21 +1,21 @@
 {
-  "name": "Sharely — Just Save It",
-  "short_name": "Sharely",
+  "name": "Sherlink",
+  "short_name": "Sherlink",
   "description": "บันทึกลิงก์ จัดระเบียบโฟลเดอร์ สรุปด้วย AI และตั้งเตือนดูทีหลัง",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#FDFBF7",
-  "theme_color": "#D9383A",
+  "theme_color": "#FDFBF7",
   "icons": [
     {
-      "src": "/assets/sharely-icon-192.png",
+      "src": "/assets/sherlink-icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/assets/sharely-icon-512.png",
+      "src": "/assets/sherlink-icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"

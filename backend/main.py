@@ -133,7 +133,7 @@ async def _app_lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="Just-Save-It Backend API & Remote MCP Server",
+    title="Sherlink Backend API & Remote MCP Server",
     description="Backend services for saving links, Auth/Profile, Multi-language DB CRUD, On-Demand AI summarization, and external AI MCP access.",
     version="1.0.0",
     lifespan=_app_lifespan,
@@ -203,7 +203,7 @@ def health_check():
     """Health check endpoint for container orchestrators and uptime monitoring."""
     return {
         "status": "healthy",
-        "service": "Just-Save-It Backend",
+        "service": "Sherlink Backend",
         "auth_enabled": True,
         "mcp_enabled": mcp is not None,
         "storage_mode": "supabase" if is_supabase_configured() else "local_dev",

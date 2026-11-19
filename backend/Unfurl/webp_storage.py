@@ -12,8 +12,10 @@ Enforces PRODUCT_SPEC.md §8.1 storage policy:
 from io import BytesIO
 import logging
 import os
-from typing import Any, Callable, Optional, Tuple
+import re
+from typing import Any, Callable, Dict, Optional, Tuple
 import urllib.parse
+import uuid
 
 from PIL import Image, ImageOps
 
@@ -193,3 +195,52 @@ async def process_and_upload_cover(
         )
 
     return sanitize_external_url(external_image_url), False
+
+
+_NON_RASTER_PREFIX_RE = re.compile(rb"^\s*(?:<\?xml|<svg|<!doctype|<html|<script)", re.IGNORECASE)
+
+
+def build_folder_cover_storage_path(user_id: str, cover_id: Optional[str] = None) -> str:
+    """Return canonical storage object path `folder-covers/{safe_uid}/{cover_id}.webp`."""
+    safe_uid = "".join(ch for ch in (user_id or "").strip().lower() if ch in "0123456789abcdef-")
+    if not safe_uid:
+        raise ValueError("Invalid user_id for folder cover storage path.")
+    raw_cid = (cover_id or uuid.uuid4().hex).strip().lower()
+    safe_cid = "".join(ch for ch in raw_cid if ch in "0123456789abcdef-")
+    if not safe_cid:
+        raise ValueError("Invalid cover_id for folder cover storage path.")
+    return f"folder-covers/{safe_uid}/{safe_cid}.webp"
+
+
+def upload_custom_folder_cover(
+    raw_bytes: bytes,
+    user_id: str,
+    db: Any = None,
+    storage_uploader: Optional[StorageUploaderFn] = None,
+    cover_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Validate raster image bytes, compress to WebP (<120KB, <=800px), and upload to Storage."""
+    if not raw_bytes:
+        raise ValueError("Empty image payload.")
+    if len(raw_bytes) > MAX_RAW_IMAGE_BYTES:
+        raise ValueError(f"Raw image exceeds {MAX_RAW_IMAGE_BYTES} byte limit.")
+    if _NON_RASTER_PREFIX_RE.match(raw_bytes[:256]):
+        raise ValueError("Unsupported non-raster image payload (SVG/HTML is disallowed).")
+
+    webp_bytes = compress_image_to_webp(raw_bytes)
+    storage_path = build_folder_cover_storage_path(user_id, cover_id=cover_id)
+
+    if storage_uploader is not None:
+        uploaded_url = storage_uploader(storage_path, webp_bytes, "image/webp")
+    else:
+        uploaded_url = upload_webp_to_supabase_storage(db, storage_path, webp_bytes)
+
+    if not uploaded_url:
+        raise RuntimeError("Folder cover storage upload is not configured or failed.")
+
+    return {
+        "cover_url": uploaded_url,
+        "storage_path": storage_path,
+        "size_bytes": len(webp_bytes),
+        "content_type": "image/webp",
+    }

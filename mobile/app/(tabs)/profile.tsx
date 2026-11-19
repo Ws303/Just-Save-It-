@@ -7,7 +7,6 @@ import {
   Platform,
   Pressable,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -20,22 +19,16 @@ import {
   shouldNavigateAfterLogout,
 } from "../../src/actionGuards";
 import {
-  createMcpToken,
   deleteMyAccount,
-  exportWorkspaceJson,
   fetchWorkspace,
   flushOfflineQueue,
   getOfflineQueueCount,
-  listMcpTokens,
   logoutAccount,
   registerPushDevice,
-  revokeMcpToken,
   syncRemindersFromServer,
-  type McpTokenRecord,
 } from "../../src/api";
 import { registerMobilePushToken } from "../../src/notifications";
 import {
-  buildBoundedExportPayloadJson,
   getAuthGeneration,
   getDebugBannerEnabled,
   getMemoryCachedWorkspace,
@@ -61,11 +54,6 @@ export default function ProfileScreen() {
   const [debugBannerOn, setDebugBannerOn] = useState<boolean>(getDebugBannerEnabled);
   const [pushStatus, setPushStatus] = useState("ยังไม่ได้ลงทะเบียนอุปกรณ์นี้");
 
-  const [tokens, setTokens] = useState<McpTokenRecord[]>([]);
-  const [newTokenName, setNewTokenName] = useState("");
-  const [latestRawToken, setLatestRawToken] = useState("");
-
-  const [pdpaOpen, setPdpaOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deletePhrase, setDeletePhrase] = useState("");
   const [busyAction, setBusyAction] = useState("");
@@ -87,11 +75,10 @@ export default function ProfileScreen() {
       setFolderCount((prev) => (prev > 0 ? prev : cached.folders.length));
     }
 
-    const [ws, qCount, savedTheme, tokRes] = await Promise.all([
+    const [ws, qCount, savedTheme] = await Promise.all([
       fetchWorkspace(),
       getOfflineQueueCount(),
       loadThemeMode(),
-      listMcpTokens(),
     ]);
     if (getAuthGeneration() !== startGen) return;
     setThemeMode(savedTheme);
@@ -102,10 +89,9 @@ export default function ProfileScreen() {
       (typeof ws.me?.display_name === "string" && ws.me.display_name) ||
         (typeof ws.me?.email === "string" && ws.me.email.split("@")[0]) ||
         sess.user?.display_name ||
-        "ผู้ใช้งาน Sharely",
+        "ผู้ใช้งาน Sherlink",
     );
     setEmail(typeof ws.me?.email === "string" ? ws.me.email : sess.user?.email || "");
-    setTokens(Array.isArray(tokRes.data?.tokens) ? tokRes.data.tokens : []);
   }, []);
 
   useFocusEffect(
@@ -169,79 +155,6 @@ export default function ProfileScreen() {
         void loadProfile();
       },
     );
-  }
-
-  async function handleCreateToken() {
-    await runGuardedBusyAction(
-      actionSeqRef,
-      (busy) => setBusyAction(busy ? "token" : ""),
-      async (isStale) => {
-        const res = await createMcpToken(newTokenName || "Expo Mobile Token");
-        if (isStale()) return;
-        if (!res.ok || !res.data) {
-          Alert.alert("สร้าง Token ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-          return;
-        }
-        setNewTokenName("");
-        if (res.data.token) {
-          setLatestRawToken(res.data.token);
-        }
-        void loadProfile();
-      },
-    );
-  }
-
-  async function handleRevokeToken(id: string) {
-    const startGen = getAuthGeneration();
-    const res = await revokeMcpToken(id);
-    if (getAuthGeneration() !== startGen) return;
-    if (res.ok) {
-      setTokens((prev) => prev.filter((t) => t.id !== id));
-    }
-  }
-
-  async function handleExportJson() {
-    let savedStartGen = getAuthGeneration();
-    const guarded = await runGuardedBusyAction(
-      actionSeqRef,
-      (busy) => setBusyAction(busy ? "export" : ""),
-      async (_isStale, startGen) => {
-        savedStartGen = startGen;
-        return exportWorkspaceJson();
-      },
-    );
-    if (guarded.aborted || !guarded.result) return;
-    const res = guarded.result;
-    if (!res.ok || !res.data) {
-      Alert.alert("ส่งออกข้อมูลไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-      return;
-    }
-    const bounded = buildBoundedExportPayloadJson(res.data as Record<string, unknown>);
-    if (bounded.truncated) {
-      Alert.alert(
-        "ขนาดข้อมูลส่งออกเกินขีดจำกัดแชร์บนมือถือ",
-        `ตัดรายการเหลือ ${bounded.exportedItems} จาก ${bounded.totalItems} รายการ เพื่อหลีกเลี่ยงขีดจำกัด Android Binder (ดาวน์โหลดฉบับเต็มได้ที่ WebApp)`,
-        [
-          { text: "ยกเลิก", style: "cancel" },
-          {
-            text: "แชร์ฉบับย่อ",
-            onPress: () => {
-              if (getAuthGeneration() !== savedStartGen) return;
-              void Share.share({
-                title: "just-save-it-export.json",
-                message: bounded.jsonString,
-              });
-            },
-          },
-        ],
-      );
-      return;
-    }
-    if (getAuthGeneration() !== savedStartGen) return;
-    await Share.share({
-      title: "just-save-it-export.json",
-      message: bounded.jsonString,
-    });
   }
 
   async function handleDeleteAccount() {
@@ -343,50 +256,7 @@ export default function ProfileScreen() {
       </View>
 
       <View style={[styles.sectionCard, { backgroundColor: cardBg }]}>
-        <Text style={[styles.sectionTitle, { color: textPrimary }]}>MCP API Tokens</Text>
-        <View style={styles.tokenInputRow}>
-          <TextInput
-            style={styles.tokenInput}
-            placeholder="ชื่อ Token (เช่น Claude / Cursor)"
-            placeholderTextColor="#A8A29E"
-            value={newTokenName}
-            onChangeText={setNewTokenName}
-          />
-          <Pressable style={styles.smallPrimaryBtn} onPress={() => void handleCreateToken()}>
-            <Text style={styles.smallPrimaryBtnText}>สร้าง</Text>
-          </Pressable>
-        </View>
-        {latestRawToken ? (
-          <View style={styles.tokenSecretBox}>
-            <Text style={styles.tokenSecretLabel}>Token ใหม่ (คัดลอกเก็บไว้ตอนนี้):</Text>
-            <Text selectable style={styles.tokenSecretValue}>
-              {latestRawToken}
-            </Text>
-          </View>
-        ) : null}
-        {tokens.map((tok) => (
-          <View key={tok.id} style={styles.tokenRow}>
-            <View>
-              <Text style={[styles.tokenName, { color: textPrimary }]}>{tok.name || "API Token"}</Text>
-              <Text style={styles.tokenMeta}>
-                {tok.token_prefix || tok.prefix ? `${tok.token_prefix || tok.prefix}•••` : tok.id}
-              </Text>
-            </View>
-            <Pressable style={styles.revokeBtn} onPress={() => void handleRevokeToken(tok.id)}>
-              <Text style={styles.revokeBtnText}>เพิกถอน</Text>
-            </Pressable>
-          </View>
-        ))}
-      </View>
-
-      <View style={[styles.sectionCard, { backgroundColor: cardBg }]}>
-        <Text style={[styles.sectionTitle, { color: textPrimary }]}>PDPA & ข้อมูลส่วนตัว</Text>
-        <Pressable style={styles.rowBtn} onPress={() => void handleExportJson()}>
-          <Text style={styles.rowBtnText}>📦 ส่งออกข้อมูลทั้งหมดเป็น JSON</Text>
-        </Pressable>
-        <Pressable style={styles.rowBtn} onPress={() => setPdpaOpen(true)}>
-          <Text style={styles.rowBtnText}>🛡️ นโยบายความเป็นส่วนตัว (PDPA)</Text>
-        </Pressable>
+        <Text style={[styles.sectionTitle, { color: textPrimary }]}>บัญชีและความปลอดภัย</Text>
         <Pressable
           style={styles.rowBtn}
           onPress={() => setDebugBannerEnabled(!debugBannerOn)}
@@ -409,20 +279,6 @@ export default function ProfileScreen() {
       <Pressable style={styles.logoutBtn} onPress={() => void handleLogout()}>
         <Text style={styles.logoutBtnText}>ออกจากระบบ</Text>
       </Pressable>
-
-      <Modal visible={pdpaOpen} animationType="fade" transparent>
-        <View style={styles.backdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>🛡️ นโยบายความเป็นส่วนตัว (PDPA)</Text>
-            <Text style={styles.modalBody}>
-              Sharely จัดเก็บเฉพาะลิงก์ แท็ก โน้ต และข้อมูลโฟลเดอร์ที่คุณบันทึกไว้ภายใต้ Row-Level Security (RLS) แยกตามบัญชีผู้ใช้ 100% คุณสามารถส่งออกข้อมูล JSON หรือสั่งลบบัญชีอย่างถาวรได้ทุกเมื่อ
-            </Text>
-            <Pressable style={styles.confirmBtn} onPress={() => setPdpaOpen(false)}>
-              <Text style={styles.confirmBtnText}>ปิดหน้าต่าง</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
 
       <Modal visible={deleteOpen} animationType="fade" transparent onRequestClose={() => setDeleteOpen(false)}>
         <KeyboardAvoidingView

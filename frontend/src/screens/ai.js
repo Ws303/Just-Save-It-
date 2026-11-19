@@ -5,7 +5,6 @@
  */
 import { icons, escHtml } from "../components/icons.js";
 import { AI_PROVIDER_PRESETS } from "../data/seed.js";
-import { isQaModeEnabled } from "../state/store.js";
 import { renderBottomNav } from "./common.js";
 
 export function renderAiPanelBody(state) {
@@ -15,7 +14,6 @@ export function renderAiPanelBody(state) {
   const isBuiltIn = preset.backendProvider === "built-in";
   const openMenu = state.ui.aiDropdown;
   const selectedModel = cfg.model || "";
-  const firstLink = state.data.links[2] || state.data.links[0];
   const quotaTotal = Math.max(1, Number(state.data.freeQuotaTotal ?? state.data.freeQuotaLimit ?? 50));
   const quotaRemaining = Math.max(0, Number(state.data.freeQuotaRemaining ?? quotaTotal));
   const quotaPct = Math.min(100, Math.max(0, Math.round((quotaRemaining / quotaTotal) * 100)));
@@ -26,7 +24,7 @@ export function renderAiPanelBody(state) {
           <h1 class="page-heading">เชื่อมต่อ AI</h1>
         </div>
         <p style="margin:0;font-size:14px;color:var(--ink-secondary);">
-          เชื่อมต่อ Sharely กับ Endpoint ของคุณ (${escHtml(preset.description)})
+          เชื่อมต่อ Sherlink กับ Endpoint ของคุณ (${escHtml(preset.description)})
         </p>
 
         <!-- Provider Dropdown (119:683) -->
@@ -149,30 +147,6 @@ export function renderAiPanelBody(state) {
             <strong style="font-size:12.5px;color:${cfg.connected ? "#166534" : "#991b1b"};display:block;">
               ${cfg.connected ? "✓ เชื่อมต่อ AI พร้อมใช้งาน" : `⚠️ ${escHtml(cfg.lastTestError || "ทดสอบการเชื่อมต่อไม่สำเร็จ")}`}
             </strong>
-          </div>`
-            : ""
-        }
-
-        ${
-          firstLink
-            ? `
-          <div class="settings-card" style="padding:12px;background:var(--bg-muted);border-color:var(--border-divider);">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-              <strong style="font-size:13px;">ทดสอบสรุปเนื้อหาจากลิงก์ล่าสุด</strong>
-              ${
-                isQaModeEnabled()
-                  ? `<span class="tag-badge ${state.api.mode === "live" ? "live" : "mock"}">
-                       ${state.api.mode === "live" ? "LIVE API" : "MOCK MODE"}
-                     </span>`
-                  : ""
-              }
-            </div>
-            <p class="tiny-hint" style="margin:0 0 8px;">
-              ทดลองสรุป "${escHtml(firstLink.title)}"
-            </p>
-            <button type="button" class="btn-outline-pill" style="width:100%;height:38px;font-size:13px;" data-run-ai-summarize="${escHtml(firstLink.id)}">
-              ${state.api.isSummarizing ? "กำลังส่งคำขอ..." : "ทดสอบสรุปเนื้อหาทันที"}
-            </button>
           </div>`
             : ""
         }

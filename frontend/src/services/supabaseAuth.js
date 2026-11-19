@@ -96,7 +96,7 @@ function extractUserSummary(user, claims = null) {
   const meta = user?.user_metadata || {};
   const email = user?.email || claims?.email || "";
   const displayName =
-    meta.display_name || meta.full_name || meta.name || (email ? email.split("@")[0] : "ผู้ใช้ Sharely");
+    meta.display_name || meta.full_name || meta.name || (email ? email.split("@")[0] : "ผู้ใช้ Sherlink");
   return {
     id: user?.id || claims?.sub || "",
     email,

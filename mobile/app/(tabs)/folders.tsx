@@ -3,19 +3,23 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
+import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
-import { createFolder, fetchWorkspace } from "../../src/api";
+import { createFolder, fetchWorkspace, resolveFolderCoverUrl, updateFolder, uploadFolderCover } from "../../src/api";
+import { resolveMobileThumbUrl } from "../../src/itemHelpers";
 import {
   getAuthGeneration,
   getMemoryCachedWorkspace,
@@ -27,6 +31,16 @@ import {
 
 const ICON_CHOICES = ["📁", "☕", "🍜", "🎬", "✈️", "📚", "💡", "🛒"];
 
+interface FolderCardRow {
+  id: string;
+  name: string;
+  icon: string;
+  count: number;
+  cover: string;
+  customCoverUrl: string | null;
+  isVirtual: boolean;
+}
+
 export default function FoldersScreen() {
   const router = useRouter();
   const initialCache = getMemoryCachedWorkspace();
@@ -36,9 +50,14 @@ export default function FoldersScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [newIcon, setNewIcon] = useState("📁");
-  const [creating, setCreating] = useState(false);
+  const [coverDraft, setCoverDraft] = useState<string | null>(null);
+  const [hasExistingCustomCover, setHasExistingCustomCover] = useState(false);
+  const [resetCover, setResetCover] = useState(false);
+  const [coverUploading, setCoverUploading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const actionSeqRef = useRef(0);
 
   const loadData = useCallback(async () => {
@@ -78,36 +97,135 @@ export default function FoldersScreen() {
     }, [loadData]),
   );
 
-  async function handleCreate() {
+  function openCreateModal() {
+    setEditingFolderId(null);
+    setNewName("");
+    setNewIcon("📁");
+    setCoverDraft(null);
+    setHasExistingCustomCover(false);
+    setResetCover(false);
+    setModalOpen(true);
+  }
+
+  function openEditModal(card: FolderCardRow) {
+    if (card.isVirtual) return;
+    setEditingFolderId(card.id);
+    setNewName(card.name);
+    setNewIcon(card.icon || "📁");
+    setCoverDraft(resolveFolderCoverUrl(card.customCoverUrl) || null);
+    setHasExistingCustomCover(Boolean(card.customCoverUrl));
+    setResetCover(false);
+    setModalOpen(true);
+  }
+
+  function closeModal() {
+    setModalOpen(false);
+    setEditingFolderId(null);
+    setCoverUploading(false);
+  }
+
+  async function handlePickCover() {
+    if (coverUploading || saving) return;
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        aspect: [16, 10],
+        quality: 0.85,
+        base64: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const asset = result.assets[0];
+      if (!asset.base64) {
+        Alert.alert("อ่านไฟล์รูปไม่สำเร็จ", "กรุณาเลือกรูปภาพใหม่อีกครั้ง");
+        return;
+      }
+      const mime = asset.mimeType && asset.mimeType.startsWith("image/") ? asset.mimeType : "image/jpeg";
+      const dataUri = `data:${mime};base64,${asset.base64}`;
+      setCoverUploading(true);
+      const res = await uploadFolderCover(dataUri, asset.fileName || "cover.jpg");
+      setCoverUploading(false);
+      if (!res.ok || !res.data?.cover_url) {
+        Alert.alert("อัปโหลดภาพปกไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+        return;
+      }
+      setCoverDraft(res.data.cover_url);
+      setResetCover(false);
+    } catch {
+      setCoverUploading(false);
+      Alert.alert("ไม่สามารถเปิดคลังรูปภาพได้", "กรุณาตรวจสอบสิทธิ์การเข้าถึงรูปภาพในเครื่อง");
+    }
+  }
+
+  function handleResetCover() {
+    setCoverDraft(null);
+    setResetCover(true);
+  }
+
+  async function handleSaveFolder() {
     if (!newName.trim()) {
       Alert.alert("กรุณาระบุชื่อโฟลเดอร์");
       return;
     }
-    await runGuardedBusyAction(actionSeqRef, setCreating, async (isStale) => {
-      const res = await createFolder(newName, newIcon);
+    if (coverUploading) {
+      Alert.alert("กำลังอัปโหลดภาพปก", "กรุณารอสักครู่");
+      return;
+    }
+    const targetEditId = editingFolderId;
+    await runGuardedBusyAction(actionSeqRef, setSaving, async (isStale) => {
+      const res = targetEditId
+        ? await updateFolder(targetEditId, {
+            name: newName,
+            emoji: newIcon,
+            ...(coverDraft ? { cover_url: coverDraft } : resetCover ? { cover_url: null } : {}),
+          })
+        : await createFolder(newName, newIcon, coverDraft ? coverDraft : undefined);
       if (isStale()) return;
       if (!res.ok) {
-        Alert.alert("สร้างโฟลเดอร์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+        Alert.alert(targetEditId ? "แก้ไขโฟลเดอร์ไม่สำเร็จ" : "สร้างโฟลเดอร์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
         return;
       }
       setNewName("");
       setNewIcon("📁");
+      setCoverDraft(null);
+      setHasExistingCustomCover(false);
+      setResetCover(false);
+      setEditingFolderId(null);
       setModalOpen(false);
       void loadData();
     });
   }
 
-  const unfolderedCount = items.filter((it) => !it.folder_id).length;
+  const unfolderedItems = items.filter((it) => !it.folder_id);
+  const unfolderedCover = unfolderedItems.map((it) => resolveMobileThumbUrl(it)).find(Boolean) || "";
 
-  const cards: Array<{ id: string; name: string; icon: string; count: number }> = [
-    { id: "virtual-inbox", name: "รวมไว้ดูทีหลัง", icon: "🔖", count: unfolderedCount },
-    ...folders.map((f) => ({
-      id: f.id,
-      name: f.name,
-      icon: f.emoji || f.icon || "📁",
-      count: typeof f.item_count === "number" ? f.item_count : items.filter((it) => it.folder_id === f.id).length,
-    })),
+  const cards: FolderCardRow[] = [
+    {
+      id: "virtual-inbox",
+      name: "รวมไว้ดูทีหลัง",
+      icon: "🔖",
+      count: unfolderedItems.length,
+      cover: unfolderedCover,
+      customCoverUrl: null,
+      isVirtual: true,
+    },
+    ...folders.map((f) => {
+      const folderItems = items.filter((it) => it.folder_id === f.id);
+      const firstThumb = folderItems.map((it) => resolveMobileThumbUrl(it)).find(Boolean) || "";
+      const explicitCover = resolveFolderCoverUrl(f.cover_url);
+      return {
+        id: f.id,
+        name: f.name,
+        icon: f.emoji || f.icon || "📁",
+        count: typeof f.item_count === "number" ? f.item_count : folderItems.length,
+        cover: explicitCover || firstThumb,
+        customCoverUrl: f.cover_url ?? null,
+        isVirtual: false,
+      };
+    }),
   ];
+
+  const isEditing = Boolean(editingFolderId);
 
   return (
     <View style={styles.root}>
@@ -116,7 +234,7 @@ export default function FoldersScreen() {
           <Text style={styles.heading}>โฟลเดอร์ทั้งหมด</Text>
           <Text style={styles.subheading}>{folders.length} โฟลเดอร์ส่วนตัว & แชร์</Text>
         </View>
-        <Pressable style={styles.createBtn} onPress={() => setModalOpen(true)}>
+        <Pressable style={styles.createBtn} onPress={openCreateModal}>
           <Text style={styles.createBtnText}>+ สร้างโฟลเดอร์</Text>
         </Pressable>
       </View>
@@ -147,7 +265,30 @@ export default function FoldersScreen() {
               style={styles.folderCard}
               onPress={() => router.push(`/folder/${encodeURIComponent(item.id)}`)}
             >
-              <Text style={styles.folderIcon}>{item.icon}</Text>
+              <View style={styles.coverBox}>
+                {item.cover ? (
+                  <Image source={{ uri: item.cover }} style={styles.folderCoverImg} resizeMode="cover" />
+                ) : (
+                  <Text style={styles.folderIcon}>{item.icon}</Text>
+                )}
+                {item.cover ? (
+                  <View style={styles.coverEmojiBadge}>
+                    <Text style={styles.coverEmojiBadgeText}>{item.icon}</Text>
+                  </View>
+                ) : null}
+                {!item.isVirtual ? (
+                  <Pressable
+                    style={styles.cardEditBtn}
+                    hitSlop={8}
+                    onPress={(e) => {
+                      e.stopPropagation?.();
+                      openEditModal(item);
+                    }}
+                  >
+                    <Text style={styles.cardEditBtnText}>✎</Text>
+                  </Pressable>
+                ) : null}
+              </View>
               <Text style={styles.folderName} numberOfLines={2}>
                 {item.name}
               </Text>
@@ -157,45 +298,78 @@ export default function FoldersScreen() {
         />
       )}
 
-      <Modal visible={modalOpen} animationType="fade" transparent onRequestClose={() => setModalOpen(false)}>
+      <Modal visible={modalOpen} animationType="fade" transparent onRequestClose={closeModal}>
         <KeyboardAvoidingView
           style={styles.backdrop}
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>+ สร้างโฟลเดอร์ใหม่</Text>
-            <Text style={styles.label}>เลือกไอคอน</Text>
-            <View style={styles.iconRow}>
-              {ICON_CHOICES.map((ic) => (
-                <Pressable
-                  key={ic}
-                  style={[styles.iconChip, newIcon === ic && styles.iconChipActive]}
-                  onPress={() => setNewIcon(ic)}
-                >
-                  <Text style={styles.iconText}>{ic}</Text>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <Text style={styles.modalTitle}>
+                {isEditing ? "แก้ไขโฟลเดอร์" : "+ สร้างโฟลเดอร์ใหม่"}
+              </Text>
+              <Text style={styles.label}>ภาพปกโฟลเดอร์ (อัปโหลดเองหรือใช้อัตโนมัติ)</Text>
+              <View style={styles.modalCoverRow}>
+                <View style={styles.modalCoverPreview}>
+                  {coverDraft && !resetCover ? (
+                    <Image source={{ uri: coverDraft }} style={styles.folderCoverImg} resizeMode="cover" />
+                  ) : (
+                    <Text style={styles.modalCoverPlaceholder}>{newIcon}</Text>
+                  )}
+                </View>
+                <View style={styles.modalCoverActions}>
+                  <Pressable
+                    style={[styles.coverPickBtn, coverUploading && { opacity: 0.7 }]}
+                    disabled={coverUploading}
+                    onPress={() => void handlePickCover()}
+                  >
+                    <Text style={styles.coverPickBtnText}>
+                      {coverUploading ? "กำลังอัปโหลด..." : "🖼️ เลือกรูปจากเครื่อง"}
+                    </Text>
+                  </Pressable>
+                  {coverDraft || (hasExistingCustomCover && !resetCover) ? (
+                    <Pressable style={styles.coverResetBtn} onPress={handleResetCover}>
+                      <Text style={styles.coverResetBtnText}>ใช้ภาพปกอัตโนมัติ</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+
+              <Text style={styles.label}>เลือกไอคอน</Text>
+              <View style={styles.iconRow}>
+                {ICON_CHOICES.map((ic) => (
+                  <Pressable
+                    key={ic}
+                    style={[styles.iconChip, newIcon === ic && styles.iconChipActive]}
+                    onPress={() => setNewIcon(ic)}
+                  >
+                    <Text style={styles.iconText}>{ic}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={styles.label}>ชื่อโฟลเดอร์</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="เช่น คาเฟ่ห้ามพลาด"
+                placeholderTextColor="#A8A29E"
+                value={newName}
+                onChangeText={setNewName}
+              />
+              <View style={styles.modalActions}>
+                <Pressable style={styles.cancelBtn} onPress={closeModal}>
+                  <Text style={styles.cancelBtnText}>ยกเลิก</Text>
                 </Pressable>
-              ))}
-            </View>
-            <Text style={styles.label}>ชื่อโฟลเดอร์</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="เช่น คาเฟ่ห้ามพลาด"
-              placeholderTextColor="#A8A29E"
-              value={newName}
-              onChangeText={setNewName}
-            />
-            <View style={styles.modalActions}>
-              <Pressable style={styles.cancelBtn} onPress={() => setModalOpen(false)}>
-                <Text style={styles.cancelBtnText}>ยกเลิก</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.confirmBtn, creating && { opacity: 0.7 }]}
-                disabled={creating}
-                onPress={() => void handleCreate()}
-              >
-                <Text style={styles.confirmBtnText}>{creating ? "กำลังสร้าง..." : "สร้าง"}</Text>
-              </Pressable>
-            </View>
+                <Pressable
+                  style={[styles.confirmBtn, (saving || coverUploading) && { opacity: 0.7 }]}
+                  disabled={saving || coverUploading}
+                  onPress={() => void handleSaveFolder()}
+                >
+                  <Text style={styles.confirmBtnText}>
+                    {saving ? "กำลังบันทึก..." : isEditing ? "บันทึก" : "สร้าง"}
+                  </Text>
+                </Pressable>
+              </View>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -220,21 +394,92 @@ const styles = StyleSheet.create({
   createBtn: { backgroundColor: "#9B2C2C", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999 },
   createBtnText: { color: "#FDFBF7", fontWeight: "700", fontSize: 13 },
   centerBox: { flex: 1, alignItems: "center", justifyContent: "center" },
-  gridContent: { padding: 14, gap: 12 },
+  gridContent: { padding: 14, gap: 12, paddingBottom: 100 },
   gridRow: { gap: 12 },
   folderCard: {
     flex: 1,
     backgroundColor: "#FDFBF7",
     borderRadius: 18,
-    padding: 16,
+    padding: 12,
     borderWidth: 1,
     borderColor: "#EAE4DB",
-    minHeight: 130,
+    minHeight: 158,
     justifyContent: "space-between",
   },
+  coverBox: {
+    height: 86,
+    borderRadius: 12,
+    backgroundColor: "#F3EFE6",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    position: "relative",
+  },
+  folderCoverImg: {
+    width: "100%",
+    height: "100%",
+  },
+  coverEmojiBadge: {
+    position: "absolute",
+    bottom: 6,
+    left: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    backgroundColor: "rgba(253, 251, 247, 0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  coverEmojiBadgeText: { fontSize: 14 },
+  cardEditBtn: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(253, 251, 247, 0.94)",
+    borderWidth: 1,
+    borderColor: "#E7E0D5",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cardEditBtnText: { fontSize: 13, fontWeight: "700", color: "#44403C" },
   folderIcon: { fontSize: 30 },
   folderName: { fontSize: 15, fontWeight: "700", color: "#1C1917", marginTop: 10 },
   folderCount: { fontSize: 12, color: "#78716C", marginTop: 4 },
+  modalCoverRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 4 },
+  modalCoverPreview: {
+    width: 96,
+    height: 62,
+    borderRadius: 12,
+    backgroundColor: "#F3EFE6",
+    borderWidth: 1,
+    borderColor: "#E7E0D5",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  modalCoverPlaceholder: { fontSize: 24 },
+  modalCoverActions: { flex: 1, gap: 6 },
+  coverPickBtn: {
+    backgroundColor: "#F1EEFF",
+    borderWidth: 1,
+    borderColor: "#DDD6FE",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    alignItems: "center",
+  },
+  coverPickBtnText: { fontSize: 12, fontWeight: "700", color: "#4C1D95" },
+  coverResetBtn: {
+    backgroundColor: "#F3EFE6",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    alignItems: "center",
+  },
+  coverResetBtnText: { fontSize: 12, fontWeight: "600", color: "#57534E" },
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "center", padding: 20 },
   modalCard: { backgroundColor: "#FDFBF7", borderRadius: 20, padding: 20 },
   modalTitle: { fontSize: 18, fontWeight: "800", color: "#1C1917", marginBottom: 12 },

@@ -332,7 +332,7 @@ function RootLayoutContent() {
       <View style={[debugStyles.bootGate, { backgroundColor: bgColor }]}>
         <StatusBar style={themeMode === "dark" ? "light" : "dark"} backgroundColor="#880808" />
         <ActivityIndicator size="large" color="#9B2C2C" />
-        <Text style={debugStyles.bootText}>กำลังเตรียม Sharely...</Text>
+        <Text style={debugStyles.bootText}>กำลังเตรียม Sherlink...</Text>
       </View>
     );
   }

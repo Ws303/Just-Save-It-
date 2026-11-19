@@ -3187,3 +3187,58 @@ async def test_profile_pages_youtube_community_post_and_tiktok_photo_extraction(
     assert bumped_yt["enrich_status"] == "done"
     bumped_tt = create_or_bump_item(mock_db, "user-1", ItemCreateRequest(url=f"{tt_profile_url}?lang=en"))
     assert bumped_tt["enrich_status"] == "unfurled"
+
+
+@pytest.mark.asyncio
+async def test_youtube_default_full_description_and_ig_no_generic_title_regression(hermetic_isolation, monkeypatch):
+    """Verify extract_unfurl_metadata(..., fetch_full_description=True) pulls YT attributedDescriptionBodyText and IG never returns raw URL / generic 'Instagram' when author/JSON caption exists."""
+    monkeypatch.delenv("META_OEMBED_ACCESS_TOKEN", raising=False)
+    yt_url = "https://www.youtube.com/watch?v=AttrDesc1234"
+    ig_user_post = "https://www.instagram.com/cafe.tester/p/NoCap999/"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        u = str(request.url)
+        if u.startswith("https://www.youtube.com/oembed"):
+            return httpx.Response(
+                200,
+                json={
+                    "title": "YT Attributed Desc Test",
+                    "author_name": "TechLab",
+                    "thumbnail_url": "https://i.ytimg.com/vi/AttrDesc1234/hqdefault.jpg",
+                    "html": '<iframe src="https://www.youtube.com/embed/AttrDesc1234"></iframe>',
+                },
+                request=request,
+            )
+        if u == yt_url:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text='<html><head><title>YT Attributed Desc Test - YouTube</title></head><body><script>var ytInitialData={"attributedDescriptionBodyText":{"content":"Full YT chapters and detailed description line 1.\\nLine 2 resources"}};</script></body></html>',
+                request=request,
+            )
+        if u == "https://www.instagram.com/p/NoCap999/embed/captioned/":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text='<html><body><script>window.__d={"owner":{"username":"cafe.tester"},"edge_media_to_caption":{"edges":[{"node":{"text":"Secret coffee recipe from JSON!"}}]}};</script></body></html>',
+                request=request,
+            )
+        if u.startswith("https://www.instagram.com/cafe.tester/p/NoCap999"):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text='<html><head><title>Instagram</title><meta property="og:title" content="Instagram"></head><body></body></html>',
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+
+    yt_res = await extract_unfurl_metadata(yt_url, fetch_full_description=True)
+    assert yt_res.title == "YT Attributed Desc Test"
+    assert "Full YT chapters and detailed description line 1." in (yt_res.description or "")
+
+    ig_res = await extract_unfurl_metadata(ig_user_post)
+    assert ig_res.title is not None
+    assert ig_res.title != "Instagram"
+    assert "Secret coffee recipe from JSON!" in ig_res.title

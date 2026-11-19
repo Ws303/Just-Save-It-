@@ -1200,6 +1200,38 @@ export function renderLinkDetailModals(state, item) {
   return "";
 }
 
+export function resolveDetailNavIds(state) {
+  const links = state?.data?.links || [];
+  const existingIds = new Set(links.map((l) => l.id));
+  const rawNav = Array.isArray(state?.ui?.detailNavIds) ? state.ui.detailNavIds : [];
+  const filtered = rawNav.filter((id) => existingIds.has(id));
+  return filtered.length > 0 ? filtered : links.map((l) => l.id);
+}
+
+export function renderOriginalDescriptionBlock(item, uiState = {}) {
+  const rawDesc = String(item?.description || "").trim();
+  const { displayDesc } = formatPostDetailTitleAndDesc(item);
+  const fullDesc = rawDesc.length >= (displayDesc || "").length ? rawDesc : displayDesc;
+  if (!fullDesc) return "";
+  const isLong = fullDesc.length > 180 || fullDesc.split(/\r?\n/).length > 4;
+  const expanded = Boolean(uiState?.descExpanded);
+  return `
+    <div class="figma-detail-desc-block ${isLong && !expanded ? "clamped" : ""}">
+      <div class="figma-detail-desc-head">
+        <span class="figma-detail-sec-label">คำอธิบายจากโพสต์ต้นฉบับ</span>
+      </div>
+      <p class="figma-detail-post-desc">${escHtml(fullDesc)}</p>
+      ${
+        isLong
+          ? `<button type="button" class="figma-detail-desc-toggle" data-action="toggle-desc-expand">
+               ${expanded ? "ย่อข้อความ" : "อ่านเพิ่มเติม"}
+             </button>`
+          : ""
+      }
+    </div>
+  `;
+}
+
 export function renderLinkDetailScreen(state) {
   const links = state.data.links || [];
   const item = getLinkById(state.ui.activeLinkId) || links[0];
@@ -1207,11 +1239,12 @@ export function renderLinkDetailScreen(state) {
     return `<div class="app-pad"><button class="btn-outline-pill" data-nav="home">กลับหน้าหลัก</button></div>`;
   }
   const folder = getFolderById(item.folderId);
-  const idx = Math.max(0, links.findIndex((l) => l.id === item.id));
+  const navIds = resolveDetailNavIds(state);
+  const idx = Math.max(0, navIds.indexOf(item.id));
   const isSeen = item.status === "read";
   const backTarget = state.ui.prevScreen === "folderDetail" ? "folderDetail" : "home";
-  const sourceLabel = folder?.name ? folder.name : "บันทึกล่าสุด";
-  const { displayTitle, displayDesc } = formatPostDetailTitleAndDesc(item);
+  const sourceLabel = state.ui.detailContextLabel || (folder?.name ? folder.name : "บันทึกล่าสุด");
+  const { displayTitle } = formatPostDetailTitleAndDesc(item);
 
   return `
     <div class="figma-detail-page" data-node-id="319:6090">
@@ -1221,18 +1254,18 @@ export function renderLinkDetailScreen(state) {
         </button>
         <div class="figma-detail-top-titles">
           <h1 class="figma-detail-top-heading">รายละเอียด</h1>
-          <p class="figma-detail-top-sub">${idx + 1}/${Math.max(1, links.length)} · ${escHtml(sourceLabel)}</p>
+          <p class="figma-detail-top-sub">${idx + 1}/${Math.max(1, navIds.length)} · ${escHtml(sourceLabel)}</p>
         </div>
         <button type="button" class="cherry-btn ${item.favorite ? "active" : ""}" data-toggle-fav="${escHtml(item.id)}" title="ชื่นชอบ">
           ${icons.cherry(20)}
         </button>
       </div>
 
-      <div class="figma-detail-scroll">
-        <div class="figma-detail-edge-hint">
+      <div class="figma-detail-scroll" data-detail-swipe-host="1">
+        <button type="button" class="figma-detail-edge-hint" data-link-nav="-1" ${navIds.length <= 1 ? "disabled" : ""}>
           <span class="figma-edge-chevron">⌄</span>
-          <span>ลากลงเพื่อดูโพสต์ก่อนหน้า</span>
-        </div>
+          <span>โพสต์ก่อนหน้า</span>
+        </button>
 
         ${renderRichPreviewBox(item, state.ui)}
 
@@ -1249,11 +1282,6 @@ export function renderLinkDetailScreen(state) {
           <p class="figma-detail-post-meta">
             ${escHtml(item.platform || "Web")} · ${escHtml(item.savedAgo || "เมื่อสักครู่")} · ${escHtml(folder?.name || "ทั่วไป")}
           </p>
-          ${
-            displayDesc
-              ? `<p class="figma-detail-post-desc">${escHtml(displayDesc)}</p>`
-              : ""
-          }
         </div>
 
         <button type="button" class="figma-detail-reminder-pill" data-open-reminder="${escHtml(item.id)}">
@@ -1317,6 +1345,8 @@ export function renderLinkDetailScreen(state) {
           </div>
         </div>
 
+        ${renderOriginalDescriptionBlock(item, state.ui)}
+
         <div class="figma-detail-ai-block" data-node-id="372:873">
           ${
             item.aiSummary
@@ -1337,10 +1367,10 @@ export function renderLinkDetailScreen(state) {
           }
         </div>
 
-        <div class="figma-detail-edge-hint bottom">
+        <button type="button" class="figma-detail-edge-hint bottom" data-link-nav="1" ${navIds.length <= 1 ? "disabled" : ""}>
           <span class="figma-edge-chevron">⌃</span>
-          <span>ลากขึ้นเพื่อดูโพสต์ถัดไป</span>
-        </div>
+          <span>โพสต์ถัดไป</span>
+        </button>
       </div>
 
       <div class="figma-detail-sticky-cta">
@@ -1620,23 +1650,12 @@ export function renderSaveAndReminderSheets(state) {
           class="bottom-sheet figma-white-sheet ${isExpanded ? "is-expanded" : ""}"
           data-node-id="${isExpanded ? "319:4791" : "319:4332"}"
         >
-          <div
-            class="figma-sheet-handle"
-            role="button"
-            tabindex="0"
-            data-action="toggle-add-link-expand"
-            title="${isExpanded ? "ย่อแผง" : "ขยายแผง"}"
-          ></div>
+          <div class="figma-sheet-handle"></div>
 
           <div class="figma-add-sheet-scroll">
             <div class="figma-add-sheet-head">
               <h2 class="figma-add-sheet-title">เพิ่มลิงก์</h2>
-              <div style="display:flex;align-items:center;gap:8px;">
-                <button type="button" class="figma-add-expand-btn" data-action="toggle-add-link-expand">
-                  ${isExpanded ? "ย่อแผง" : "ขยายแผง"}
-                </button>
-                <button type="button" class="figma-share-close-btn" data-close-sheet="1" aria-label="ปิด">×</button>
-              </div>
+              <button type="button" class="figma-share-close-btn" data-close-sheet="1" aria-label="ปิด">×</button>
             </div>
 
             <div class="figma-sheet-field">
@@ -1711,9 +1730,6 @@ export function renderSaveAndReminderSheets(state) {
                     placeholder="ชื่อเรื่องหรือคำอธิบายโพสต์"
                     data-bind-save-title="1"
                   />
-                  <button type="button" class="figma-red-inline-action" data-run-unfurl="1">
-                    ดึงตัวอย่าง
-                  </button>
                 </div>
               </div>
               <div class="figma-sheet-field">
@@ -1786,34 +1802,6 @@ export function renderSaveAndReminderSheets(state) {
               value="${escHtml(sheet.time || "18:00")}"
               data-bind-cal-time="1"
             />
-          </div>
-
-          <!-- Spec 2B: Compact Recurring Schedule Row directly below Time -->
-          <div class="figma-recurrence-row">
-            <div class="figma-recurrence-tabs">
-              <button
-                type="button"
-                class="figma-recur-pill ${scheduleType === "once" ? "active" : ""}"
-                data-action="set-reminder-schedule-type"
-                data-schedule-type="once"
-              >เตือนครั้งเดียว</button>
-              <button
-                type="button"
-                class="figma-recur-pill ${scheduleType === "every_n_days" ? "active" : ""}"
-                data-action="set-reminder-schedule-type"
-                data-schedule-type="every_n_days"
-              >เตือนซ้ำทุก N วัน</button>
-            </div>
-            ${
-              scheduleType === "every_n_days"
-                ? `
-              <div class="figma-recur-stepper">
-                <button type="button" class="figma-step-btn" data-action="step-reminder-repeat-days" data-delta="-1">−</button>
-                <span>${repeatDays} วัน</span>
-                <button type="button" class="figma-step-btn" data-action="step-reminder-repeat-days" data-delta="1">+</button>
-              </div>`
-                : ""
-            }
           </div>
 
           <div class="figma-reminder-actions">

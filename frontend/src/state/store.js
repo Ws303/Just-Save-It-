@@ -301,7 +301,9 @@ export function resolveRuntimeApiConfig(runtimeWindow = typeof window !== "undef
   const isHttpsPage = String(runtimeWindow?.location?.protocol || "").trim().toLowerCase() === "https:";
   const isOnRenderHost = hostname.endsWith(".onrender.com");
 
-  const rawOverride = String(runtimeWindow?.SHARELY_CONFIG?.apiBaseUrl || "").trim();
+  const rawOverride = String(
+    runtimeWindow?.SHERLINK_CONFIG?.apiBaseUrl || runtimeWindow?.SHARELY_CONFIG?.apiBaseUrl || ""
+  ).trim();
   let validatedOverride = "";
   if (rawOverride) {
     try {
@@ -329,7 +331,9 @@ export function resolveRuntimeApiConfig(runtimeWindow = typeof window !== "undef
   }
 
   let supabaseUrl = DEFAULT_SUPABASE_URL;
-  const rawSupabaseOverride = String(runtimeWindow?.SHARELY_CONFIG?.supabaseUrl || "").trim();
+  const rawSupabaseOverride = String(
+    runtimeWindow?.SHERLINK_CONFIG?.supabaseUrl || runtimeWindow?.SHARELY_CONFIG?.supabaseUrl || ""
+  ).trim();
   if (rawSupabaseOverride) {
     try {
       const parsedSb = new URL(rawSupabaseOverride);
@@ -341,7 +345,9 @@ export function resolveRuntimeApiConfig(runtimeWindow = typeof window !== "undef
     }
   }
   const supabaseAnonKey =
-    String(runtimeWindow?.SHARELY_CONFIG?.supabaseAnonKey || "").trim() || DEFAULT_SUPABASE_KEY;
+    String(
+      runtimeWindow?.SHERLINK_CONFIG?.supabaseAnonKey || runtimeWindow?.SHARELY_CONFIG?.supabaseAnonKey || ""
+    ).trim() || DEFAULT_SUPABASE_KEY;
 
   return {
     baseUrl: baseUrl.replace(/\/+$/, ""),
@@ -377,7 +383,7 @@ if (!explicitLoggedOut && initialWorkspace.user && runtimeApiConfig.isLocalHost)
     ...initialWorkspace.user,
     id: savedSession.user.id || "",
     email: savedSession.user.email || "",
-    displayName: savedSession.user.displayName || savedSession.user.display_name || "สมาชิก Sharely",
+    displayName: savedSession.user.displayName || savedSession.user.display_name || "สมาชิก Sherlink",
     avatarInitial: (savedSession.user.displayName || savedSession.user.email || "S").charAt(0).toUpperCase(),
     isAuthenticated: true,
   };
@@ -407,6 +413,9 @@ export const store = {
       prevScreen: "home",
       activeFolderId: initialWorkspace.folders[0]?.id || null,
       activeLinkId: initialWorkspace.links[1]?.id || initialWorkspace.links[0]?.id || null,
+      detailNavIds: [],
+      detailContextLabel: "",
+      descExpanded: false,
       highlightLinkId: null,
       simulatedSourceApp: null, // null | "tiktok" | "instagram" | "youtube"
       previewIndex: 0,
@@ -423,10 +432,14 @@ export const store = {
       addLinkExpanded: false,
       folderPickerSheetOpen: false,
       createFolderSheetOpen: false,
+      folderCoverUploading: false,
+      folderCoverError: "",
       aiConfirmModalOpen: false,
       aiSummaryStatus: "idle", // "idle" | "confirm" | "loading" | "success" | "error"
       shareSheetState: "idle", // "idle" | "loading" | "error"
       sharePermission: "viewer", // "viewer" | "editor"
+      inviteExpiry: "7d", // "30m" | "1h" | "6h" | "12h" | "1d" | "7d" | "never"
+      inviteMaxUses: "",
       tagPopoverOpen: false,
       noteEditing: false,
       noteDraft: "",
@@ -623,6 +636,9 @@ export const store = {
       help: "help",
     };
     const nextPcSection = restExtras.pcSection || pcSectionMap[finalScreen];
+    if ("activeLinkId" in restExtras && restExtras.activeLinkId !== this.state.ui.activeLinkId && !("descExpanded" in restExtras)) {
+      this.state.ui.descExpanded = false;
+    }
     Object.assign(this.state.ui, {
       prevScreen: prev !== finalScreen ? prev : this.state.ui.prevScreen,
       screen: finalScreen,

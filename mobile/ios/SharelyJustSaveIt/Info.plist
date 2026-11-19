@@ -7,7 +7,9 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
     <key>CFBundleDisplayName</key>
-    <string>Sharely — Just Save It</string>
+    <string>Sherlink</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>อนุญาตให้ Sherlink เลือกรูปภาพจากเครื่องเพื่อตั้งเป็นปกโฟลเดอร์</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>

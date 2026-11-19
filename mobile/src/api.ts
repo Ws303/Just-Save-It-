@@ -14,6 +14,7 @@ import {
   getAuthGeneration,
   getClearEpoch,
   isAuthEpochStale,
+  loadAiConfig,
   loadCachedWorkspace,
   loadOfflineQueue,
   loadRegisteredPushDevice,
@@ -1061,29 +1062,135 @@ export async function refreshLinkPreview(
 }
 
 export async function summarizeLinkItem(itemId: string, forceRefresh = false): Promise<ApiResult<JsonRecord>> {
+  const cfg = await loadAiConfig().catch(() => ({
+    provider: "built-in" as const,
+    model: "gemini-3.1-flash-lite",
+    base_url: "",
+    api_key: "",
+  }));
+  const isBuiltIn = cfg.provider === "built-in";
+  const aiConfigBody = isBuiltIn
+    ? { provider: "built-in", api_key: null, base_url: null, model: cfg.model || null }
+    : {
+        provider: cfg.provider,
+        api_key: cfg.api_key?.trim() || null,
+        base_url: cfg.base_url?.trim() || null,
+        model: cfg.model?.trim() || null,
+      };
   return apiFetch<JsonRecord>("/api/ai/summarize", {
     method: "POST",
     body: {
       item_id: itemId,
       force_refresh: forceRefresh,
       save_to_note: false,
-      ai_config: { provider: "built-in", api_key: null, base_url: null, model: null },
+      ai_config: aiConfigBody,
     },
   });
 }
 
-export async function createFolder(name: string, emoji = "📁"): Promise<ApiResult<MobileFolderItem>> {
-  return apiFetch<MobileFolderItem>("/api/folders", { method: "POST", body: { name: name.trim(), emoji } });
+const WEB_APP_ORIGIN = "https://just-save-it-web.onrender.com";
+
+export function resolveFolderCoverUrl(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const cleaned = raw.trim();
+  if (!cleaned || /[\s"'<>]/.test(cleaned)) return "";
+  if (/^https?:\/\//i.test(cleaned)) return cleaned;
+  if (cleaned.startsWith("/local-media/")) return `${API_BASE}${cleaned}`;
+  if (cleaned.startsWith("./assets/covers/") || cleaned.startsWith("/assets/covers/")) {
+    return `${WEB_APP_ORIGIN}/${cleaned.replace(/^\.?\//, "")}`;
+  }
+  return "";
+}
+
+export async function uploadFolderCover(
+  imageBase64: string,
+  filename = "cover.jpg",
+): Promise<ApiResult<{ cover_url: string }>> {
+  return apiFetch<{ cover_url: string }>("/api/folders/cover-upload", {
+    method: "POST",
+    body: { image_base64: imageBase64, filename },
+  });
+}
+
+export async function createFolder(
+  name: string,
+  emoji = "📁",
+  coverUrl?: string | null,
+): Promise<ApiResult<MobileFolderItem>> {
+  return apiFetch<MobileFolderItem>("/api/folders", {
+    method: "POST",
+    body: {
+      name: name.trim(),
+      emoji,
+      ...(coverUrl !== undefined ? { cover_url: coverUrl } : {}),
+    },
+  });
+}
+
+export async function updateFolder(
+  folderId: string,
+  patch: { name?: string; emoji?: string; cover_url?: string | null },
+): Promise<ApiResult<MobileFolderItem>> {
+  const body: Record<string, unknown> = {};
+  if (patch.name !== undefined) body.name = patch.name.trim();
+  if (patch.emoji !== undefined) body.emoji = patch.emoji;
+  if ("cover_url" in patch) body.cover_url = patch.cover_url ?? null;
+  return apiFetch<MobileFolderItem>(`/api/folders/${encodeURIComponent(folderId)}`, {
+    method: "PATCH",
+    body,
+  });
+}
+
+export interface DiscordInviteCreateOptions {
+  role: "viewer" | "editor";
+  expires_in_minutes?: number;
+  expires_in_days?: number;
+  never_expires?: boolean;
+  max_uses?: number | null;
+}
+
+export function buildMobileInvitePayload(
+  optionsOrRole: "viewer" | "editor" | DiscordInviteCreateOptions = "editor",
+): Record<string, unknown> {
+  if (typeof optionsOrRole === "string") {
+    return { role: optionsOrRole === "viewer" ? "viewer" : "editor", expires_in_days: 7 };
+  }
+  const role = optionsOrRole.role === "viewer" ? "viewer" : "editor";
+  const body: Record<string, unknown> = { role };
+  if (optionsOrRole.never_expires) {
+    body.never_expires = true;
+  } else if (typeof optionsOrRole.expires_in_minutes === "number" && optionsOrRole.expires_in_minutes > 0) {
+    body.expires_in_minutes = optionsOrRole.expires_in_minutes;
+  } else if (typeof optionsOrRole.expires_in_days === "number" && optionsOrRole.expires_in_days > 0) {
+    body.expires_in_days = optionsOrRole.expires_in_days;
+  } else {
+    body.expires_in_days = 7;
+  }
+  if (typeof optionsOrRole.max_uses === "number" && optionsOrRole.max_uses > 0) {
+    body.max_uses = optionsOrRole.max_uses;
+  }
+  return body;
 }
 
 export async function createFolderInvite(
   folderId: string,
-  role: "viewer" | "editor" = "editor",
+  optionsOrRole: "viewer" | "editor" | DiscordInviteCreateOptions = "editor",
 ): Promise<ApiResult<JsonRecord>> {
   return apiFetch<JsonRecord>(`/api/folders/${encodeURIComponent(folderId)}/invites`, {
     method: "POST",
-    body: { role, expires_in_days: 7 },
+    body: buildMobileInvitePayload(optionsOrRole),
   });
+}
+
+export async function listFolderMembers(folderId: string): Promise<ApiResult<JsonRecord>> {
+  return apiFetch<JsonRecord>(`/api/folders/${encodeURIComponent(folderId)}/members`);
+}
+
+export async function revokeFolderInvite(folderId: string, token: string): Promise<ApiResult<JsonRecord>> {
+  return apiFetch<JsonRecord>(
+    `/api/folders/${encodeURIComponent(folderId)}/invites/${encodeURIComponent(token)}`,
+    { method: "DELETE" },
+  );
 }
 
 export async function acceptFolderInvite(token: string): Promise<ApiResult<JsonRecord>> {

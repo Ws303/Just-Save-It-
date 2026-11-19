@@ -4,7 +4,7 @@
  */
 import { icons, escHtml, safeImgUrl, resolveMediaThumbUrl } from "../components/icons.js";
 import { filterLinks, getFolderById, getFolderCount } from "../state/store.js";
-import { renderBottomNav, renderLinkCard, renderAdvancedFilterToggle, renderAdvancedFilterDrawer } from "./common.js";
+import { renderBottomNav, renderLinkCard } from "./common.js";
 
 export function renderNotificationsFullScreen(state) {
   const notifications = state.data.notifications || [];
@@ -117,13 +117,9 @@ export function renderHomeLinksSectionInner(state) {
     homeContentTypeFilter = "all",
   } = state.ui;
 
-  const filteredLinks = filterLinks(links, homeSearch, homeFilter, {
-    platform: homePlatformFilter,
-    contentType: homeContentTypeFilter,
-  });
-  const hasAdvancedFilter = homePlatformFilter !== "all" || homeContentTypeFilter !== "all";
+  const filteredLinks = filterLinks(links, homeSearch, homeFilter);
   const visibleLinks =
-    !showAllHomeLinks && !homeSearch && homeFilter === "all" && !hasAdvancedFilter
+    !showAllHomeLinks && !homeSearch && homeFilter === "all"
       ? filteredLinks.slice(0, 2)
       : filteredLinks;
 
@@ -145,7 +141,7 @@ export function renderHomeLinksSectionInner(state) {
       <div class="figma-empty-state">
         <div class="figma-empty-icon">${icons.bookmarkSolid(22)}</div>
         <h3>ยังไม่มีลิงก์ที่บันทึกไว้</h3>
-        <p>กดปุ่ม "+ เพิ่มลิงก์" ด้านบน หรือแชร์ลิงก์จากแอปอื่นมาที่ Sharely เพื่อเริ่มเก็บสิ่งน่าสนใจไว้ดูทีหลัง</p>
+        <p>กดปุ่ม "+ เพิ่มลิงก์" ด้านบน หรือแชร์ลิงก์จากแอปอื่นมาที่ Sherlink เพื่อเริ่มเก็บสิ่งน่าสนใจไว้ดูทีหลัง</p>
         <button type="button" class="figma-primary-btn compact" data-open-save-sheet="1">
           + เพิ่มลิงก์แรกของฉัน
         </button>
@@ -170,11 +166,8 @@ export function renderHomeScreen(state) {
     homeContentTypeFilter = "all",
   } = state.ui;
 
-  const hasAdvancedFilter = homePlatformFilter !== "all" || homeContentTypeFilter !== "all";
   const unreadNotifications = notifications.filter((n) => n.unread).length;
-  const resumeItem = links.find((l) => l.status !== "read") || links[0] || null;
-  const resumeThumb = resumeItem ? resolveMediaThumbUrl(resumeItem) : "";
-  const homeFolders = folders.filter((f) => f.name !== "ยังไม่จัดหมวด").slice(0, 4);
+  const homeFolders = folders.filter((f) => f.name !== "ยังไม่จัดหมวด").slice(0, 6);
 
   const filterChips = [
     { id: "all", label: "ทั้งหมด" },
@@ -186,7 +179,7 @@ export function renderHomeScreen(state) {
   return `
     <div class="screen-scroll with-nav-pad figma-home-page">
       <div class="figma-home-header">
-        <h1 class="figma-home-brand">Sharely</h1>
+        <h1 class="figma-home-brand">Sherlink</h1>
         <div class="figma-home-header-actions">
           <button type="button" class="figma-add-pill-btn" data-open-save-sheet="1">
             ${icons.plus(14)}
@@ -225,12 +218,10 @@ export function renderHomeScreen(state) {
             </button>`
             )
             .join("")}
-          ${renderAdvancedFilterToggle(state, "home", "figma-filter-pill")}
         </div>
-        ${renderAdvancedFilterDrawer(state, "home")}
 
         ${
-          homeFilter === "all" && !homeSearch && !hasAdvancedFilter
+          homeFilter === "all" && !homeSearch
             ? `
           <div class="figma-resume-banner">
             <div class="figma-resume-copy">
@@ -240,12 +231,8 @@ export function renderHomeScreen(state) {
                 ${icons.chevronRight(14)}
               </button>
             </div>
-            <div class="figma-resume-thumb">
-              ${
-                resumeThumb
-                  ? `<img src="${escHtml(resumeThumb)}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;" />`
-                  : icons.imagePlaceholder(22)
-              }
+            <div class="figma-resume-thumb figma-resume-mascot-wrap">
+              <img src="./assets/icons/home-cherry-mascot.svg" alt="Sherlink mascot" class="figma-resume-mascot" />
             </div>
           </div>`
             : ""
@@ -266,21 +253,35 @@ export function renderHomeScreen(state) {
                    </button>`
                 : homeFolders
                     .map((f) => {
-                      const coverThumb =
-                        safeImgUrl(f.cover) ||
-                        links
-                          .filter((l) => l.folderId === f.id)
-                          .map((l) => resolveMediaThumbUrl(l))
-                          .find(Boolean) ||
-                        "./assets/covers/coffee.png";
+                      const customCover = safeImgUrl(f.cover);
+                      const folderThumbs = links
+                        .filter((l) => l.folderId === f.id)
+                        .map((l) => resolveMediaThumbUrl(l))
+                        .filter(Boolean)
+                        .slice(0, 4);
+                      let coverHtml = "";
+                      if (customCover) {
+                        coverHtml = `<img src="${escHtml(customCover)}" alt="" class="figma-folder-cover-img" />`;
+                      } else if (folderThumbs.length >= 2) {
+                        coverHtml = `
+                          <div class="pc-folder-collage">
+                            ${[0, 1, 2, 3]
+                              .map((idx) =>
+                                folderThumbs[idx]
+                                  ? `<div class="pc-folder-collage-cell"><img src="${escHtml(folderThumbs[idx])}" alt="" /></div>`
+                                  : `<div class="pc-folder-collage-cell"><span>${icons.imagePlaceholder(12)}</span></div>`
+                              )
+                              .join("")}
+                          </div>`;
+                      } else if (folderThumbs[0]) {
+                        coverHtml = `<img src="${escHtml(folderThumbs[0])}" alt="" class="figma-folder-cover-img" />`;
+                      } else {
+                        coverHtml = `<div class="pc-folder-cover-empty">${escHtml(f.emoji || "📁")}</div>`;
+                      }
                       return `
               <button type="button" class="figma-folder-card" data-open-folder="${escHtml(f.id)}">
                 <div class="figma-folder-cover-wrap">
-                  <img
-                    src="${escHtml(coverThumb)}"
-                    alt=""
-                    class="figma-folder-cover-img"
-                  />
+                  ${coverHtml}
                 </div>
                 <div class="figma-folder-card-name">${escHtml(f.name)}</div>
                 <div class="figma-folder-card-count">${getFolderCount(f)} รายการ</div>

@@ -492,7 +492,7 @@ async def process_due_reminders_cron(
         uid = str(rem.get("user_id") or "")
         item_id = str(rem.get("item_id") or "")
         item = items_map.get(item_id) or {}
-        raw_title = str(rem.get("title_snapshot") or item.get("title") or item.get("url") or "Just-Save-It Reminder")
+        raw_title = str(rem.get("title_snapshot") or item.get("title") or item.get("url") or "Sherlink Reminder")
         raw_body = str(item.get("url") or "Time to revisit your saved item.")
         raw_url = str(item.get("url") or "")
         title = raw_title[:159] + "…" if len(raw_title) > 160 else raw_title

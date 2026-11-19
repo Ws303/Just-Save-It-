@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sharely — Quick Link Saver</title>
+  <title>Sherlink — Quick Link Saver</title>
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
@@ -11,12 +11,12 @@
     <!-- Minimalist Top Header -->
     <header class="topbar">
       <div class="brand">
-        <img src="icons/icon48.png" alt="Sharely" class="brand-logo" />
-        <span class="brand-wordmark">Sharely</span>
+        <img src="icons/icon48.png" alt="Sherlink" class="brand-logo" />
+        <span class="brand-wordmark">Sherlink</span>
         <span id="healthBadge" class="status-pill status-checking" title="สถานะการเชื่อมต่อ">Checking</span>
       </div>
       <div class="topbar-actions">
-        <button id="openWebBtn" type="button" class="open-web-pill" title="เปิดเว็บคลัง Sharely">
+        <button id="openWebBtn" type="button" class="open-web-pill" title="เปิดเว็บคลัง Sherlink">
           <span>เปิดเว็บ</span>
           <span aria-hidden="true">↗</span>
         </button>
@@ -61,16 +61,16 @@
       <div class="figma-white-sheet auth-sheet">
         <div class="hero-header">
           <div class="hero-icon-badge">
-            <img src="icons/icon48.png" alt="Sharely" class="hero-icon-img" />
+            <img src="icons/icon48.png" alt="Sherlink" class="hero-icon-img" />
           </div>
           <div>
-            <p class="hero-title">เข้าสู่ระบบ Sharely</p>
+            <p class="hero-title">เข้าสู่ระบบ Sherlink</p>
             <p class="hero-sub">บันทึกลิงก์จาก Chrome ลงคลังของคุณใน 1 คลิก</p>
           </div>
         </div>
 
         <button id="webConnectBtn" type="button" class="figma-sheet-submit-btn">
-          เชื่อมต่อจากหน้าเว็บ Sharely
+          เชื่อมต่อจากหน้าเว็บ Sherlink
         </button>
 
         <div class="tab-group" role="tablist">
@@ -133,9 +133,9 @@
       <section id="savePane" class="stack-sm">
         <section id="blockedTabCard" class="figma-white-sheet blocked-card hidden">
           <p class="hero-title">บันทึกหน้านี้ไม่ได้</p>
-          <p class="hero-sub">แท็บนี้ไม่ใช่หน้าเว็บ HTTP/HTTPS (เช่น chrome://) — กด "แก้ไข URL" ด้านล่างหรือเปิดคลัง Sharely</p>
+          <p class="hero-sub">แท็บนี้ไม่ใช่หน้าเว็บ HTTP/HTTPS (เช่น chrome://) — กด "แก้ไข URL" ด้านล่างหรือเปิดคลัง Sherlink</p>
           <button id="openWebBlockedBtn" type="button" class="figma-sheet-submit-btn">
-            เปิดคลัง Sharely
+            เปิดคลัง Sherlink
           </button>
         </section>
 
@@ -150,7 +150,7 @@
                 id="toggleUrlEditBtn"
                 type="button"
                 class="sheet-subtle-btn"
-                title="แก้ไข URL และสถานะ"
+                title="แก้ไข URL"
               >แก้ไข URL</button>
               <button
                 id="reminderTriggerBtn"
@@ -182,7 +182,7 @@
               <button type="button" class="reminder-chip" data-rem-preset="in_3_days">อีก 3 วัน</button>
             </div>
 
-            <div class="reminder-recur-row">
+            <div class="reminder-recur-row hidden">
               <div class="reminder-recur-tabs">
                 <button id="recurOnceBtn" type="button" class="recur-tab active">ครั้งเดียว</button>
                 <button id="recurRepeatBtn" type="button" class="recur-tab">ซ้ำทุก N วัน</button>
@@ -244,7 +244,7 @@
               <input id="urlInput" type="url" class="input input-mono" placeholder="https://..." required />
               <button id="refreshPreviewBtn" type="button" class="btn-chip" title="ดึงภาพปกและหัวข้อใหม่">↻</button>
             </div>
-            <div class="inline-row status-inline-row">
+            <div class="inline-row status-inline-row hidden">
               <label for="statusSelect" class="field-label" style="margin:0;">สถานะ</label>
               <select id="statusSelect" class="input input-sm">
                 <option value="inbox">กล่องเข้า (Inbox)</option>

@@ -52,13 +52,13 @@ def _validate_http_url_optional(value: Optional[str], field_name: str = "url") -
 
 
 def _validate_folder_cover_optional(value: Optional[str]) -> Optional[str]:
-    """Allow safe relative preset cover paths (./assets/covers/*.png) or clean HTTP(S) URLs."""
+    """Allow safe relative preset/local-media cover paths or clean HTTP(S) URLs."""
     if value is None:
         return None
     cleaned = str(value).strip()
     if not cleaned:
         return None
-    if cleaned.startswith(("./assets/covers/", "/assets/covers/")):
+    if cleaned.startswith(("./assets/covers/", "/assets/covers/", "/local-media/")):
         if ".." in cleaned or any(ord(ch) < 0x20 or ch in (" ", "<", ">", '"', "'", "\\") for ch in cleaned):
             raise ValueError("cover_url contains invalid characters.")
         return cleaned
@@ -256,9 +256,16 @@ class FolderUpdateRequest(BaseModel):
         return self
 
 
+class FolderCoverUploadRequest(BaseModel):
+    image_base64: str = Field(..., min_length=16, max_length=7_500_000)
+    folder_id: Optional[str] = None
+
+
 class InviteCreateRequest(BaseModel):
     role: Literal["viewer", "editor"] = "editor"
-    expires_in_days: int = Field(default=7, ge=1, le=90)
+    expires_in_days: Optional[int] = Field(default=None, ge=0, le=365)
+    expires_in_minutes: Optional[int] = Field(default=None, ge=0, le=525600)
+    never_expires: bool = False
     max_uses: Optional[int] = Field(default=None, ge=1, le=1000)
 
 

@@ -1317,21 +1317,17 @@ test("Cycle 9 [HIGH-1, MED-1, MED-2, MED-3, MED-4]: partial 401 fallback, cursor
     const actionChecks = [
       ["(tabs)/profile.tsx", /async function handleEnablePush[\s\S]{0,200}runGuardedBusyAction/],
       ["(tabs)/profile.tsx", /async function handleFlushQueue[\s\S]{0,200}runGuardedBusyAction/],
-      ["(tabs)/profile.tsx", /async function handleCreateToken[\s\S]{0,200}runGuardedBusyAction/],
-      ["(tabs)/profile.tsx", /async function handleRevokeToken[\s\S]{0,300}getAuthGeneration\(\) !== startGen/],
-      ["(tabs)/profile.tsx", /async function handleExportJson[\s\S]{0,250}runGuardedBusyAction/],
       ["(tabs)/profile.tsx", /async function handleDeleteAccount[\s\S]{0,700}deleteInFlightRef\.current[\s\S]{0,700}isPostClearSafeToNavigate/],
       ["(tabs)/profile.tsx", /deleteConfirmBtn[\s\S]{0,160}disabled=\{busyAction === "delete"\}/],
       ["(tabs)/profile.tsx", /async function handleLogout[\s\S]{0,250}shouldNavigateAfterLogout/],
-      ["item/[id].tsx", /async function handleStatusChange[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
-      ["item/[id].tsx", /async function handleRefreshPreview[\s\S]{0,200}runGuardedBusyAction/],
+      ["item/[id].tsx", /async function handleToggleSeen[\s\S]{0,550}getAuthGeneration\(\) !== startGen/],
       ["item/[id].tsx", /async function handleAiSummarize[\s\S]{0,200}runGuardedBusyAction/],
       ["item/[id].tsx", /async function handleSaveEdits[\s\S]{0,200}runGuardedBusyAction/],
       ["item/[id].tsx", /async function handleQuickReminder[\s\S]{0,200}runGuardedBusyAction/],
       ["item/[id].tsx", /async function handleClearReminder[\s\S]{0,200}runGuardedBusyAction/],
       ["item/[id].tsx", /function confirmDelete[\s\S]{0,500}getAuthGeneration\(\) !== modalGen/],
-      ["(tabs)/folders.tsx", /async function handleCreate[\s\S]{0,250}runGuardedBusyAction/],
-      ["folder/[id].tsx", /async function handleShareInvite[\s\S]{0,250}runGuardedBusyAction/],
+      ["(tabs)/folders.tsx", /async function handleSaveFolder[\s\S]{0,450}runGuardedBusyAction/],
+      ["folder/[id].tsx", /async function handleCreateInvite[\s\S]{0,650}runGuardedBusyAction/],
       ["(tabs)/index.tsx", /async function handleQuickSave[\s\S]{0,300}runGuardedBusyAction/],
       ["(tabs)/index.tsx", /async function toggleFavorite[\s\S]{0,400}getAuthGeneration\(\) !== startGen/],
       ["(tabs)/favorites.tsx", /async function removeFavorite[\s\S]{0,400}getAuthGeneration\(\) !== startGen[\s\S]{0,200}if \(!res\.ok\)/],
@@ -1992,14 +1988,14 @@ test("20. Set A fixes: thumb fallback, social/image/x filters, dynamic reminder 
 
   const itemDetailSrc = fs.readFileSync(path.join(mobileRoot, "app/item/[id].tsx"), "utf8");
   assert.match(itemDetailSrc, /resolveMobileThumbUrl\(item\)/);
-  assert.match(itemDetailSrc, /payloadStatus === "failed"/);
+  assert.match(itemDetailSrc, /st !== "failed"/);
   assert.match(itemDetailSrc, /async function handleClearReminder[\s\S]{0,600}syncRemindersFromServer/);
   assert.match(itemDetailSrc, /KeyboardAvoidingView/);
 
   const homeSrc = fs.readFileSync(path.join(mobileRoot, "app/(tabs)/index.tsx"), "utf8");
   assert.match(homeSrc, /resolveMobileThumbUrl\(item\)/);
-  assert.match(homeSrc, /inferMobileContentType\(item\)/);
-  assert.match(homeSrc, /matchesPlatformFilter\(item, platformFilter\)/);
+  assert.match(homeSrc, /โฟลเดอร์ของฉัน/);
+  assert.match(homeSrc, /ยังไม่ได้ดู/);
   assert.match(homeSrc, /KeyboardAvoidingView/);
 
   const tabsLayoutSrc = fs.readFileSync(path.join(mobileRoot, "app/(tabs)/_layout.tsx"), "utf8");
@@ -2306,5 +2302,135 @@ class MainActivity : ReactActivity() {
       description: "Daily coffee & cafe reviews in Thailand for fellow coffee lovers",
     }),
     "Cafe Guide TH (@creator)",
+  );
+});
+
+test("Sherlink Figma: saveAiConfig/loadAiConfig clearing on clearSession and Discord buildMobileInvitePayload", async () => {
+  const {
+    clearSession,
+    loadAiConfig,
+    saveAiConfig,
+    saveSession,
+    __setStorageBackendsForTests,
+  } = await import("../storage.ts");
+  const { API_BASE, buildMobileInvitePayload, resolveFolderCoverUrl } = await import("../api.ts");
+
+  const stdMem = new Map();
+  const secMem = new Map();
+  __setStorageBackendsForTests({
+    standard: {
+      getItem: async (k) => (stdMem.has(k) ? stdMem.get(k) : null),
+      setItem: async (k, v) => {
+        stdMem.set(k, String(v));
+      },
+      removeItem: async (k) => {
+        stdMem.delete(k);
+      },
+    },
+    secure: {
+      getItem: async (k) => (secMem.has(k) ? secMem.get(k) : null),
+      setItem: async (k, v) => {
+        secMem.set(k, String(v));
+      },
+      removeItem: async (k) => {
+        secMem.delete(k);
+      },
+    },
+  });
+
+  try {
+    await clearSession();
+    await saveAiConfig({
+      provider: "byok",
+      vendor: "openai",
+      model: "gpt-4o-mini",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-test-mobile-secret",
+    });
+
+    const loaded = await loadAiConfig();
+    assert.equal(loaded.provider, "byok");
+    assert.equal(loaded.vendor, "openai");
+    assert.equal(loaded.model, "gpt-4o-mini");
+    assert.equal(loaded.base_url, "https://api.openai.com/v1");
+    assert.equal(loaded.api_key, "sk-test-mobile-secret");
+
+    await clearSession();
+    const afterClear = await loadAiConfig();
+    assert.equal(afterClear.provider, "built-in");
+    assert.equal(afterClear.api_key, "");
+    assert.equal(afterClear.base_url, "");
+
+    // Direct cross-account switch via saveSession() must also wipe previous user's BYOK key (CHRIS H-2)
+    await saveSession({
+      access_token: "tok-a",
+      refresh_token: "ref-a",
+      user: { id: "uid-user-a", email: "a@sherlink.app" },
+    });
+    await saveAiConfig({
+      provider: "byok",
+      vendor: "openai",
+      model: "gpt-4o-mini",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-user-a-secret",
+    });
+    await saveSession({
+      access_token: "tok-b",
+      refresh_token: "ref-b",
+      user: { id: "uid-user-b", email: "b@sherlink.app" },
+    });
+    const afterSwitch = await loadAiConfig();
+    assert.equal(afterSwitch.provider, "built-in");
+    assert.equal(afterSwitch.api_key, "");
+  } finally {
+    await clearSession();
+    __setStorageBackendsForTests(null);
+  }
+
+  assert.equal(resolveFolderCoverUrl("/local-media/thumbnails/abc.webp"), `${API_BASE}/local-media/thumbnails/abc.webp`);
+  assert.equal(resolveFolderCoverUrl("./assets/covers/coffee.png"), "https://just-save-it-web.onrender.com/assets/covers/coffee.png");
+  assert.equal(resolveFolderCoverUrl("javascript:alert(1)"), "");
+
+  assert.deepEqual(buildMobileInvitePayload("viewer"), {
+    role: "viewer",
+    expires_in_days: 7,
+  });
+  assert.deepEqual(buildMobileInvitePayload("editor"), {
+    role: "editor",
+    expires_in_days: 7,
+  });
+  assert.deepEqual(
+    buildMobileInvitePayload({
+      role: "viewer",
+      expires_in_minutes: 30,
+      max_uses: 5,
+    }),
+    {
+      role: "viewer",
+      expires_in_minutes: 30,
+      max_uses: 5,
+    },
+  );
+  assert.deepEqual(
+    buildMobileInvitePayload({
+      role: "editor",
+      never_expires: true,
+    }),
+    {
+      role: "editor",
+      never_expires: true,
+    },
+  );
+  assert.deepEqual(
+    buildMobileInvitePayload({
+      role: "editor",
+      never_expires: false,
+      expires_in_days: 1,
+      max_uses: null,
+    }),
+    {
+      role: "editor",
+      expires_in_days: 1,
+    },
   );
 });

@@ -1,5 +1,5 @@
 /**
- * Dual-mode API & MCP Client for Sharely Test Web App.
+ * Dual-mode API & MCP Client for Sherlink Web App.
  * - Live Mode: executes real fetch() requests against FastAPI backend (backend/main.py).
  * - Mock Mode: simulates exact contracts for backend/Ai, backend/Login, backend/Database & 13 MCP tools.
  */
@@ -10,6 +10,40 @@ import { getAuthMode } from "./routeGuard.js";
 import { buildAuthRedirectUrl, extractClaimsSummary, supabaseAuth } from "./supabaseAuth.js";
 import { disableWebPush } from "./pushClient.js";
 import { broadcastLocalChange, noteLocalMutation, stopRealtimeSync } from "./realtimeClient.js";
+
+export function buildInviteCreatePayload(optionsOrRole = "viewer") {
+  const opts = typeof optionsOrRole === "string" ? { role: optionsOrRole } : (optionsOrRole || {});
+  const role = opts.role === "editor" ? "editor" : "viewer";
+  const body = { role };
+  const expiry = opts.expiry || (opts.neverExpires ? "never" : null);
+  if (opts.neverExpires || expiry === "never") {
+    body.never_expires = true;
+  } else if (typeof opts.expiresInMinutes === "number" && opts.expiresInMinutes > 0) {
+    body.expires_in_minutes = opts.expiresInMinutes;
+  } else if (typeof opts.expiresInDays === "number" && opts.expiresInDays > 0) {
+    body.expires_in_days = opts.expiresInDays;
+  } else if (expiry === "30m") {
+    body.expires_in_minutes = 30;
+  } else if (expiry === "1h") {
+    body.expires_in_minutes = 60;
+  } else if (expiry === "6h") {
+    body.expires_in_minutes = 360;
+  } else if (expiry === "12h") {
+    body.expires_in_minutes = 720;
+  } else if (expiry === "1d") {
+    body.expires_in_days = 1;
+  } else {
+    body.expires_in_days = 7;
+  }
+  const rawMax = opts.maxUses ?? opts.max_uses;
+  if (rawMax !== "" && rawMax !== null && typeof rawMax !== "undefined") {
+    const parsedMax = Number(rawMax);
+    if (Number.isInteger(parsedMax) && parsedMax > 0) {
+      body.max_uses = parsedMax;
+    }
+  }
+  return body;
+}
 
 const WORKSPACE_CACHE_PREFIX = "sharely_workspace_cache_v1:";
 const WORKSPACE_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
@@ -110,7 +144,7 @@ function mapBackendFolder(f, idx) {
     inviteSlug: String(f.id || "").slice(0, 8),
     baseExternalCount: 0,
     ...f,
-    cover: f.cover_url || f.cover || COVER_CHOICES[idx % COVER_CHOICES.length]?.src || "./assets/covers/coffee.png",
+    cover: f.cover_url || f.cover || null,
     sharedCount: f.member_count ?? f.sharedCount ?? (f.is_shared ? 2 : 0),
   };
 }
@@ -650,7 +684,7 @@ export const apiClient = {
     if (!item) return { ok: false, error: "ไม่พบ item_id ที่ต้องการ" };
 
     const forceRefresh = opts.forceRefresh ?? store.state.api.summarizeOptions.forceRefresh;
-    const saveToNote = opts.saveToNote ?? store.state.api.summarizeOptions.saveToNote;
+    const saveToNote = Boolean(opts.saveToNote ?? false);
     const { headers, aiConfigBody, preset } = buildAiHeadersAndConfig();
 
     const body = {
@@ -1192,25 +1226,68 @@ export const apiClient = {
     return true;
   },
 
-  async saveFolder({ folderId = null, name, emoji = "📁", cover }) {
+  async uploadFolderCover(fileOrDataUrl, filenameHint = "cover.png") {
+    let imageBase64 = "";
+    let filename = String(filenameHint || "cover.png");
+    if (typeof fileOrDataUrl === "string") {
+      imageBase64 = fileOrDataUrl.trim();
+    } else if (fileOrDataUrl && typeof fileOrDataUrl === "object") {
+      filename = String(fileOrDataUrl.name || filename);
+      if (typeof FileReader !== "undefined") {
+        imageBase64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(new Error("อ่านไฟล์รูปภาพไม่สำเร็จ"));
+          reader.readAsDataURL(fileOrDataUrl);
+        });
+      }
+    }
+    if (!imageBase64) {
+      return { ok: false, status: 400, error: "ไม่พบข้อมูลรูปภาพสำหรับอัปโหลด" };
+    }
+    return dispatchRequest({
+      method: "POST",
+      path: "/api/folders/cover-upload",
+      body: { image_base64: imageBase64, filename },
+      skipUnauthRedirect: true,
+      mockHandler: () => ({
+        status: 201,
+        data: { cover_url: imageBase64 },
+      }),
+    });
+  },
+
+  async saveFolder({ folderId = null, name, emoji = "📁", cover, resetCover = false }) {
     const startKey = getAuthContextKey();
     const cleanName = String(name || "").trim() || "โฟลเดอร์ใหม่";
     const cleanEmoji = emoji || "📁";
+    const hasCoverPatch = resetCover || cover !== undefined;
+    const nextCoverValue = resetCover || cover === null ? null : cover || undefined;
     if (folderId) {
       const folder = getFolderById(folderId);
       if (!folder) return null;
       const prev = { name: folder.name, emoji: folder.emoji, cover: folder.cover };
       folder.name = cleanName;
       folder.emoji = cleanEmoji;
-      if (cover) folder.cover = cover;
+      if (hasCoverPatch) {
+        folder.cover = nextCoverValue ?? null;
+      }
       noteLocalMutation();
       store.emit();
+      const patchBody = {
+        name: cleanName,
+        emoji: cleanEmoji,
+        ...(hasCoverPatch ? { cover_url: nextCoverValue ?? null } : {}),
+      };
       const res = await dispatchRequest({
         method: "PATCH",
         path: `/api/folders/${folderId}`,
-        body: { name: cleanName, emoji: cleanEmoji, ...(cover ? { cover_url: cover } : {}) },
+        body: patchBody,
         skipUnauthRedirect: true,
-        mockHandler: () => ({ status: 200, data: folder }),
+        mockHandler: () => ({
+          status: 200,
+          data: { ...folder, cover_url: folder.cover },
+        }),
       });
       if (!isAuthContextCurrent(startKey)) {
         return null;
@@ -1224,7 +1301,11 @@ export const apiClient = {
       if (res.ok && res.data && typeof res.data === "object") {
         if (res.data.name) folder.name = res.data.name;
         if (res.data.emoji) folder.emoji = res.data.emoji;
-        if (res.data.cover_url || res.data.cover) folder.cover = res.data.cover_url || res.data.cover;
+        if ("cover_url" in res.data) {
+          folder.cover = res.data.cover_url || null;
+        } else if ("cover" in res.data) {
+          folder.cover = res.data.cover || null;
+        }
       }
       store.rebuildNotificationsFromWorkspace();
       saveWorkspaceCache();
@@ -1233,7 +1314,7 @@ export const apiClient = {
       return folder;
     }
 
-    const resolvedCover = cover || "./assets/covers/project.png";
+    const resolvedCover = resetCover || !cover ? null : cover;
     const fallbackFolder = {
       id: generateUuid(),
       name: cleanName,
@@ -1250,7 +1331,7 @@ export const apiClient = {
       path: "/api/folders",
       body: { name: cleanName, emoji: cleanEmoji, cover_url: resolvedCover },
       skipUnauthRedirect: true,
-      mockHandler: () => ({ status: 201, data: fallbackFolder }),
+      mockHandler: () => ({ status: 201, data: { ...fallbackFolder, cover_url: resolvedCover } }),
     });
     if (!isAuthContextCurrent(startKey)) {
       return null;
@@ -1259,7 +1340,10 @@ export const apiClient = {
       store.showToast(res.error || "สร้างโฟลเดอร์ไม่สำเร็จ");
       return null;
     }
-    const finalFolder = res.ok && res.data?.id ? { ...fallbackFolder, ...res.data, cover: res.data.cover_url || resolvedCover } : fallbackFolder;
+    const finalFolder =
+      res.ok && res.data?.id
+        ? { ...fallbackFolder, ...res.data, cover: res.data.cover_url ?? res.data.cover ?? resolvedCover }
+        : fallbackFolder;
     store.state.data.folders.push(finalFolder);
     store.rebuildNotificationsFromWorkspace();
     saveWorkspaceCache();
@@ -1510,23 +1594,35 @@ export const apiClient = {
     return res;
   },
 
-  async createFolderInvite(folderId, role = "viewer") {
+  async createFolderInvite(folderId, optionsOrRole = "viewer") {
     const folder = getFolderById(folderId) || store.state.data.folders[0];
-    const slug = folder?.inviteSlug || `f-${Math.random().toString(36).slice(2, 8)}`;
+    const slug = (folder?.inviteSlug && !folder?.inviteUrl ? folder.inviteSlug : null) || `inv-${Math.random().toString(36).slice(2, 10)}`;
+    const payload = buildInviteCreatePayload(optionsOrRole);
     const res = await dispatchRequest({
       method: "POST",
       path: `/api/folders/${folderId}/invites`,
-      body: { role: role === "editor" ? "editor" : "viewer", expires_in_days: 7 },
+      body: payload,
       skipUnauthRedirect: true,
-      mockHandler: () => ({
-        status: 201,
-        data: {
-          token: slug,
-          folder_id: folderId,
-          role,
-          invite_url: buildFolderInviteUrl({ id: folderId, inviteSlug: slug }, role),
-        },
-      }),
+      mockHandler: () => {
+        let expiresAt = null;
+        if (!payload.never_expires) {
+          const mins = payload.expires_in_minutes || (payload.expires_in_days || 7) * 1440;
+          expiresAt = new Date(Date.now() + mins * 60000).toISOString();
+        }
+        return {
+          status: 201,
+          data: {
+            token: slug,
+            folder_id: folderId,
+            role: payload.role,
+            expires_at: expiresAt,
+            never_expires: Boolean(payload.never_expires),
+            max_uses: payload.max_uses ?? null,
+            use_count: 0,
+            invite_url: buildFolderInviteUrl({ id: folderId, inviteSlug: slug }, payload.role),
+          },
+        };
+      },
     });
     if (res.ok && res.data?.invite_url && folder) {
       folder.inviteUrl = res.data.invite_url;

@@ -1,35 +1,46 @@
 import React from "react";
-import { Text } from "react-native";
+import { Platform } from "react-native";
 import { Tabs } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-
-function TabEmoji({ symbol, focused }: { symbol: string; focused: boolean }) {
-  return <Text style={{ fontSize: 18, opacity: focused ? 1 : 0.65 }}>{symbol}</Text>;
-}
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
-  const bottomPad = Math.max(8, insets.bottom);
+  const bottomOffset = Math.max(10, insets.bottom);
 
   return (
     <Tabs
       screenOptions={{
-        sceneStyle: { backgroundColor: "transparent" },
-        headerStyle: { backgroundColor: "#880808" },
-        headerTintColor: "#FDFBF7",
-        headerTitleStyle: { fontWeight: "700" },
-        tabBarActiveTintColor: "#9B2C2C",
-        tabBarInactiveTintColor: "#78716C",
-        tabBarStyle: {
-          backgroundColor: "#FDFBF7",
-          borderTopColor: "#EAE4DB",
-          height: 54 + bottomPad,
-          paddingBottom: bottomPad,
-          paddingTop: 6,
-        },
+        sceneStyle: { backgroundColor: "#FDFBF7" },
+        headerStyle: { backgroundColor: "#FDFBF7" },
+        headerTintColor: "#1E1B18",
+        headerTitleStyle: { fontWeight: "800", fontSize: 18 },
+        headerShadowVisible: false,
+        tabBarActiveTintColor: "#E24C4B",
+        tabBarInactiveTintColor: "#6E675F",
         tabBarLabelStyle: {
           fontSize: 11,
-          fontWeight: "600",
+          fontWeight: "700",
+          marginBottom: Platform.OS === "ios" ? 0 : 4,
+        },
+        tabBarStyle: {
+          position: "absolute",
+          left: 16,
+          right: 16,
+          bottom: bottomOffset,
+          height: 62,
+          borderRadius: 31,
+          backgroundColor: "#FFFFFF",
+          borderTopWidth: 1,
+          borderWidth: 1,
+          borderColor: "#EFE9DF",
+          paddingTop: 6,
+          paddingBottom: 6,
+          shadowColor: "#1E1B18",
+          shadowOffset: { width: 0, height: 6 },
+          shadowOpacity: 0.08,
+          shadowRadius: 14,
+          elevation: 8,
         },
       }}
     >
@@ -37,8 +48,10 @@ export default function TabsLayout() {
         name="index"
         options={{
           title: "หน้าหลัก",
-          headerTitle: "SHARELY",
-          tabBarIcon: ({ focused }) => <TabEmoji symbol="🏠" focused={focused} />,
+          headerTitle: "SHERLINK",
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? "home" : "home-outline"} size={21} color={color} />
+          ),
         }}
       />
       <Tabs.Screen
@@ -46,23 +59,37 @@ export default function TabsLayout() {
         options={{
           title: "โฟลเดอร์",
           headerTitle: "โฟลเดอร์ของฉัน",
-          tabBarIcon: ({ focused }) => <TabEmoji symbol="📁" focused={focused} />,
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? "folder" : "folder-outline"} size={21} color={color} />
+          ),
         }}
       />
       <Tabs.Screen
-        name="favorites"
+        name="ai"
         options={{
-          title: "ชื่นชอบ",
-          headerTitle: "รายการโปรด & เตือนความจำ",
-          tabBarIcon: ({ focused }) => <TabEmoji symbol="⭐" focused={focused} />,
+          title: "AI",
+          headerTitle: "ตั้งค่า AI สรุปเนื้อหา",
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? "sparkles" : "sparkles-outline"} size={21} color={color} />
+          ),
         }}
       />
       <Tabs.Screen
         name="profile"
         options={{
           title: "โปรไฟล์",
-          headerTitle: "โปรไฟล์ & ความปลอดภัย",
-          tabBarIcon: ({ focused }) => <TabEmoji symbol="👤" focused={focused} />,
+          headerTitle: "โปรไฟล์และตั้งค่า",
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? "person" : "person-outline"} size={21} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="favorites"
+        options={{
+          href: null,
+          title: "ชื่นชอบ",
+          headerTitle: "รายการโปรด",
         }}
       />
     </Tabs>

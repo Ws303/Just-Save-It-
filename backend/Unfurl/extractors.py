@@ -1287,15 +1287,26 @@ def _parse_html_metadata(
             or _extract_meta_content(tree, "name", "description")
         )
         if html_text and _YOUTUBE_ID_RE.search(final_url):
-            sd_match = re.search(r'"shortDescription"\s*:\s*"((?:\\.|[^"\\])+)"', html_text)
-            if sd_match:
-                try:
-                    decoded_sd = json.loads(f'"{sd_match.group(1)}"')
-                    cleaned_sd = clean_text_field(decoded_sd, unescape_html=True)
-                    if cleaned_sd and (not description or len(cleaned_sd) > len(description)):
-                        description = cleaned_sd[:1500]
-                except Exception as exc:
-                    logger.debug("YouTube shortDescription JSON decode skipped: %s", exc)
+            yt_desc_candidates: List[str] = []
+            for yt_pat in (
+                r'"shortDescription"\s*:\s*"((?:\\.|[^"\\])+)"',
+                r'"attributedDescriptionBodyText"\s*:\s*\{\s*"content"\s*:\s*"((?:\\.|[^"\\])+)"',
+                r'"attributedDescription"\s*:\s*\{\s*"content"\s*:\s*"((?:\\.|[^"\\])+)"',
+                r'"playerMicroformatRenderer"\s*:\s*\{[^{}]{0,600}"description"\s*:\s*\{\s*"simpleText"\s*:\s*"((?:\\.|[^"\\])+)"',
+            ):
+                sd_match = re.search(yt_pat, html_text)
+                if sd_match:
+                    try:
+                        decoded_sd = json.loads(f'"{sd_match.group(1)}"')
+                        cleaned_sd = clean_text_field(decoded_sd, unescape_html=True)
+                        if cleaned_sd and not cleaned_sd.lower().startswith("enjoy the videos and music you love"):
+                            yt_desc_candidates.append(cleaned_sd)
+                    except Exception as exc:
+                        logger.debug("YouTube description JSON decode skipped: %s", exc)
+            if yt_desc_candidates:
+                best_yt_desc = max(yt_desc_candidates, key=len)
+                if not description or description.lower().startswith("enjoy the videos and music you love") or len(best_yt_desc) > len(description):
+                    description = best_yt_desc[:4000]
 
         if html_text and _is_youtube_post_url(final_url):
             yt_post = _extract_youtube_backstage_post(html_text)
@@ -2099,6 +2110,27 @@ def _has_ancestor_class(node: Any, blocked_tokens: Tuple[str, ...]) -> bool:
     return False
 
 
+_IG_EMBED_EDGE_CAPTION_RE = re.compile(
+    r'edge_media_to_caption\\*"\s*:\s*\{\s*\\*"edges\\*"\s*:\s*\[\s*\{\s*\\*"node\\*"\s*:\s*\{\s*\\*"text\\*"\s*:\s*\\*"((?:\\.|[^"\\])+?)\\*"',
+    re.DOTALL,
+)
+_IG_EMBED_OWNER_USER_RE = re.compile(
+    r'owner\\*"\s*:\s*\{[^{}]{0,400}?\\*"username\\*"\s*:\s*\\*"([A-Za-z0-9._]{2,64})\\*"',
+    re.DOTALL,
+)
+
+
+def _decode_escaped_ig_json_str(raw: str) -> Optional[str]:
+    if not raw:
+        return None
+    candidate = raw.replace('\\\\"', '\\"').replace("\\/", "/")
+    try:
+        decoded = json.loads(f'"{candidate}"')
+    except Exception:
+        decoded = re.sub(r"\\+u([0-9a-fA-F]{4})", lambda mm: chr(int(mm.group(1), 16)), candidate).replace("\\n", "\n")
+    return clean_text_field(decoded, unescape_html=True)
+
+
 def _parse_instagram_embed_captioned(html_text: str, base_url: str) -> Dict[str, Any]:
     """Extract author, caption, media, and unavailable state from Instagram /embed/captioned/ HTML."""
     author: Optional[str] = None
@@ -2113,12 +2145,20 @@ def _parse_instagram_embed_captioned(html_text: str, base_url: str) -> Dict[str,
     user_node = tree.css_first(".Header .UsernameText") or tree.css_first(".UsernameText")
     if user_node is not None:
         author = clean_text_field(user_node.text(strip=True), unescape_html=True)
+    if not author:
+        owner_m = _IG_EMBED_OWNER_USER_RE.search(html_text)
+        if owner_m:
+            author = clean_text_field(owner_m.group(1), unescape_html=True)
 
     cap_node = tree.css_first(".Caption")
     if cap_node is not None:
         for rm_node in cap_node.css(".CaptionUsername, .CaptionComments"):
             rm_node.decompose()
         caption = clean_text_field(cap_node.text(separator=" ", strip=True), unescape_html=True)
+    if not caption:
+        edge_cap_m = _IG_EMBED_EDGE_CAPTION_RE.search(html_text)
+        if edge_cap_m:
+            caption = _decode_escaped_ig_json_str(edge_cap_m.group(1))
 
     candidates: List[Tuple[str, Optional[int], Optional[int]]] = []
     for img_node in tree.css("img.EmbeddedMediaImage, .Content video[poster], .EmbeddedMedia video[poster]"):
@@ -2444,7 +2484,8 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
                 if not embed_url:
                     preview_status = "private_or_restricted"
             else:
-                title = title or meta_title
+                if meta_title and (not title or is_generic_or_noisy_title(title, platform, canon_url)):
+                    title = meta_title
                 description = description or meta_desc
                 images.extend(meta_images)
                 if platform == "facebook" and is_unresolved_share and not embed_url and meta_og_url:
@@ -2474,28 +2515,31 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
                 raise
 
     has_cropped_ig_cover = bool(images and len(images) == 1 and _is_cropped_meta_image_url(images[0]))
+    ig_title_missing = platform == "instagram" and (
+        not title or is_generic_or_noisy_title(title, "instagram", canon_url)
+    )
     if (
         platform == "instagram"
         and ig_kind
         and ig_code
         and preview_status != "private_or_restricted"
-        and (not title or not images or not description or has_cropped_ig_cover or (ig_kind == "p" and len(images) < 2))
+        and (ig_title_missing or not images or not description or has_cropped_ig_cover or (ig_kind == "p" and len(images) < 2))
     ):
         embed_meta = await _fetch_instagram_embed_captioned(ig_kind, ig_code)
-        if embed_meta.get("is_private") and not oembed_succeeded and not title and not description and not images:
+        if embed_meta.get("is_private") and not oembed_succeeded and (ig_title_missing or not title) and not description and not images:
             preview_status = "private_or_restricted"
             embed_url = None
         else:
             eb_author = embed_meta.get("author")
             eb_caption = embed_meta.get("caption")
             eb_images = embed_meta.get("media_items") or []
-            if not title:
+            if ig_title_missing or not title:
                 if eb_author and eb_caption:
                     title = f"@{eb_author}: {eb_caption[:90]}"
                 elif eb_caption:
                     title = eb_caption[:100]
                 elif eb_author:
-                    title = f"@{eb_author} on Instagram"
+                    title = f"โพสต์จาก @{eb_author}"
             if not description:
                 if eb_author and eb_caption:
                     description = f"@{eb_author} — {eb_caption}"
@@ -2508,6 +2552,11 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
                     images = list(eb_images)
                 else:
                     images.extend(eb_images)
+
+    if platform == "instagram" and (not title or is_generic_or_noisy_title(title, "instagram", canon_url)) and not description:
+        ig_url_author = _extract_author_from_social_url(canon_url, "instagram")
+        if ig_url_author and preview_status != "private_or_restricted":
+            title = f"โพสต์จาก {ig_url_author}"
 
     if (
         platform == "facebook"

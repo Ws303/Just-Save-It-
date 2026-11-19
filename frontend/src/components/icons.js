@@ -1,5 +1,5 @@
 /**
- * SVG icon library faithfully adapted from Figma export paths (Sharely iK9nRBTc2LWYahDIyEU8TK).
+ * SVG icon library faithfully adapted from Figma export paths (Sherlink).
  * Uses `currentColor` where icons participate in theme tinting.
  */
 
@@ -29,7 +29,12 @@ export function safeImgUrl(raw) {
   if (!raw || typeof raw !== "string") return "";
   const trimmed = raw.trim();
   if (!trimmed) return "";
-  if (trimmed.startsWith("./assets/") || trimmed.startsWith("/assets/")) return trimmed;
+  if (trimmed.startsWith("./assets/") || trimmed.startsWith("/assets/") || trimmed.startsWith("/local-media/")) {
+    return trimmed;
+  }
+  if (/^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/i.test(trimmed)) {
+    return trimmed;
+  }
   try {
     const parsed = new URL(trimmed);
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {

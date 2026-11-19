@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Sharely — Just Save It",
+    "name": "Sherlink",
     "slug": "just-save-it",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -64,6 +64,12 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "อนุญาตให้ Sherlink เข้าถึงคลังรูปภาพเพื่อใช้เป็นปกโฟลเดอร์"
+        }
+      ],
       [
         "expo-notifications",
         {

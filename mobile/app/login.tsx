@@ -178,7 +178,7 @@ export default function LoginScreen() {
           <View style={styles.logoBadge}>
             <Image source={require("../assets/icon.png")} style={styles.logoImage} resizeMode="cover" />
           </View>
-          <Text style={styles.brandTitle}>SHARELY</Text>
+          <Text style={styles.brandTitle}>SHERLINK</Text>
           <Text style={styles.brandSubtitle}>เก็บลิงก์ง่าย แชร์ไว ในที่เดียว</Text>
         </View>
 

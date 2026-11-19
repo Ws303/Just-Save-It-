@@ -1,10 +1,11 @@
 /**
- * Application Entrypoint, Event Dispatcher & Focus-Preserving Renderer for Sharely Test Web App.
+ * Application Entrypoint, Event Dispatcher & Focus-Preserving Renderer for Sherlink Web App.
  */
 import { COVER_CHOICES, FOLDER_NAME_SUGGESTIONS } from "./data/seed.js";
 import {
   store,
   inferPlatform,
+  filterLinks,
   getFolderById,
   getLinkById,
   isQaModeEnabled,
@@ -47,6 +48,7 @@ import {
   renderSavedPreviewScreen,
   renderSaveAndReminderSheets,
   isGenericOrNoisyTitle,
+  resolveDetailNavIds,
 } from "./screens/links.js";
 import { renderAiScreen } from "./screens/ai.js";
 import {
@@ -256,7 +258,7 @@ function renderApp() {
         <header class="tb-topbar">
           <div class="tb-brand">
             <span style="color:var(--theme-swatch);display:inline-flex;">${icons.cherry(22)}</span>
-            <span class="tb-brand-logo">Sharely</span>
+            <span class="tb-brand-logo">Sherlink</span>
             <span class="tb-pill-badge">Interactive UI &amp; Backend Testbed</span>
           </div>
 
@@ -594,10 +596,44 @@ appEl.addEventListener("input", (e) => {
   }
 });
 
-appEl.addEventListener("change", (e) => {
+appEl.addEventListener("change", async (e) => {
   const el = e.target;
+  const ui = store.state.ui;
   if (el.dataset.selectTestItem) {
-    store.state.ui.activeLinkId = el.value;
+    ui.activeLinkId = el.value;
+    ui.descExpanded = false;
+    store.emit();
+  } else if (el.dataset.folderCoverInput) {
+    const file = el.files?.[0];
+    if (!file || !ui.activeSheet) return;
+    if (file.size > 5 * 1024 * 1024) {
+      ui.folderCoverError = "ไฟล์รูปต้องมีขนาดไม่เกิน 5 MB";
+      store.emit();
+      return;
+    }
+    ui.folderCoverUploading = true;
+    ui.folderCoverError = "";
+    store.emit();
+    try {
+      const res = await apiClient.uploadFolderCover(file);
+      if (res?.ok && res.data?.cover_url && ui.activeSheet) {
+        ui.activeSheet.coverDraft = res.data.cover_url;
+        ui.activeSheet.resetCover = false;
+        store.showToast("อัปโหลดรูปปกเรียบร้อย");
+      } else {
+        ui.folderCoverError = res?.error || "อัปโหลดรูปปกไม่สำเร็จ";
+      }
+    } catch (err) {
+      ui.folderCoverError = err?.message || "อัปโหลดรูปปกไม่สำเร็จ";
+    } finally {
+      ui.folderCoverUploading = false;
+      store.emit();
+    }
+  } else if (el.dataset.inviteExpiry) {
+    ui.inviteExpiry = el.value || "7d";
+    store.emit();
+  } else if (el.dataset.inviteMaxUses !== undefined) {
+    ui.inviteMaxUses = el.value ?? "";
     store.emit();
   } else if (el.dataset.toggleForceRefresh) {
     store.state.api.summarizeOptions.forceRefresh = el.checked;
@@ -606,13 +642,13 @@ appEl.addEventListener("change", (e) => {
     store.state.api.summarizeOptions.saveToNote = el.checked;
     store.emit();
   } else if (el.dataset.toggleAuthGuard) {
-    store.state.ui.authGuardEnabled = el.checked;
+    ui.authGuardEnabled = el.checked;
     if (
       el.checked &&
       !hasValidSession(store.state) &&
-      (isProtectedScreen(store.state.ui.screen) || isProtectedViewport(store.state.ui.viewportMode))
+      (isProtectedScreen(ui.screen) || isProtectedViewport(ui.viewportMode))
     ) {
-      store.navigate(store.state.ui.screen, { viewportMode: store.state.ui.viewportMode });
+      store.navigate(ui.screen, { viewportMode: ui.viewportMode });
     } else {
       store.emit();
     }
@@ -622,10 +658,10 @@ appEl.addEventListener("change", (e) => {
   } else if (el.dataset.toggleSeen) {
     apiClient.patchLink(el.dataset.toggleSeen, { status: el.checked ? "read" : "unread" });
   } else if (el.dataset.csvFolder !== undefined) {
-    store.state.ui.csvExportFolderId = el.value || "all";
+    ui.csvExportFolderId = el.value || "all";
     store.emit();
   } else if (el.dataset.csvUnreadOnly !== undefined) {
-    store.state.ui.csvExportUnreadOnly = el.checked;
+    ui.csvExportUnreadOnly = el.checked;
     store.emit();
   }
 });
@@ -765,6 +801,28 @@ appEl.addEventListener("click", async (e) => {
       store.emit();
       return;
     }
+    if (act === "toggle-desc-expand") {
+      ui.descExpanded = !ui.descExpanded;
+      store.emit();
+      return;
+    }
+    if (act === "trigger-folder-cover-upload") {
+      appEl.querySelector('[data-folder-cover-input="1"]')?.click();
+      return;
+    }
+    if (act === "reset-folder-cover" && ui.activeSheet) {
+      ui.activeSheet.coverDraft = null;
+      ui.activeSheet.resetCover = true;
+      ui.folderCoverError = "";
+      store.emit();
+      return;
+    }
+    if (act === "set-invite-role") {
+      const nextRole = d.role === "editor" ? "editor" : "viewer";
+      ui.sharePermission = nextRole;
+      store.emit();
+      return;
+    }
     if (act === "toggle-filter-drawer") {
       ui.filterDrawerOpen = !ui.filterDrawerOpen;
       store.emit();
@@ -804,16 +862,19 @@ appEl.addEventListener("click", async (e) => {
         return;
       }
       if (typeof window !== "undefined") {
+        const extPayload = {
+          accessToken: token,
+          refreshToken: store.state.api.refreshToken || "",
+          apiBaseUrl: store.state.api.baseUrl || "",
+          supabaseUrl: store.state.api.supabaseUrl || "",
+          supabaseAnonKey: store.state.api.supabaseAnonKey || "",
+        };
         window.postMessage(
-          {
-            type: "SHARELY_EXTENSION_CONNECT",
-            source: "sharely-web",
-            accessToken: token,
-            refreshToken: store.state.api.refreshToken || "",
-            apiBaseUrl: store.state.api.baseUrl || "",
-            supabaseUrl: store.state.api.supabaseUrl || "",
-            supabaseAnonKey: store.state.api.supabaseAnonKey || "",
-          },
+          { type: "SHERLINK_EXTENSION_CONNECT", source: "sherlink-web", ...extPayload },
+          window.location.origin
+        );
+        window.postMessage(
+          { type: "SHARELY_EXTENSION_CONNECT", source: "sharely-web", ...extPayload },
           window.location.origin
         );
       }
@@ -1174,18 +1235,29 @@ appEl.addEventListener("click", async (e) => {
       return;
     }
     if (act === "set-share-permission" && ui.activeSheet?.type === "invite") {
-      ui.sharePermission = d.role === "editor" ? "editor" : "viewer";
-      ui.shareSheetState = "loading";
-      store.emit();
-      const res = await apiClient.createFolderInvite(ui.activeSheet.folderId, ui.sharePermission);
-      ui.shareSheetState = res.ok ? "idle" : "error";
+      const nextRole = d.role === "editor" ? "editor" : "viewer";
+      ui.sharePermission = nextRole;
       store.emit();
       return;
     }
     if (act === "generate-share-link" && ui.activeSheet?.type === "invite") {
+      const folderId = ui.activeSheet.folderId;
       ui.shareSheetState = "loading";
       store.emit();
-      const res = await apiClient.createFolderInvite(ui.activeSheet.folderId, ui.sharePermission || "viewer");
+      const role = ui.sharePermission === "editor" ? "editor" : "viewer";
+      const res = await apiClient.createFolderInvite(folderId, {
+        role,
+        expiry: ui.inviteExpiry || "7d",
+        maxUses: ui.inviteMaxUses,
+      });
+      if (res.ok) {
+        const m = await apiClient.listFolderMembers(folderId).catch(() => null);
+        if (m?.ok && m.data) {
+          ui.folderMembers = ui.folderMembers || {};
+          ui.folderMembers[folderId] = m.data;
+        }
+        store.showToast("สร้างลิงก์คำเชิญใหม่แล้ว");
+      }
       ui.shareSheetState = res.ok ? "idle" : "error";
       store.emit();
       return;
@@ -1270,11 +1342,13 @@ appEl.addEventListener("click", async (e) => {
   if (d.openEditFolder) {
     const folder = getFolderById(d.openEditFolder);
     if (folder) {
+      ui.folderCoverError = "";
       store.openSheet({
         type: "editFolder",
         folderId: folder.id,
         nameDraft: folder.name,
-        coverDraft: folder.cover,
+        coverDraft: folder.cover || null,
+        resetCover: false,
       });
     }
     return;
@@ -1294,8 +1368,28 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.openLink) {
+    const inFolderView = ui.screen === "folderDetail" || (ui.viewportMode === "web" && ui.pcSection === "folderDetail");
+    const inFavView = ui.viewportMode === "web" && ui.pcSection === "favorite";
+    let list = data.links || [];
+    let ctxLabel = "";
+    if (inFolderView) {
+      const f = getFolderById(ui.activeFolderId);
+      const folderLinks = list.filter((l) => l.folderId === ui.activeFolderId);
+      list = filterLinks(folderLinks, ui.folderDetailSearch, ui.folderDetailFilter);
+      ctxLabel = f?.name || "";
+    } else if (inFavView) {
+      list = filterLinks(list.filter((l) => Boolean(l.favorite)), ui.homeSearch, "all");
+      ctxLabel = "ชื่นชอบ";
+    } else {
+      list = filterLinks(list, ui.homeSearch, ui.homeFilter);
+    }
+    const navIds = list.map((l) => l.id);
+    if (!navIds.includes(d.openLink)) navIds.unshift(d.openLink);
     store.navigate("linkDetail", {
       activeLinkId: d.openLink,
+      detailNavIds: navIds,
+      detailContextLabel: ctxLabel,
+      descExpanded: false,
       prevPcSection: ui.pcSection && ui.pcSection !== "linkDetail" ? ui.pcSection : ui.prevPcSection || "home",
       viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
     });
@@ -1303,14 +1397,17 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.linkNav) {
-    const curList = data.links || [];
-    const idx = curList.findIndex((l) => l.id === ui.activeLinkId);
-    if (curList.length > 0 && idx >= 0) {
-      const nextIdx = (idx + Number(d.linkNav) + curList.length) % curList.length;
+    const navIds = resolveDetailNavIds(store.state);
+    if (navIds.length > 1) {
+      const curIdx = Math.max(0, navIds.indexOf(ui.activeLinkId));
+      const nextIdx = (curIdx + Number(d.linkNav) + navIds.length) % navIds.length;
+      const nextId = navIds[nextIdx];
       store.navigate("linkDetail", {
-        activeLinkId: curList[nextIdx].id,
+        activeLinkId: nextId,
+        descExpanded: false,
         viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
       });
+      maybeAutoEnrichItem(nextId);
     }
     return;
   }
@@ -1762,17 +1859,21 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.previewStep) {
-    ui.previewIndex = Math.max(0, ui.previewIndex + Number(d.previewStep));
+    const unread = (data.links || []).filter((l) => l.status === "unread");
+    const pool = unread.length ? unread : (data.links || []);
+    ui.previewIndex = Math.max(0, Math.min(Math.max(0, pool.length - 1), (ui.previewIndex || 0) + Number(d.previewStep)));
     store.emit();
     return;
   }
 
   // 8. Folders Edit, Cover Picker, Invite
   if (d.openCreateFolder) {
+    ui.folderCoverError = "";
     store.openSheet({
       type: "createFolder",
       nameDraft: "",
-      coverDraft: COVER_CHOICES[3].src,
+      coverDraft: null,
+      resetCover: false,
     });
     return;
   }
@@ -1792,6 +1893,7 @@ appEl.addEventListener("click", async (e) => {
   }
   if (d.selectCover && ui.activeSheet?.type === "pickCover") {
     ui.activeSheet.returnSheet.coverDraft = d.selectCover;
+    ui.activeSheet.returnSheet.resetCover = false;
     store.openSheet(ui.activeSheet.returnSheet);
     return;
   }
@@ -1805,6 +1907,7 @@ appEl.addEventListener("click", async (e) => {
       folderId: ui.activeSheet.folderId || null,
       name: cleanName,
       cover: ui.activeSheet.coverDraft,
+      resetCover: Boolean(ui.activeSheet.resetCover),
     });
     if (!saved) return;
     ui.activeFolderId = saved.id;
@@ -1829,18 +1932,37 @@ appEl.addEventListener("click", async (e) => {
   }
   if (d.openInviteSheet) {
     const folderId = d.openInviteSheet;
+    const folder = getFolderById(folderId);
     ui.shareSheetState = "loading";
     store.openSheet({ type: "invite", folderId });
-    const [res, membersRes] = await Promise.all([
-      apiClient.createFolderInvite(folderId, ui.sharePermission || "viewer").catch(() => ({ ok: false })),
-      apiClient.listFolderMembers(folderId).catch(() => ({ ok: false })),
-    ]);
+    const membersRes = await apiClient.listFolderMembers(folderId).catch(() => ({ ok: false }));
     if (membersRes?.ok && membersRes.data) {
       ui.folderMembers = ui.folderMembers || {};
       ui.folderMembers[folderId] = membersRes.data;
     }
+    const activeInvites = membersRes?.ok && Array.isArray(membersRes.data?.active_invites) ? membersRes.data.active_invites : [];
+    let inviteOk = true;
+    if (folder && !folder.inviteUrl && activeInvites.length > 0 && activeInvites[0].invite_url) {
+      folder.inviteUrl = activeInvites[0].invite_url;
+      folder.inviteSlug = activeInvites[0].token || folder.inviteSlug;
+    } else if (activeInvites.length === 0) {
+      const role = ui.sharePermission === "editor" ? "editor" : "viewer";
+      const created = await apiClient.createFolderInvite(folderId, {
+        role,
+        expiry: ui.inviteExpiry || "7d",
+        maxUses: ui.inviteMaxUses,
+      }).catch(() => ({ ok: false }));
+      inviteOk = Boolean(created?.ok);
+      if (inviteOk) {
+        const refreshed = await apiClient.listFolderMembers(folderId).catch(() => null);
+        if (refreshed?.ok && refreshed.data) {
+          ui.folderMembers = ui.folderMembers || {};
+          ui.folderMembers[folderId] = refreshed.data;
+        }
+      }
+    }
     if (ui.activeSheet?.type === "invite" && ui.activeSheet?.folderId === folderId) {
-      ui.shareSheetState = res.ok ? "idle" : "error";
+      ui.shareSheetState = inviteOk ? "idle" : "error";
       store.emit();
     }
     return;
@@ -2417,8 +2539,52 @@ appEl.addEventListener("click", async (e) => {
 });
 
 if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+  let _touchStartX = null;
+  let _touchStartY = null;
+  appEl?.addEventListener(
+    "touchstart",
+    (e) => {
+      const swipeHost = e.target?.closest?.("[data-detail-swipe-host]");
+      if (!swipeHost || !e.touches?.[0]) {
+        _touchStartX = null;
+        _touchStartY = null;
+        return;
+      }
+      _touchStartX = e.touches[0].clientX;
+      _touchStartY = e.touches[0].clientY;
+    },
+    { passive: true }
+  );
+  appEl?.addEventListener(
+    "touchend",
+    (e) => {
+      if (_touchStartX === null || _touchStartY === null || !e.changedTouches?.[0]) return;
+      const dx = e.changedTouches[0].clientX - _touchStartX;
+      const dy = e.changedTouches[0].clientY - _touchStartY;
+      _touchStartX = null;
+      _touchStartY = null;
+      if (Math.abs(dx) > 64 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+        const navIds = resolveDetailNavIds(store.state);
+        if (navIds.length > 1) {
+          const curIdx = Math.max(0, navIds.indexOf(store.state.ui.activeLinkId));
+          const delta = dx < 0 ? 1 : -1;
+          const nextId = navIds[(curIdx + delta + navIds.length) % navIds.length];
+          store.navigate("linkDetail", {
+            activeLinkId: nextId,
+            descExpanded: false,
+            viewportMode: store.state.ui.viewportMode === "web" ? "web" : "mobile",
+          });
+          maybeAutoEnrichItem(nextId);
+        }
+      }
+    },
+    { passive: true }
+  );
+
   document.addEventListener("keydown", (e) => {
     const ui = store.state.ui;
+    const tag = String(e.target?.tagName || "").toUpperCase();
+    const isEditable = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target?.isContentEditable;
     if (ui.imageLightboxOpen && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
       const item = getLinkById(ui.activeLinkId);
       const list = Array.isArray(item?.mediaItems) && item.mediaItems.length
@@ -2432,6 +2598,21 @@ if (typeof document !== "undefined" && typeof document.addEventListener === "fun
           ? ((Number(ui.carouselIndex || 0) - 1) % total + total) % total
           : (Number(ui.carouselIndex || 0) + 1) % total;
         store.emit();
+      }
+      return;
+    }
+    if (!isEditable && !ui.activeSheet && !ui.activeDialog && (ui.screen === "linkDetail" || ui.pcSection === "linkDetail") && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      const navIds = resolveDetailNavIds(store.state);
+      if (navIds.length > 1) {
+        const curIdx = Math.max(0, navIds.indexOf(ui.activeLinkId));
+        const delta = e.key === "ArrowRight" ? 1 : -1;
+        const nextId = navIds[(curIdx + delta + navIds.length) % navIds.length];
+        store.navigate("linkDetail", {
+          activeLinkId: nextId,
+          descExpanded: false,
+          viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
+        });
+        maybeAutoEnrichItem(nextId);
       }
       return;
     }
@@ -2647,6 +2828,15 @@ function hydrateOnceIfNeeded() {
     },
   });
   ensureJwtAutoRefresh();
+}
+
+if (
+  typeof navigator !== "undefined" &&
+  navigator.serviceWorker?.register &&
+  typeof window !== "undefined" &&
+  /^https?:$/i.test(window.location?.protocol || "")
+) {
+  navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
 }
 
 if (typeof navigator !== "undefined" && navigator.serviceWorker?.addEventListener) {
