@@ -5,6 +5,7 @@ import {
   FlatList,
   Image,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -21,6 +22,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
 import {
   createFolder,
+  deleteLinkItem,
   fetchWorkspace,
   flushOfflineQueue,
   getOfflineQueueCount,
@@ -30,6 +32,7 @@ import {
   saveLinkItem,
   type PreviewUrlResponsePayload,
 } from "../../src/api";
+import { FIGMA_INK, getFigmaTheme, type FigmaAccentThemeId } from "../../src/figmaTheme";
 import {
   formatCardDisplayTitle,
   getSocialPostLinkWarning,
@@ -44,11 +47,18 @@ import {
   getAuthGeneration,
   getMemoryCachedWorkspace,
   loadCachedWorkspace,
+  loadFigmaAccentTheme,
   loadSession,
+  subscribeFigmaAccentTheme,
   type MobileFolderItem,
   type MobileLinkItem,
+  type MobileReminderItem,
   type WorkflowStatus,
 } from "../../src/storage";
+
+const CHERRY_SELECTED_IMG = require("../../assets/figma/cherry-selected.png");
+const CHERRY_UNSELECTED_IMG = require("../../assets/figma/cherry-unselected.png");
+const HOME_MASCOT_IMG = require("../../assets/figma/home-cherry-mascot.png");
 
 function isReadStatus(raw?: string): boolean {
   const s = String(raw || "inbox").toLowerCase();
@@ -63,15 +73,25 @@ function inferDomain(url: string): string {
   }
 }
 
+function formatReminderWhen(raw?: string | null): string {
+  if (!raw) return "เตือนความจำตามกำหนด";
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return "เตือนความจำตามกำหนด";
+  return d.toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
+}
+
 export default function HomeFeedScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ sharedUrl?: string; sharedTitle?: string }>();
   const initialCache = getMemoryCachedWorkspace();
 
-  const [displayName, setDisplayName] = useState("เพื่อน");
+  const [themeId, setThemeId] = useState<FigmaAccentThemeId>("sharely");
+  const theme = getFigmaTheme(themeId);
+
   const [items, setItems] = useState<MobileLinkItem[]>(() => initialCache?.items || []);
   const [folders, setFolders] = useState<MobileFolderItem[]>(() => initialCache?.folders || []);
+  const [reminders, setReminders] = useState<MobileReminderItem[]>(() => initialCache?.reminders || []);
   const [loading, setLoading] = useState<boolean>(() => !(initialCache?.items?.length || initialCache?.folders?.length));
   const [refreshing, setRefreshing] = useState(false);
   const [offline, setOffline] = useState(false);
@@ -79,8 +99,13 @@ export default function HomeFeedScreen() {
 
   const [searchText, setSearchText] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "unread" | "read" | "favorite">("all");
+  const [showAllLinks, setShowAllLinks] = useState(false);
 
-  // Quick Save Modal
+  // Notifications Modal & Post Action Sheet
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [menuItem, setMenuItem] = useState<MobileLinkItem | null>(null);
+
+  // Quick Save Modal (319:541)
   const [modalOpen, setModalOpen] = useState(false);
   const [saveUrl, setSaveUrl] = useState("");
   const [saveTitle, setSaveTitle] = useState("");
@@ -96,7 +121,15 @@ export default function HomeFeedScreen() {
   const [previewData, setPreviewData] = useState<PreviewUrlResponsePayload | null>(null);
   const saveSeqRef = useRef(0);
   const previewSeqRef = useRef(0);
+  const favInFlightRef = useRef<Set<string>>(new Set());
+  const seenInFlightRef = useRef<Set<string>>(new Set());
   const socialWarning = useMemo(() => getSocialPostLinkWarning(saveUrl), [saveUrl]);
+
+  useEffect(() => {
+    void loadFigmaAccentTheme().then(setThemeId).catch(() => {});
+    const unsub = subscribeFigmaAccentTheme((next) => setThemeId(next));
+    return () => unsub();
+  }, []);
 
   const loadAll = useCallback(async () => {
     const startGen = getAuthGeneration();
@@ -116,6 +149,7 @@ export default function HomeFeedScreen() {
     if (cached.items.length > 0 || cached.folders.length > 0) {
       setItems((prev) => (prev.length ? prev : cached.items));
       setFolders((prev) => (prev.length ? prev : cached.folders));
+      setReminders((prev) => (prev.length ? prev : cached.reminders));
       setLoading(false);
     }
 
@@ -142,12 +176,7 @@ export default function HomeFeedScreen() {
     setOffline(ws.offline);
     setItems(ws.items);
     setFolders(ws.folders);
-    const nameFromProfile =
-      (typeof ws.me?.display_name === "string" && ws.me.display_name) ||
-      (typeof ws.me?.email === "string" && ws.me.email.split("@")[0]) ||
-      sess.user?.display_name ||
-      "เพื่อน";
-    setDisplayName(nameFromProfile);
+    setReminders(ws.reminders);
     setLoading(false);
     setRefreshing(false);
   }, []);
@@ -196,6 +225,22 @@ export default function HomeFeedScreen() {
     return map;
   }, [folders]);
 
+  const itemById = useMemo(() => {
+    const map = new Map<string, MobileLinkItem>();
+    for (const it of items) {
+      if (it?.id) map.set(it.id, it);
+    }
+    return map;
+  }, [items]);
+
+  const activeReminders = useMemo(
+    () =>
+      reminders.filter(
+        (r) => r && r.enabled !== false && r.is_enabled !== false && String(r.status || "").toLowerCase() !== "cancelled",
+      ),
+    [reminders],
+  );
+
   const filteredItems = useMemo(() => {
     return items.filter((item) => {
       const seen = isReadStatus(item.status);
@@ -208,10 +253,24 @@ export default function HomeFeedScreen() {
     });
   }, [items, folderNameById, searchText, statusFilter]);
 
+  const displayedItems = useMemo(() => {
+    if (!showAllLinks && !searchText.trim() && statusFilter === "all") {
+      return filteredItems.slice(0, 6);
+    }
+    return filteredItems;
+  }, [filteredItems, showAllLinks, searchText, statusFilter]);
+
   function closeQuickSaveModal() {
     setModalOpen(false);
     setInlineFolderOpen(false);
     setInlineFolderName("");
+    setSaveUrl("");
+    setSaveTitle("");
+    setSaveNote("");
+    setSaveTags("");
+    setSaveFolderId(null);
+    setSaveStatus("inbox");
+    setPreviewData(null);
   }
 
   async function handleInlineCreateFolder() {
@@ -294,60 +353,267 @@ export default function HomeFeedScreen() {
     });
   }
 
+  const flipFav = (list: MobileLinkItem[], id: string, v: boolean) =>
+    list.map((it) => (it.id === id ? { ...it, is_favorite: v } : it));
+
   async function toggleFavorite(item: MobileLinkItem) {
     const startGen = getAuthGeneration();
+    const pending = favInFlightRef.current;
+    if (!item.id || pending.has(item.id)) return;
+    pending.add(item.id);
     const nextFav = !item.is_favorite;
-    setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, is_favorite: nextFav } : it)));
-    const res = await patchLinkItem(item.id, { is_favorite: nextFav });
+    setItems((p) => flipFav(p, item.id, nextFav));
+    const res = await patchLinkItem(item.id, { is_favorite: nextFav }).finally(() => pending.delete(item.id));
     if (getAuthGeneration() !== startGen) return;
-    if (!res.ok) {
-      setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, is_favorite: !nextFav } : it)));
+    if (!res.ok) setItems((p) => flipFav(p, item.id, !nextFav));
+  }
+
+  async function handleToggleSeenMenu(item: MobileLinkItem) {
+    const startGen = getAuthGeneration();
+    if (!item.id || seenInFlightRef.current.has(item.id)) return;
+    seenInFlightRef.current.add(item.id);
+    const prevStatus = item.status;
+    const nextStatus: WorkflowStatus = isReadStatus(prevStatus) ? "inbox" : "done";
+    setMenuItem(null);
+    setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, status: nextStatus } : it)));
+    try {
+      const res = await patchLinkItem(item.id, { status: nextStatus });
+      if (getAuthGeneration() !== startGen) return;
+      if (!res.ok) {
+        setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, status: prevStatus } : it)));
+      }
+    } finally {
+      seenInFlightRef.current.delete(item.id);
     }
   }
 
-  return (
-    <View style={styles.root}>
-      <View style={styles.topHeader}>
-        <View style={styles.greetingRow}>
-          <View>
-            <Text style={styles.greetingTitle}>สวัสดี, {displayName}</Text>
-            <Text style={styles.greetingSub}>
-              ทั้งหมด {items.length} ลิงก์ {offline ? "• โหมดออฟไลน์" : "• Cloud ซิงก์แล้ว"}
-              {queueCount > 0 ? ` • ค้างซิงก์ ${queueCount}` : ""}
-            </Text>
+  function handleOpenUrlFromMenu(item: MobileLinkItem) {
+    setMenuItem(null);
+    const raw = String(item.url || "").trim();
+    if (!/^https?:\/\/[^\s"'<>]+$/i.test(raw)) {
+      Alert.alert("ลิงก์ไม่ปลอดภัย", "อนุญาตเปิดเฉพาะลิงก์ http หรือ https เท่านั้น");
+      return;
+    }
+    void Linking.openURL(raw).catch(() => {
+      Alert.alert("ไม่สามารถเปิดลิงก์ได้", "กรุณาตรวจสอบแอปเบราว์เซอร์ในเครื่อง");
+    });
+  }
+
+  function handleDeleteFromMenu(item: MobileLinkItem) {
+    const startGen = getAuthGeneration();
+    setMenuItem(null);
+    Alert.alert("ลบลิงก์นี้?", "ลิงก์จะถูกลบออกจากพื้นที่ทำงานของคุณ", [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "ลบ",
+        style: "destructive",
+        onPress: () => {
+          if (getAuthGeneration() !== startGen) return;
+          void deleteLinkItem(item.id).then((res) => {
+            if (getAuthGeneration() !== startGen) return;
+            if (res.ok) {
+              setItems((prev) => prev.filter((it) => it.id !== item.id));
+            } else {
+              Alert.alert("ลบไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+            }
+          });
+        },
+      },
+    ]);
+  }
+
+  function handleResumeUnread() {
+    const firstUnread = items.find((it) => !isReadStatus(it.status));
+    if (firstUnread?.id) {
+      router.push(`/item/${encodeURIComponent(firstUnread.id)}`);
+    } else {
+      setStatusFilter("unread");
+    }
+  }
+
+  function renderHomeHeaderBlock() {
+    const homeFolders = folders.filter((f) => f.name !== "ยังไม่จัดหมวด").slice(0, 6);
+    const showBanner = statusFilter === "all" && !searchText.trim();
+
+    return (
+      <View style={styles.feedHeaderBlock}>
+        {showBanner ? (
+          <View style={styles.resumeBanner}>
+            <View style={styles.resumeCopy}>
+              <Text style={styles.resumeTitle}>{"กลับมาดู\nสิ่งที่บันทึกไว้กันเถอะ"}</Text>
+              <Pressable style={styles.resumeCta} onPress={handleResumeUnread}>
+                <Text style={styles.resumeCtaText}>ดูรายการที่ยังไม่ได้ดู</Text>
+                <Ionicons name="chevron-forward" size={14} color={FIGMA_INK.inkPrimary} />
+              </Pressable>
+            </View>
+            <Image source={HOME_MASCOT_IMG} style={styles.resumeMascot} resizeMode="contain" />
           </View>
-          <Pressable style={styles.addBtn} onPress={() => setModalOpen(true)}>
-            <Text style={styles.addBtnText}>+ เก็บลิงก์</Text>
-          </Pressable>
+        ) : null}
+
+        <View style={styles.sectionBlock}>
+          <View style={styles.sectionHead}>
+            <Text style={styles.sectionTitle}>โฟลเดอร์ของฉัน</Text>
+            <Pressable hitSlop={8} onPress={() => router.push("/(tabs)/folders")}>
+              <Text style={styles.sectionActionLink}>ดูทั้งหมด</Text>
+            </Pressable>
+          </View>
+
+          {homeFolders.length ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.folderStripRow}
+            >
+              {homeFolders.map((f) => {
+                const folderItems = items.filter((it) => it.folder_id === f.id);
+                const customCover = resolveFolderCoverUrl(f.cover_url);
+                const thumbs = folderItems.map((it) => resolveMobileThumbUrl(it)).filter(Boolean).slice(0, 4);
+                const cnt = typeof f.item_count === "number" ? f.item_count : folderItems.length;
+
+                return (
+                  <Pressable
+                    key={f.id}
+                    style={styles.homeFolderCard}
+                    onPress={() => router.push(`/folder/${encodeURIComponent(f.id)}`)}
+                  >
+                    <View style={styles.homeFolderThumbWrap}>
+                      {customCover ? (
+                        <Image source={{ uri: customCover }} style={styles.fullImg} resizeMode="cover" />
+                      ) : thumbs.length >= 2 ? (
+                        <View style={styles.collageGrid}>
+                          {[0, 1, 2, 3].map((idx) => (
+                            <View key={`c-${f.id}-${idx}`} style={styles.collageCell}>
+                              {thumbs[idx] ? (
+                                <Image source={{ uri: thumbs[idx] }} style={styles.fullImg} resizeMode="cover" />
+                              ) : (
+                                <Ionicons name="image-outline" size={11} color="#9CA3AF" />
+                              )}
+                            </View>
+                          ))}
+                        </View>
+                      ) : thumbs[0] ? (
+                        <Image source={{ uri: thumbs[0] }} style={styles.fullImg} resizeMode="cover" />
+                      ) : (
+                        <Ionicons name="folder-outline" size={22} color="#6E675F" />
+                      )}
+                    </View>
+                    <Text style={styles.homeFolderName} numberOfLines={1}>
+                      {f.name}
+                    </Text>
+                    <Text style={styles.homeFolderCount}>{cnt} รายการ</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          ) : (
+            <Pressable
+              style={styles.emptyFolderCard}
+              onPress={() => router.push("/(tabs)/folders")}
+            >
+              <Ionicons name="add" size={20} color={theme.accentText} />
+              <Text style={styles.emptyFolderCardText}>สร้างโฟลเดอร์แรกของคุณ</Text>
+            </Pressable>
+          )}
         </View>
 
-        <View style={styles.searchRow}>
+        <View style={[styles.sectionHead, { marginTop: 4 }]}>
+          <Text style={styles.sectionTitle}>บันทึกล่าสุด</Text>
+          {filteredItems.length > 6 ? (
+            <Pressable hitSlop={8} onPress={() => setShowAllLinks((v) => !v)}>
+              <Text style={styles.sectionActionLink}>
+                {showAllLinks ? "ย่อรายการ" : "ดูทั้งหมด"}
+              </Text>
+            </Pressable>
+          ) : (
+            <Text style={styles.sectionHint}>{filteredItems.length} รายการ</Text>
+          )}
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={[styles.root, { paddingTop: Math.max(10, insets.top) }]}>
+      <View style={styles.homeHeader}>
+        <View style={styles.brandCol}>
+          <Text style={styles.brandHeading}>Sherlink</Text>
+          {offline || queueCount > 0 ? (
+            <Text style={styles.syncHint}>
+              {offline ? "โหมดออฟไลน์" : "กำลังเชื่อมต่อ"}
+              {queueCount > 0 ? ` · ค้างซิงก์ ${queueCount}` : ""}
+            </Text>
+          ) : null}
+        </View>
+        <View style={styles.headerActions}>
+          <Pressable
+            style={[styles.addPillBtn, { backgroundColor: theme.accent }]}
+            onPress={() => setModalOpen(true)}
+          >
+            <Ionicons name="add" size={16} color="#FFFFFF" />
+            <Text style={styles.addPillText}>เพิ่มลิงก์</Text>
+          </Pressable>
+          <Pressable style={styles.bellBtn} onPress={() => setNotifOpen(true)}>
+            <Ionicons name="notifications-outline" size={19} color={FIGMA_INK.inkPrimary} />
+            {activeReminders.length > 0 ? (
+              <View style={[styles.bellDot, { backgroundColor: theme.accent }]} />
+            ) : null}
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.searchWrap}>
+        <View style={styles.searchBox}>
+          <Ionicons name="search-outline" size={18} color={FIGMA_INK.inkPrimary} />
           <TextInput
             style={styles.searchInput}
-            placeholder="ค้นหาชื่อลิงก์ เว็บไซต์ หรือ #แท็ก..."
-            placeholderTextColor="#A8A29E"
+            placeholder="ค้นหาลิงก์ โน้ต หรือแท็ก"
+            placeholderTextColor="#8B9199"
             value={searchText}
             onChangeText={setSearchText}
           />
+          {searchText ? (
+            <Pressable hitSlop={8} onPress={() => setSearchText("")}>
+              <Ionicons name="close-circle" size={17} color="#9CA3AF" />
+            </Pressable>
+          ) : null}
         </View>
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.statusStrip}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filterRow}
+        >
           {(
             [
               { id: "all", label: "ทั้งหมด" },
               { id: "unread", label: "ยังไม่ได้ดู" },
               { id: "read", label: "ดูแล้ว" },
-              { id: "favorite", label: "ชื่นชอบ" },
+              { id: "favorite", label: "ชื่นชอบ", hasCherry: true },
             ] as const
           ).map((st) => {
             const active = statusFilter === st.id;
             return (
               <Pressable
                 key={st.id}
-                style={[styles.chip, active && styles.chipActive]}
+                style={[
+                  styles.filterPill,
+                  active && {
+                    backgroundColor: theme.soft,
+                    borderWidth: 1,
+                    borderColor: theme.softBorder,
+                  },
+                ]}
                 onPress={() => setStatusFilter(st.id)}
               >
-                <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                {"hasCherry" in st && st.hasCherry ? (
+                  <Image source={CHERRY_SELECTED_IMG} style={styles.chipCherry} resizeMode="contain" />
+                ) : null}
+                <Text
+                  style={[
+                    styles.filterPillText,
+                    active && { color: theme.accentText, fontWeight: "700" },
+                  ]}
+                >
                   {st.label}
                 </Text>
               </Pressable>
@@ -358,105 +624,101 @@ export default function HomeFeedScreen() {
 
       {loading ? (
         <View style={styles.centerBox}>
-          <ActivityIndicator size="large" color="#E24C4B" />
+          <ActivityIndicator size="large" color={theme.accent} />
         </View>
       ) : (
         <FlatList
-          data={filteredItems}
+          data={displayedItems}
           keyExtractor={(it) => it.id}
-          ListHeaderComponent={
-            folders.length ? (
-              <View style={styles.folderStripWrap}>
-                <View style={styles.folderStripHead}>
-                  <Text style={styles.folderStripTitle}>โฟลเดอร์ของฉัน</Text>
-                  <Pressable onPress={() => router.push("/(tabs)/folders")}>
-                    <Text style={styles.folderStripAction}>ดูทั้งหมด</Text>
-                  </Pressable>
-                </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.folderStripRow}>
-                  {folders.slice(0, 8).map((f) => {
-                    const folderItems = items.filter((it) => it.folder_id === f.id);
-                    const thumb =
-                      resolveFolderCoverUrl(f.cover_url) ||
-                      folderItems.map((it) => resolveMobileThumbUrl(it)).find(Boolean) ||
-                      "";
-                    const cnt = typeof f.item_count === "number" ? f.item_count : folderItems.length;
-                    return (
-                      <Pressable
-                        key={f.id}
-                        style={styles.homeFolderCard}
-                        onPress={() => router.push(`/folder/${encodeURIComponent(f.id)}`)}
-                      >
-                        <View style={styles.homeFolderThumb}>
-                          {thumb ? (
-                            <Image source={{ uri: thumb }} style={styles.homeFolderThumbImg} resizeMode="cover" />
-                          ) : (
-                            <Ionicons name="folder-outline" size={24} color="#78716C" />
-                          )}
-                        </View>
-                        <Text style={styles.homeFolderName} numberOfLines={1}>{f.name}</Text>
-                        <Text style={styles.homeFolderCount}>{cnt} รายการ</Text>
-                      </Pressable>
-                    );
-                  })}
-                </ScrollView>
-              </View>
-            ) : null
-          }
+          ListHeaderComponent={renderHomeHeaderBlock}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              tintColor="#E24C4B"
+              tintColor={theme.accent}
               onRefresh={() => {
                 setRefreshing(true);
                 void loadAll();
               }}
             />
           }
-          contentContainerStyle={[styles.listContent, { paddingBottom: 100 }]}
+          contentContainerStyle={[
+            styles.listContent,
+            { paddingBottom: 112 + insets.bottom },
+          ]}
           ListEmptyComponent={
             <View style={styles.emptyBox}>
+              <View style={styles.emptyIconBadge}>
+                <Ionicons name="bookmark" size={22} color={theme.accentText} />
+              </View>
               <Text style={styles.emptyTitle}>ยังไม่มีลิงก์ที่ตรงกับตัวกรอง</Text>
-              <Text style={styles.emptySub}>กดปุ่ม "+ เก็บลิงก์" หรือแชร์ลิงก์จากแอปอื่นเข้ามาได้เลย</Text>
+              <Text style={styles.emptySub}>
+                กดปุ่ม &quot;+ เพิ่มลิงก์&quot; ด้านบน หรือแชร์ลิงก์จากแอปอื่นมาที่ Sherlink
+              </Text>
+              <Pressable
+                style={[styles.emptyCtaBtn, { backgroundColor: theme.accent }]}
+                onPress={() => setModalOpen(true)}
+              >
+                <Text style={styles.emptyCtaText}>+ เพิ่มลิงก์แรกของฉัน</Text>
+              </Pressable>
             </View>
           }
           renderItem={({ item }) => {
             const seen = isReadStatus(item.status);
             const thumbUri = resolveMobileThumbUrl(item);
-            const platLabel = inferMobilePlatform(item);
+            const platLabel = inferMobilePlatform(item) || inferMobileDomain(item.url) || inferDomain(item.url);
+            const folderLabel = (item.folder_id && folderNameById.get(item.folder_id)) || "ยังไม่จัดหมวด";
+            const codeBadge = String(platLabel || "WEB").slice(0, 3).toUpperCase();
+
             return (
               <Pressable
-                style={styles.card}
+                style={styles.figmaLinkCard}
                 onPress={() => router.push(`/item/${encodeURIComponent(item.id)}`)}
               >
-                {thumbUri ? (
-                  <Image source={{ uri: thumbUri }} style={styles.thumb} resizeMode="cover" />
-                ) : null}
-                <View style={styles.cardBody}>
-                  <View style={styles.cardMetaRow}>
-                    <Text style={styles.platformBadge}>{platLabel || inferDomain(item.url)}</Text>
-                    <View style={styles.statusPill}>
-                      <Text style={styles.statusPillText}>{seen ? "ดูแล้ว" : "ยังไม่ดู"}</Text>
-                    </View>
-                    <Pressable style={styles.starBtnWrap} hitSlop={8} onPress={() => void toggleFavorite(item)}>
-                      <Ionicons
-                        name={item.is_favorite ? "heart" : "heart-outline"}
-                        size={18}
-                        color={item.is_favorite ? "#E24C4B" : "#78716C"}
-                      />
-                    </Pressable>
-                  </View>
-                  <Text style={styles.cardTitle} numberOfLines={2}>
+                <View style={styles.figmaLinkThumb}>
+                  {thumbUri ? (
+                    <Image source={{ uri: thumbUri }} style={styles.fullImg} resizeMode="cover" />
+                  ) : (
+                    <Text style={styles.figmaThumbCode}>{codeBadge}</Text>
+                  )}
+                </View>
+
+                <View style={styles.figmaLinkMain}>
+                  <Text style={styles.figmaLinkPlatform} numberOfLines={1}>
+                    {platLabel}
+                  </Text>
+                  <Text style={styles.figmaLinkTitle} numberOfLines={2}>
                     {formatCardDisplayTitle(item) || item.url}
                   </Text>
-                  <Text style={styles.cardDomain} numberOfLines={1}>
-                    {inferMobileDomain(item.url) || inferDomain(item.url)}
+                  <Text style={styles.figmaLinkMeta} numberOfLines={1}>
+                    {folderLabel} · {seen ? "ดูแล้ว" : "ยังไม่ได้ดู"}
                   </Text>
-                  {item.note || item.user_note ? (
-                    <Text style={styles.cardNote} numberOfLines={2}>
-                      {item.note || item.user_note}
-                    </Text>
-                  ) : null}
+                </View>
+
+                <View style={styles.figmaLinkActions}>
+                  <Pressable
+                    style={styles.cardActionIconBtn}
+                    hitSlop={6}
+                    onPress={(e) => {
+                      e.stopPropagation?.();
+                      void toggleFavorite(item);
+                    }}
+                  >
+                    <Image
+                      source={item.is_favorite ? CHERRY_SELECTED_IMG : CHERRY_UNSELECTED_IMG}
+                      style={styles.cherryActionImg}
+                      resizeMode="contain"
+                    />
+                  </Pressable>
+                  <Pressable
+                    style={styles.cardActionIconBtn}
+                    hitSlop={6}
+                    onPress={(e) => {
+                      e.stopPropagation?.();
+                      setMenuItem(item);
+                    }}
+                  >
+                    <Ionicons name="ellipsis-vertical" size={16} color="#5C6269" />
+                  </Pressable>
                 </View>
               </Pressable>
             );
@@ -464,29 +726,137 @@ export default function HomeFeedScreen() {
         />
       )}
 
+      {/* Post Action Sheet Modal */}
+      <Modal
+        visible={Boolean(menuItem)}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setMenuItem(null)}
+      >
+        <Pressable style={styles.sheetOverlay} onPress={() => setMenuItem(null)}>
+          <Pressable
+            style={[styles.actionSheetCard, { paddingBottom: Math.max(20, insets.bottom + 12) }]}
+            onPress={() => {}}
+          >
+            <View style={styles.sheetDragBar} />
+            <Text style={styles.actionSheetTitle} numberOfLines={2}>
+              {menuItem ? formatCardDisplayTitle(menuItem) || menuItem.url : ""}
+            </Text>
+            {menuItem ? (
+              <View style={styles.actionSheetList}>
+                <Pressable
+                  style={styles.actionSheetRow}
+                  onPress={() => {
+                    const id = menuItem.id;
+                    setMenuItem(null);
+                    router.push(`/item/${encodeURIComponent(id)}`);
+                  }}
+                >
+                  <Ionicons name="document-text-outline" size={18} color={FIGMA_INK.inkPrimary} />
+                  <Text style={styles.actionSheetRowText}>ดูรายละเอียดและสรุป AI</Text>
+                </Pressable>
+                <Pressable style={styles.actionSheetRow} onPress={() => handleOpenUrlFromMenu(menuItem)}>
+                  <Ionicons name="open-outline" size={18} color={FIGMA_INK.inkPrimary} />
+                  <Text style={styles.actionSheetRowText}>เปิดลิงก์ต้นฉบับ</Text>
+                </Pressable>
+                <Pressable style={styles.actionSheetRow} onPress={() => void handleToggleSeenMenu(menuItem)}>
+                  <Ionicons name="swap-horizontal-outline" size={18} color={FIGMA_INK.inkPrimary} />
+                  <Text style={styles.actionSheetRowText}>
+                    {isReadStatus(menuItem.status) ? "เปลี่ยนเป็น ยังไม่ได้ดู" : "ทำเครื่องหมายว่า ดูแล้ว"}
+                  </Text>
+                </Pressable>
+                <Pressable style={[styles.actionSheetRow, styles.actionSheetDanger]} onPress={() => handleDeleteFromMenu(menuItem)}>
+                  <Ionicons name="trash-outline" size={18} color="#B91C1C" />
+                  <Text style={[styles.actionSheetRowText, { color: "#B91C1C" }]}>ลบลิงก์นี้ออก</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Notifications Modal (26 Notifications) */}
+      <Modal
+        visible={notifOpen}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setNotifOpen(false)}
+      >
+        <View style={[styles.notifRoot, { paddingTop: Math.max(12, insets.top) }]}>
+          <View style={styles.notifHeader}>
+            <Pressable style={styles.notifBackBtn} onPress={() => setNotifOpen(false)}>
+              <Ionicons name="chevron-back" size={22} color={FIGMA_INK.inkPrimary} />
+              <Text style={styles.notifHeaderTitle}>การแจ้งเตือน</Text>
+            </Pressable>
+            <Pressable hitSlop={8} onPress={() => setNotifOpen(false)}>
+              <Ionicons name="close" size={22} color="#666666" />
+            </Pressable>
+          </View>
+          <Text style={styles.notifSub}>รวมแจ้งเตือนความจำที่ตั้งเวลาไว้ใน Sherlink</Text>
+          <ScrollView contentContainerStyle={styles.notifList}>
+            {activeReminders.length === 0 ? (
+              <View style={styles.notifEmptyCard}>
+                <Ionicons name="notifications-off-outline" size={26} color="#9CA3AF" />
+                <Text style={styles.notifEmptyText}>ยังไม่มีรายการแจ้งเตือนความจำที่ตั้งไว้</Text>
+              </View>
+            ) : (
+              activeReminders.map((rem, idx) => {
+                const target = itemById.get(rem.item_id);
+                const whenStr = formatReminderWhen(
+                  rem.remind_at || rem.next_remind_at || rem.next_run_at || rem.scheduled_for,
+                );
+                return (
+                  <Pressable
+                    key={rem.id || `${rem.item_id}-${idx}`}
+                    style={styles.notifCard}
+                    onPress={() => {
+                      setNotifOpen(false);
+                      router.push(`/item/${encodeURIComponent(rem.item_id)}`);
+                    }}
+                  >
+                    <View style={[styles.notifIconCircle, { backgroundColor: theme.soft }]}>
+                      <Ionicons name="time-outline" size={18} color={theme.accent} />
+                    </View>
+                    <View style={styles.notifContent}>
+                      <Text style={styles.notifItemTitle} numberOfLines={2}>
+                        {rem.title || (target ? formatCardDisplayTitle(target) : "") || rem.url || "ลิงก์ที่ตั้งเตือนไว้"}
+                      </Text>
+                      <Text style={styles.notifItemMeta}>{whenStr}</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+                  </Pressable>
+                );
+              })
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* Quick Save Bottom Sheet Modal (Figma 319:541) */}
       <Modal visible={modalOpen} animationType="slide" transparent onRequestClose={closeQuickSaveModal}>
         <KeyboardAvoidingView
           style={styles.modalBackdrop}
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
           <View style={[styles.modalCard, { paddingBottom: Math.max(20, insets.bottom + 12) }]}>
+            <View style={styles.sheetDragBar} />
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>+ เก็บลิงก์ด่วน</Text>
+              <Text style={styles.modalTitle}>บันทึกลิงก์</Text>
               <Pressable hitSlop={8} onPress={closeQuickSaveModal}>
-                <Ionicons name="close" size={20} color="#78716C" />
+                <Ionicons name="close" size={22} color="#666666" />
               </Pressable>
             </View>
-            <ScrollView keyboardShouldPersistTaps="handled">
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
               <View style={styles.urlLabelRow}>
-                <Text style={styles.label}>URL ลิงก์</Text>
+                <Text style={styles.label}>ลิงก์ (URL)</Text>
                 <Pressable
                   style={[styles.previewBtn, previewing && { opacity: 0.6 }]}
                   disabled={previewing || !saveUrl.trim()}
                   onPress={() => void handleFetchPreview(saveUrl)}
                 >
                   <View style={styles.chipInner}>
-                    <Ionicons name="search-outline" size={13} color="#9B2C2C" />
-                    <Text style={styles.previewBtnText}>
+                    <Ionicons name="sparkles-outline" size={13} color={theme.accentText} />
+                    <Text style={[styles.previewBtnText, { color: theme.accentText }]}>
                       {previewing ? "กำลังดึง..." : "ดึงพรีวิว"}
                     </Text>
                   </View>
@@ -495,7 +865,7 @@ export default function HomeFeedScreen() {
               <TextInput
                 style={styles.input}
                 placeholder="https://..."
-                placeholderTextColor="#A8A29E"
+                placeholderTextColor="#9CA3AF"
                 autoCapitalize="none"
                 value={saveUrl}
                 onChangeText={(next) => {
@@ -525,101 +895,107 @@ export default function HomeFeedScreen() {
                     />
                   ) : null}
                   <View style={styles.previewBody}>
-                    <Text style={styles.previewPlat}>{previewData.platform || "web"}</Text>
+                    <Text style={[styles.previewPlat, { color: theme.accentText }]}>
+                      {previewData.platform || "web"}
+                    </Text>
                     <Text style={styles.previewTitle} numberOfLines={2}>
                       {formatCardDisplayTitle(previewData)}
                     </Text>
                   </View>
                 </View>
               ) : null}
+
               <Text style={styles.label}>ชื่อเรื่อง (ไม่บังคับ)</Text>
               <TextInput
                 style={styles.input}
                 placeholder="ระบบจะดึงชื่อให้อัตโนมัติหากเว้นว่าง"
-                placeholderTextColor="#A8A29E"
+                placeholderTextColor="#9CA3AF"
                 value={saveTitle}
                 onChangeText={setSaveTitle}
               />
-              <Text style={styles.label}>บันทึกเพิ่มเติม</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                placeholder="จดโน้ตสั้นๆ..."
-                placeholderTextColor="#A8A29E"
-                multiline
-                value={saveNote}
-                onChangeText={setSaveNote}
-              />
-              <Text style={styles.label}>แท็ก (คั่นด้วยเว้นวรรคหรือลูกน้ำ)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="#คาเฟ่ #ไอเดีย"
-                placeholderTextColor="#A8A29E"
-                value={saveTags}
-                onChangeText={setSaveTags}
-              />
-              <Text style={styles.label}>สถานะ</Text>
-              <View style={styles.inlinePills}>
-                {(["inbox", "done"] as const).map((st) => (
-                  <Pressable
-                    key={st}
-                    style={[styles.chip, saveStatus === st && styles.chipActive]}
-                    onPress={() => setSaveStatus(st)}
-                  >
-                    <Text style={[styles.chipText, saveStatus === st && styles.chipTextActive]}>
-                      {st === "done" ? "ดูแล้ว" : "ยังไม่ดู"}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
+
               <Text style={styles.label}>โฟลเดอร์</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.subStrip}>
                 <Pressable
-                  style={[styles.smallChip, saveFolderId === null && styles.chipActive]}
+                  style={[
+                    styles.smallChip,
+                    saveFolderId === null && { backgroundColor: "#1C1917", borderColor: "#1C1917" },
+                  ]}
                   onPress={() => setSaveFolderId(null)}
                 >
-                  <Text style={[styles.chipText, saveFolderId === null && styles.chipTextActive]}>
-                    รวมไว้ดูทีหลัง
+                  <Text
+                    style={[
+                      styles.chipText,
+                      saveFolderId === null && { color: "#FFFFFF", fontWeight: "700" },
+                    ]}
+                  >
+                    ไม่ใส่โฟลเดอร์
                   </Text>
                 </Pressable>
-                {folders.map((f) => (
-                  <Pressable
-                    key={f.id}
-                    style={[styles.smallChip, saveFolderId === f.id && styles.chipActive]}
-                    onPress={() => setSaveFolderId(f.id)}
-                  >
-                    <View style={styles.chipInner}>
-                      <Ionicons
-                        name="folder-outline"
-                        size={13}
-                        color={saveFolderId === f.id ? "#FDFBF7" : "#57534E"}
-                      />
-                      <Text style={[styles.chipText, saveFolderId === f.id && styles.chipTextActive]}>
-                        {f.name}
-                      </Text>
-                    </View>
-                  </Pressable>
-                ))}
+                {folders.map((f) => {
+                  const active = saveFolderId === f.id;
+                  return (
+                    <Pressable
+                      key={f.id}
+                      style={[
+                        styles.smallChip,
+                        active && { backgroundColor: theme.soft, borderColor: theme.accent },
+                      ]}
+                      onPress={() => setSaveFolderId(f.id)}
+                    >
+                      <View style={styles.chipInner}>
+                        <Ionicons
+                          name="folder-outline"
+                          size={13}
+                          color={active ? theme.accentText : "#57534E"}
+                        />
+                        <Text
+                          style={[
+                            styles.chipText,
+                            active && { color: theme.accentText, fontWeight: "700" },
+                          ]}
+                        >
+                          {f.name}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
                 <Pressable
-                  style={[styles.smallChip, styles.newFolderChip, inlineFolderOpen && styles.chipActive]}
+                  style={[
+                    styles.smallChip,
+                    styles.newFolderChip,
+                    inlineFolderOpen && { backgroundColor: theme.soft, borderColor: theme.accent },
+                  ]}
                   onPress={() => setInlineFolderOpen((prev) => !prev)}
                 >
-                  <Text style={[styles.chipText, styles.newFolderChipText, inlineFolderOpen && styles.chipTextActive]}>
+                  <Text
+                    style={[
+                      styles.chipText,
+                      { color: theme.accentText },
+                    ]}
+                  >
                     + สร้างโฟลเดอร์ใหม่
                   </Text>
                 </Pressable>
               </ScrollView>
+
               {inlineFolderOpen ? (
                 <View style={styles.inlineFolderBox}>
                   <View style={styles.inlineFolderRow}>
                     <TextInput
                       style={[styles.input, { flex: 1 }]}
                       placeholder="ชื่อโฟลเดอร์ใหม่ เช่น คาเฟ่"
-                      placeholderTextColor="#A8A29E"
+                      placeholderTextColor="#9CA3AF"
                       value={inlineFolderName}
                       onChangeText={setInlineFolderName}
                     />
                     <Pressable
-                      style={[styles.inlineCreateBtn, creatingFolder && { opacity: 0.65 }]}
+                      style={[
+                        styles.inlineCreateBtn,
+                        { backgroundColor: theme.accent },
+                        creatingFolder && { opacity: 0.65 },
+                      ]}
                       disabled={creatingFolder}
                       onPress={() => void handleInlineCreateFolder()}
                     >
@@ -631,15 +1007,60 @@ export default function HomeFeedScreen() {
                 </View>
               ) : null}
 
+              <Text style={styles.label}>สถานะ</Text>
+              <View style={styles.inlinePills}>
+                {(["inbox", "done"] as const).map((st) => {
+                  const active = saveStatus === st;
+                  return (
+                    <Pressable
+                      key={st}
+                      style={[
+                        styles.smallChip,
+                        active && { backgroundColor: theme.soft, borderColor: theme.accent },
+                      ]}
+                      onPress={() => setSaveStatus(st)}
+                    >
+                      <Text
+                        style={[
+                          styles.chipText,
+                          active && { color: theme.accentText, fontWeight: "700" },
+                        ]}
+                      >
+                        {st === "done" ? "ดูแล้ว" : "ยังไม่ดู"}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text style={styles.label}>แท็ก</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="#คาเฟ่ #ไอเดีย"
+                placeholderTextColor="#9CA3AF"
+                value={saveTags}
+                onChangeText={setSaveTags}
+              />
+
+              <Text style={styles.label}>โน้ตสั้น</Text>
+              <TextInput
+                style={[styles.input, styles.textArea]}
+                placeholder="จดโน้ตสั้นๆ..."
+                placeholderTextColor="#9CA3AF"
+                multiline
+                value={saveNote}
+                onChangeText={setSaveNote}
+              />
+
               <Pressable
-                style={[styles.saveCta, saving && { opacity: 0.7 }]}
+                style={[styles.saveCta, { backgroundColor: theme.accent }, saving && { opacity: 0.7 }]}
                 disabled={saving}
                 onPress={() => void handleQuickSave()}
               >
                 {saving ? (
-                  <ActivityIndicator color="#FDFBF7" />
+                  <ActivityIndicator color="#FFFFFF" />
                 ) : (
-                  <Text style={styles.saveCtaText}>บันทึกลง Sherlink</Text>
+                  <Text style={styles.saveCtaText}>บันทึก</Text>
                 )}
               </Pressable>
             </ScrollView>
@@ -651,125 +1072,545 @@ export default function HomeFeedScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "transparent" },
-  topHeader: {
-    backgroundColor: "#FDFBF7",
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#EAE4DB",
+  root: {
+    flex: 1,
+    backgroundColor: FIGMA_INK.bgApp,
   },
-  greetingRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
-  greetingTitle: { fontSize: 18, fontWeight: "800", color: "#1C1917" },
-  greetingSub: { fontSize: 12, color: "#78716C", marginTop: 2 },
-  addBtn: { backgroundColor: "#9B2C2C", borderRadius: 999, paddingHorizontal: 14, paddingVertical: 8 },
-  addBtnText: { color: "#FDFBF7", fontWeight: "700", fontSize: 13 },
-  searchRow: { flexDirection: "row", gap: 8, alignItems: "center" },
+  homeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 6,
+  },
+  brandCol: {
+    flexDirection: "column",
+  },
+  brandHeading: {
+    fontSize: 26,
+    fontWeight: "800",
+    color: FIGMA_INK.inkPrimary,
+    letterSpacing: -0.4,
+  },
+  syncHint: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#B45309",
+    marginTop: 1,
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  addPillBtn: {
+    height: 38,
+    paddingHorizontal: 14,
+    borderRadius: 19,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+  },
+  addPillText: {
+    color: "#FFFFFF",
+    fontSize: 13.5,
+    fontWeight: "700",
+  },
+  bellBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderCard,
+    backgroundColor: FIGMA_INK.bgMuted,
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  bellDot: {
+    position: "absolute",
+    top: 7,
+    right: 8,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: "#FFFFFF",
+  },
+  searchWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
+    gap: 10,
+  },
+  searchBox: {
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: FIGMA_INK.bgMuted,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderInput,
+    paddingHorizontal: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   searchInput: {
     flex: 1,
-    backgroundColor: "#F3EFE6",
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
     fontSize: 14,
-    color: "#1C1917",
+    color: FIGMA_INK.inkStrong,
+    paddingVertical: 0,
   },
-  filterToggleBtn: {
+  filterRow: {
+    gap: 7,
+    alignItems: "center",
+  },
+  filterPill: {
+    height: 34,
+    paddingHorizontal: 13,
+    borderRadius: 17,
+    backgroundColor: FIGMA_INK.bgChip,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  chipCherry: {
+    width: 14,
+    height: 14,
+  },
+  filterPillText: {
+    fontSize: 12.5,
+    fontWeight: "500",
+    color: "#444444",
+  },
+  centerBox: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  listContent: {
+    paddingHorizontal: 16,
+    paddingTop: 2,
+    gap: 8,
+  },
+  feedHeaderBlock: {
+    gap: 12,
+    marginBottom: 4,
+  },
+  resumeBanner: {
+    backgroundColor: "#F8F8F9",
     borderWidth: 1,
-    borderColor: "#D6CFC4",
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    backgroundColor: "#FFFFFF",
-  },
-  filterToggleBtnActive: { backgroundColor: "#9B2C2C", borderColor: "#9B2C2C" },
-  filterToggleText: { fontSize: 13, fontWeight: "600", color: "#44403C" },
-  filterToggleTextActive: { color: "#FDFBF7" },
-  statusStrip: { marginTop: 10 },
-  drawer: { marginTop: 8, gap: 6 },
-  subStrip: { marginTop: 4 },
-  chip: {
-    backgroundColor: "#F3EFE6",
+    borderColor: "#E4E4E7",
+    borderRadius: 14,
     paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 999,
-    marginRight: 8,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
   },
-  smallChip: {
-    backgroundColor: "#F3EFE6",
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 999,
-    marginRight: 8,
+  resumeCopy: {
+    flex: 1,
+    alignItems: "flex-start",
+    gap: 8,
   },
-  chipActive: { backgroundColor: "#9B2C2C" },
-  chipText: { fontSize: 13, fontWeight: "600", color: "#57534E" },
-  chipTextActive: { color: "#FDFBF7" },
-  centerBox: { flex: 1, alignItems: "center", justifyContent: "center" },
-  listContent: { padding: 16, gap: 12 },
-  emptyBox: { padding: 36, alignItems: "center" },
-  emptyTitle: { fontSize: 16, fontWeight: "700", color: "#44403C" },
-  emptySub: { fontSize: 13, color: "#78716C", textAlign: "center", marginTop: 6 },
-  card: {
-    backgroundColor: "#FDFBF7",
+  resumeTitle: {
+    fontSize: 14.5,
+    fontWeight: "800",
+    lineHeight: 20,
+    color: "#1D2430",
+  },
+  resumeCta: {
+    height: 29,
+    paddingHorizontal: 11,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: "#D4D4D8",
+    backgroundColor: "#FFFFFF",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  resumeCtaText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: FIGMA_INK.inkPrimary,
+  },
+  resumeMascot: {
+    width: 76,
+    height: 76,
+  },
+  sectionBlock: {
+    gap: 8,
+  },
+  sectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  sectionTitle: {
+    fontSize: 16.5,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  sectionActionLink: {
+    fontSize: 12.5,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+    textDecorationLine: "underline",
+  },
+  sectionHint: {
+    fontSize: 12,
+    color: FIGMA_INK.inkSubtle,
+  },
+  folderStripRow: {
+    gap: 10,
+    paddingRight: 4,
+  },
+  homeFolderCard: {
+    width: 148,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E2E2E6",
+    padding: 7,
+    gap: 3,
+  },
+  homeFolderThumbWrap: {
+    width: "100%",
+    height: 54,
+    borderRadius: 8,
+    overflow: "hidden",
+    backgroundColor: FIGMA_INK.bgThumb,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 3,
+  },
+  collageGrid: {
+    width: "100%",
+    height: "100%",
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  collageCell: {
+    width: "50%",
+    height: "50%",
+    backgroundColor: "#E5E7EB",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 0.5,
+    borderColor: "#FFFFFF",
+  },
+  fullImg: {
+    width: "100%",
+    height: "100%",
+  },
+  homeFolderName: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  homeFolderCount: {
+    fontSize: 12,
+    color: FIGMA_INK.inkSubtle,
+  },
+  emptyFolderCard: {
+    height: 68,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E2E2E6",
+    backgroundColor: "#FAFAFA",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  emptyFolderCardText: {
+    fontSize: 13.5,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  figmaLinkCard: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderCard,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  figmaLinkThumb: {
+    width: 54,
+    height: 54,
+    borderRadius: 10,
+    backgroundColor: FIGMA_INK.bgThumb,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  figmaThumbCode: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#55596A",
+  },
+  figmaLinkMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  figmaLinkPlatform: {
+    fontSize: 11,
+    fontWeight: "500",
+    color: "#777777",
+  },
+  figmaLinkTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+    lineHeight: 19,
+  },
+  figmaLinkMeta: {
+    fontSize: 11,
+    color: FIGMA_INK.inkSubtle,
+    marginTop: 2,
+  },
+  figmaLinkActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    flexShrink: 0,
+  },
+  cardActionIconBtn: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cherryActionImg: {
+    width: 20,
+    height: 20,
+  },
+  emptyBox: {
+    paddingVertical: 32,
+    paddingHorizontal: 20,
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#EAE4DB",
-    overflow: "hidden",
+    borderColor: "#EFEFEF",
+    marginTop: 6,
+    gap: 6,
   },
-  thumb: { width: "100%", height: 150, backgroundColor: "#EAE4DB" },
-  cardBody: { padding: 14 },
-  cardMetaRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 },
-  platformBadge: {
-    fontSize: 11,
+  emptyIconBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#FCF0F0",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  emptyTitle: {
+    fontSize: 15.5,
     fontWeight: "700",
-    color: "#9B2C2C",
+    color: FIGMA_INK.inkStrong,
+  },
+  emptySub: {
+    fontSize: 13,
+    color: FIGMA_INK.inkSecondary,
+    textAlign: "center",
+    lineHeight: 19,
+  },
+  emptyCtaBtn: {
+    marginTop: 8,
+    height: 40,
+    paddingHorizontal: 18,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emptyCtaText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 13.5,
+  },
+  sheetOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(23, 23, 33, 0.43)",
+    justifyContent: "flex-end",
+  },
+  sheetDragBar: {
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#D1D5DB",
+    marginBottom: 10,
+  },
+  actionSheetCard: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+  },
+  actionSheetTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+    marginBottom: 12,
+  },
+  actionSheetList: {
+    gap: 6,
+  },
+  actionSheetRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: FIGMA_INK.bgMuted,
+  },
+  actionSheetDanger: {
     backgroundColor: "#FEF2F2",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    textTransform: "uppercase",
   },
-  statusPill: {
-    backgroundColor: "#F3EFE6",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
+  actionSheetRowText: {
+    fontSize: 14.5,
+    fontWeight: "600",
+    color: FIGMA_INK.inkPrimary,
   },
-  statusPillText: { fontSize: 11, fontWeight: "600", color: "#57534E" },
-  starBtnWrap: { marginLeft: "auto" },
-  starBtn: { fontSize: 18 },
-  cardTitle: { fontSize: 16, fontWeight: "700", color: "#1C1917", marginBottom: 4 },
-  cardDomain: { fontSize: 12, color: "#78716C" },
-  cardNote: { fontSize: 13, color: "#44403C", marginTop: 6 },
+  notifRoot: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+  },
+  notifHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  notifBackBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  notifHeaderTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: FIGMA_INK.inkPrimary,
+  },
+  notifSub: {
+    fontSize: 13,
+    color: FIGMA_INK.inkSecondary,
+    paddingHorizontal: 16,
+    marginBottom: 10,
+  },
+  notifList: {
+    paddingHorizontal: 16,
+    paddingBottom: 32,
+    gap: 10,
+  },
+  notifEmptyCard: {
+    padding: 36,
+    borderRadius: 16,
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "#EFEFEF",
+    alignItems: "center",
+    gap: 8,
+  },
+  notifEmptyText: {
+    fontSize: 14,
+    color: FIGMA_INK.inkSecondary,
+  },
+  notifCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderCard,
+    backgroundColor: "#FFFFFF",
+  },
+  notifIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  notifContent: {
+    flex: 1,
+    gap: 3,
+  },
+  notifItemTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  notifItemMeta: {
+    fontSize: 12,
+    color: FIGMA_INK.inkSecondary,
+  },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
+    backgroundColor: "rgba(23, 23, 33, 0.43)",
     justifyContent: "flex-end",
   },
   modalCard: {
-    backgroundColor: "#FDFBF7",
+    backgroundColor: "#FFFFFF",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingTop: 10,
     maxHeight: "88%",
   },
-  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  modalTitle: { fontSize: 18, fontWeight: "800", color: "#1C1917" },
-  modalClose: { fontSize: 20, color: "#78716C", paddingHorizontal: 6 },
-  urlLabelRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 6, marginBottom: 4 },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  modalTitle: {
+    fontSize: 19,
+    fontWeight: "800",
+    color: FIGMA_INK.inkPrimary,
+  },
+  urlLabelRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 4,
+    marginBottom: 6,
+  },
   previewBtn: {
-    backgroundColor: "#F3EFE6",
-    paddingHorizontal: 10,
+    backgroundColor: FIGMA_INK.bgMuted,
+    paddingHorizontal: 11,
     paddingVertical: 5,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#D6CFC4",
+    borderColor: FIGMA_INK.borderCard,
   },
-  previewBtnText: { fontSize: 12, fontWeight: "700", color: "#9B2C2C" },
-  chipInner: { flexDirection: "row", alignItems: "center", gap: 5 },
-  warningHeadRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  previewBtnText: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  chipInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  warningHeadRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
   warningBox: {
     backgroundColor: "#FFFBEB",
     borderWidth: 1,
@@ -779,137 +1620,134 @@ const styles = StyleSheet.create({
     marginTop: 8,
     gap: 4,
   },
-  warningTitle: { fontSize: 13, fontWeight: "800", color: "#92400E" },
-  warningText: { fontSize: 12, color: "#78350F", lineHeight: 18 },
-  warningHint: { fontSize: 11, color: "#B45309", fontWeight: "600" },
+  warningTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#92400E",
+  },
+  warningText: {
+    fontSize: 12,
+    color: "#78350F",
+    lineHeight: 18,
+  },
+  warningHint: {
+    fontSize: 11,
+    color: "#B45309",
+    fontWeight: "600",
+  },
   previewCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F3EFE6",
+    backgroundColor: FIGMA_INK.bgMuted,
     borderRadius: 12,
     padding: 10,
     marginTop: 8,
     gap: 10,
     borderWidth: 1,
-    borderColor: "#EAE4DB",
+    borderColor: FIGMA_INK.borderCard,
   },
-  previewThumb: { width: 54, height: 54, borderRadius: 8, backgroundColor: "#E7E0D5" },
-  previewBody: { flex: 1, gap: 2 },
-  previewPlat: { fontSize: 10, fontWeight: "700", color: "#9B2C2C", textTransform: "uppercase" },
-  previewTitle: { fontSize: 13, fontWeight: "700", color: "#1C1917" },
-  label: { fontSize: 13, fontWeight: "600", color: "#44403C", marginTop: 10, marginBottom: 6 },
+  previewThumb: {
+    width: 54,
+    height: 54,
+    borderRadius: 10,
+    backgroundColor: FIGMA_INK.bgThumb,
+  },
+  previewBody: {
+    flex: 1,
+    gap: 2,
+  },
+  previewPlat: {
+    fontSize: 10,
+    fontWeight: "700",
+    textTransform: "uppercase",
+  },
+  previewTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  label: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+    marginTop: 12,
+    marginBottom: 6,
+  },
   input: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: FIGMA_INK.bgMuted,
     borderWidth: 1,
-    borderColor: "#E7E0D5",
+    borderColor: FIGMA_INK.borderCard,
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    fontSize: 14,
-    color: "#1C1917",
+    fontSize: 14.5,
+    color: FIGMA_INK.inkStrong,
   },
-  textArea: { minHeight: 72, textAlignVertical: "top" },
-  inlinePills: { flexDirection: "row", marginTop: 2 },
-  newFolderChip: { borderWidth: 1, borderColor: "#D6CFC4", backgroundColor: "#FFFFFF" },
-  newFolderChipText: { color: "#9B2C2C" },
+  textArea: {
+    minHeight: 68,
+    textAlignVertical: "top",
+  },
+  inlinePills: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  subStrip: {
+    marginTop: 2,
+  },
+  smallChip: {
+    backgroundColor: "#EEEEEE",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 999,
+    marginRight: 8,
+  },
+  chipText: {
+    fontSize: 12.5,
+    fontWeight: "600",
+    color: "#444444",
+  },
+  newFolderChip: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#D4D4D8",
+  },
   inlineFolderBox: {
     marginTop: 10,
     padding: 10,
     borderRadius: 12,
-    backgroundColor: "#F3EFE6",
+    backgroundColor: "#F9FAFB",
     borderWidth: 1,
-    borderColor: "#E7E0D5",
+    borderColor: FIGMA_INK.borderCard,
+  },
+  inlineFolderRow: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
   },
-  emojiStrip: { marginBottom: 2 },
-  emojiChip: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 6,
-    borderWidth: 1,
-    borderColor: "#E7E0D5",
-  },
-  emojiChipActive: { borderColor: "#9B2C2C", backgroundColor: "#FEF2F2" },
-  emojiChipText: { fontSize: 16 },
-  inlineFolderRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   inlineCreateBtn: {
-    backgroundColor: "#9B2C2C",
     borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 11,
     alignItems: "center",
     justifyContent: "center",
   },
-  inlineCreateBtnText: { color: "#FDFBF7", fontWeight: "700", fontSize: 13 },
-  saveCta: {
-    backgroundColor: "#9B2C2C",
-    borderRadius: 14,
-    paddingVertical: 14,
-    alignItems: "center",
-    marginTop: 18,
-    marginBottom: 12,
-  },
-  saveCtaText: { color: "#FDFBF7", fontWeight: "700", fontSize: 16 },
-  folderStripWrap: {
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    paddingBottom: 8,
-  },
-  folderStripHead: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 8,
-  },
-  folderStripTitle: {
-    fontSize: 15,
+  inlineCreateBtnText: {
+    color: "#FFFFFF",
     fontWeight: "700",
-    color: "#1C1917",
-  },
-  folderStripAction: {
     fontSize: 13,
-    fontWeight: "600",
-    color: "#9B2C2C",
   },
-  folderStripRow: {
-    gap: 10,
-    paddingRight: 8,
-  },
-  homeFolderCard: {
-    width: 112,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#E7E5E4",
-    padding: 8,
-    alignItems: "flex-start",
-  },
-  homeFolderThumb: {
-    width: "100%",
-    height: 64,
-    borderRadius: 10,
-    backgroundColor: "#F5F0EB",
+  saveCta: {
+    height: 48,
+    borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
-    overflow: "hidden",
-    marginBottom: 6,
+    marginTop: 18,
+    marginBottom: 8,
   },
-  homeFolderThumbImg: {
-    width: "100%",
-    height: "100%",
-  },
-  homeFolderName: {
-    fontSize: 13,
+  saveCtaText: {
+    color: "#FFFFFF",
     fontWeight: "700",
-    color: "#1C1917",
-  },
-  homeFolderCount: {
-    fontSize: 11,
-    color: "#78716C",
-    marginTop: 2,
+    fontSize: 15.5,
   },
 });

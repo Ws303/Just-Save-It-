@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -16,16 +16,27 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
-import { createFolder, fetchWorkspace, resolveFolderCoverUrl, updateFolder, uploadFolderCover } from "../../src/api";
+import {
+  createFolder,
+  deleteFolder,
+  fetchWorkspace,
+  resolveFolderCoverUrl,
+  updateFolder,
+  uploadFolderCover,
+} from "../../src/api";
+import { FIGMA_INK, getFigmaTheme, type FigmaAccentThemeId } from "../../src/figmaTheme";
 import { resolveMobileThumbUrl } from "../../src/itemHelpers";
 import {
   getAuthGeneration,
   getMemoryCachedWorkspace,
   loadCachedWorkspace,
+  loadFigmaAccentTheme,
   loadSession,
+  subscribeFigmaAccentTheme,
   type MobileFolderItem,
   type MobileLinkItem,
 } from "../../src/storage";
@@ -35,17 +46,27 @@ interface FolderCardRow {
   name: string;
   count: number;
   cover: string;
+  collageThumbs: string[];
   customCoverUrl: string | null;
   isVirtual: boolean;
+  isShared: boolean;
 }
 
 export default function FoldersScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const initialCache = getMemoryCachedWorkspace();
+
+  const [themeId, setThemeId] = useState<FigmaAccentThemeId>("sharely");
+  const theme = getFigmaTheme(themeId);
+
   const [folders, setFolders] = useState<MobileFolderItem[]>(() => initialCache?.folders || []);
   const [items, setItems] = useState<MobileLinkItem[]>(() => initialCache?.items || []);
-  const [loading, setLoading] = useState<boolean>(() => !(initialCache?.folders?.length || initialCache?.items?.length));
+  const [loading, setLoading] = useState<boolean>(
+    () => !(initialCache?.folders?.length || initialCache?.items?.length),
+  );
   const [refreshing, setRefreshing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
@@ -56,6 +77,14 @@ export default function FoldersScreen() {
   const [coverUploading, setCoverUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const actionSeqRef = useRef(0);
+  const coverSeqRef = useRef(0);
+  const modalSessionRef = useRef(0);
+
+  useEffect(() => {
+    void loadFigmaAccentTheme().then(setThemeId).catch(() => {});
+    const unsub = subscribeFigmaAccentTheme((next) => setThemeId(next));
+    return () => unsub();
+  }, []);
 
   const loadData = useCallback(async () => {
     const startGen = getAuthGeneration();
@@ -95,25 +124,30 @@ export default function FoldersScreen() {
   );
 
   function openCreateModal() {
+    modalSessionRef.current += 1;
     setEditingFolderId(null);
     setNewName("");
     setCoverDraft(null);
     setHasExistingCustomCover(false);
     setResetCover(false);
+    setCoverUploading(false);
     setModalOpen(true);
   }
 
   function openEditModal(card: FolderCardRow) {
-    if (card.isVirtual) return;
+    if (card.isVirtual || card.isShared) return;
+    modalSessionRef.current += 1;
     setEditingFolderId(card.id);
     setNewName(card.name);
     setCoverDraft(resolveFolderCoverUrl(card.customCoverUrl) || null);
     setHasExistingCustomCover(Boolean(card.customCoverUrl));
     setResetCover(false);
+    setCoverUploading(false);
     setModalOpen(true);
   }
 
   function closeModal() {
+    modalSessionRef.current += 1;
     setModalOpen(false);
     setEditingFolderId(null);
     setCoverUploading(false);
@@ -121,6 +155,14 @@ export default function FoldersScreen() {
 
   async function handlePickCover() {
     if (coverUploading || saving) return;
+    const startGen = getAuthGeneration();
+    const modalSess = modalSessionRef.current;
+    const uploadSeq = (coverSeqRef.current += 1);
+    const isStaleUpload = () =>
+      getAuthGeneration() !== startGen ||
+      modalSessionRef.current !== modalSess ||
+      coverSeqRef.current !== uploadSeq;
+
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
@@ -129,7 +171,7 @@ export default function FoldersScreen() {
         quality: 0.85,
         base64: true,
       });
-      if (result.canceled || !result.assets?.length) return;
+      if (isStaleUpload() || result.canceled || !result.assets?.length) return;
       const asset = result.assets[0];
       if (!asset.base64) {
         Alert.alert("อ่านไฟล์รูปไม่สำเร็จ", "กรุณาเลือกรูปภาพใหม่อีกครั้ง");
@@ -139,6 +181,7 @@ export default function FoldersScreen() {
       const dataUri = `data:${mime};base64,${asset.base64}`;
       setCoverUploading(true);
       const res = await uploadFolderCover(dataUri, asset.fileName || "cover.jpg");
+      if (isStaleUpload()) return;
       setCoverUploading(false);
       if (!res.ok || !res.data?.cover_url) {
         Alert.alert("อัปโหลดภาพปกไม่สำเร็จ", res.error || "กรุณาลองใหม่");
@@ -147,9 +190,36 @@ export default function FoldersScreen() {
       setCoverDraft(res.data.cover_url);
       setResetCover(false);
     } catch {
+      if (isStaleUpload()) return;
       setCoverUploading(false);
       Alert.alert("ไม่สามารถเปิดคลังรูปภาพได้", "กรุณาตรวจสอบสิทธิ์การเข้าถึงรูปภาพในเครื่อง");
     }
+  }
+
+  function handleDeleteEditingFolder() {
+    const targetEditId = editingFolderId;
+    if (!targetEditId || saving) return;
+    const modalGen = getAuthGeneration();
+    Alert.alert("ลบโฟลเดอร์นี้?", "ลิงก์ภายในโฟลเดอร์จะยังคงอยู่ในคลังของคุณ (ย้ายเป็นยังไม่จัดหมวด)", [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "ลบโฟลเดอร์",
+        style: "destructive",
+        onPress: () => {
+          if (getAuthGeneration() !== modalGen) return;
+          void runGuardedBusyAction(actionSeqRef, setSaving, async (isStale) => {
+            const res = await deleteFolder(targetEditId);
+            if (isStale()) return;
+            if (!res.ok) {
+              Alert.alert("ลบโฟลเดอร์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+              return;
+            }
+            closeModal();
+            void loadData();
+          });
+        },
+      },
+    ]);
   }
 
   function handleResetCover() {
@@ -189,50 +259,83 @@ export default function FoldersScreen() {
     });
   }
 
-  const unfolderedItems = items.filter((it) => !it.folder_id);
-  const unfolderedCover = unfolderedItems.map((it) => resolveMobileThumbUrl(it)).find(Boolean) || "";
+  const cards = useMemo<FolderCardRow[]>(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const unfolderedItems = items.filter((it) => !it.folder_id);
+    const unfolderedThumbs = unfolderedItems
+      .map((it) => resolveMobileThumbUrl(it))
+      .filter(Boolean)
+      .slice(0, 4);
 
-  const cards: FolderCardRow[] = [
-    {
-      id: "virtual-inbox",
-      name: "รวมไว้ดูทีหลัง",
-      count: unfolderedItems.length,
-      cover: unfolderedCover,
-      customCoverUrl: null,
-      isVirtual: true,
-    },
-    ...folders.map((f) => {
-      const folderItems = items.filter((it) => it.folder_id === f.id);
-      const firstThumb = folderItems.map((it) => resolveMobileThumbUrl(it)).find(Boolean) || "";
-      const explicitCover = resolveFolderCoverUrl(f.cover_url);
-      return {
-        id: f.id,
-        name: f.name,
-        count: typeof f.item_count === "number" ? f.item_count : folderItems.length,
-        cover: explicitCover || firstThumb,
-        customCoverUrl: f.cover_url ?? null,
-        isVirtual: false,
-      };
-    }),
-  ];
+    const allCards: FolderCardRow[] = [
+      {
+        id: "virtual-inbox",
+        name: "รวมไว้ดูทีหลัง",
+        count: unfolderedItems.length,
+        cover: unfolderedThumbs[0] || "",
+        collageThumbs: unfolderedThumbs,
+        customCoverUrl: null,
+        isVirtual: true,
+        isShared: false,
+      },
+      ...folders.map((f) => {
+        const folderItems = items.filter((it) => it.folder_id === f.id);
+        const thumbs = folderItems.map((it) => resolveMobileThumbUrl(it)).filter(Boolean).slice(0, 4);
+        const explicitCover = resolveFolderCoverUrl(f.cover_url);
+        return {
+          id: f.id,
+          name: f.name,
+          count: typeof f.item_count === "number" ? f.item_count : folderItems.length,
+          cover: explicitCover || thumbs[0] || "",
+          collageThumbs: explicitCover ? [] : thumbs,
+          customCoverUrl: f.cover_url ?? null,
+          isVirtual: false,
+          isShared: Boolean(f.role && f.role !== "owner"),
+        };
+      }),
+    ];
+
+    if (!q) return allCards;
+    return allCards.filter((c) => c.name.toLowerCase().includes(q));
+  }, [folders, items, searchQuery]);
 
   const isEditing = Boolean(editingFolderId);
 
   return (
-    <View style={styles.root}>
-      <View style={styles.headerRow}>
-        <View>
-          <Text style={styles.heading}>โฟลเดอร์ทั้งหมด</Text>
-          <Text style={styles.subheading}>{folders.length} โฟลเดอร์ส่วนตัว & แชร์</Text>
-        </View>
-        <Pressable style={styles.createBtn} onPress={openCreateModal}>
-          <Text style={styles.createBtnText}>+ สร้างโฟลเดอร์</Text>
+    <View style={[styles.root, { paddingTop: Math.max(10, insets.top) }]}>
+      <View style={styles.topbar}>
+        <Text style={styles.brandHeading}>โฟลเดอร์</Text>
+        <Pressable
+          style={[styles.createBtn, { backgroundColor: theme.accent }]}
+          onPress={openCreateModal}
+        >
+          <Ionicons name="add" size={16} color="#FFFFFF" />
+          <Text style={styles.createBtnText}>สร้างโฟลเดอร์</Text>
         </Pressable>
+      </View>
+
+      <View style={styles.searchWrap}>
+        <View style={styles.searchBox}>
+          <Ionicons name="search-outline" size={18} color={FIGMA_INK.inkStrong} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="ค้นหาชื่อโฟลเดอร์"
+            placeholderTextColor="#8B9199"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+          {searchQuery ? (
+            <Pressable hitSlop={8} onPress={() => setSearchQuery("")}>
+              <Ionicons name="close-circle" size={17} color="#9CA3AF" />
+            </Pressable>
+          ) : null}
+        </View>
+        <Text style={styles.sectionTitle}>โฟลเดอร์ทั้งหมด</Text>
       </View>
 
       {loading ? (
         <View style={styles.centerBox}>
-          <ActivityIndicator size="large" color="#9B2C2C" />
+          <ActivityIndicator size="large" color={theme.accent} />
         </View>
       ) : (
         <FlatList
@@ -240,51 +343,86 @@ export default function FoldersScreen() {
           keyExtractor={(c) => c.id}
           numColumns={2}
           columnWrapperStyle={styles.gridRow}
-          contentContainerStyle={styles.gridContent}
+          contentContainerStyle={[
+            styles.gridContent,
+            { paddingBottom: 112 + insets.bottom },
+          ]}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              tintColor="#9B2C2C"
+              tintColor={theme.accent}
               onRefresh={() => {
                 setRefreshing(true);
                 void loadData();
               }}
             />
           }
-          renderItem={({ item }) => (
-            <Pressable
-              style={styles.folderCard}
-              onPress={() => router.push(`/folder/${encodeURIComponent(item.id)}`)}
-            >
-              <View style={styles.coverBox}>
-                {item.cover ? (
-                  <Image source={{ uri: item.cover }} style={styles.folderCoverImg} resizeMode="cover" />
-                ) : (
-                  <Ionicons
-                    name={item.isVirtual ? "bookmark-outline" : "folder-outline"}
-                    size={28}
-                    color="#78716C"
-                  />
-                )}
-                {!item.isVirtual ? (
-                  <Pressable
-                    style={styles.cardEditBtn}
-                    hitSlop={8}
-                    onPress={(e) => {
-                      e.stopPropagation?.();
-                      openEditModal(item);
-                    }}
-                  >
-                    <Ionicons name="pencil-outline" size={14} color="#44403C" />
-                  </Pressable>
-                ) : null}
-              </View>
-              <Text style={styles.folderName} numberOfLines={2}>
-                {item.name}
-              </Text>
-              <Text style={styles.folderCount}>{item.count} รายการ</Text>
-            </Pressable>
-          )}
+          ListEmptyComponent={
+            <View style={styles.emptyBox}>
+              <Text style={styles.emptyText}>ไม่พบโฟลเดอร์ที่ตรงกับคำค้นหา</Text>
+            </View>
+          }
+          renderItem={({ item }) => {
+            const showCollage =
+              !resolveFolderCoverUrl(item.customCoverUrl) &&
+              (item.isVirtual || item.collageThumbs.length >= 2);
+            const subtitle = item.isVirtual
+              ? `${item.count} ลิงก์ · ยังไม่จัดหมวด`
+              : `${item.count} ลิงก์ · ${item.isShared ? "โฟลเดอร์ที่แชร์" : "ส่วนตัว"}`;
+
+            return (
+              <Pressable
+                style={styles.folderCard}
+                onPress={() => router.push(`/folder/${encodeURIComponent(item.id)}`)}
+              >
+                <View style={styles.coverBox}>
+                  {showCollage ? (
+                    <View style={styles.collageGrid}>
+                      {[0, 1, 2, 3].map((idx) => (
+                        <View key={`cell-${item.id}-${idx}`} style={styles.collageCell}>
+                          {item.collageThumbs[idx] ? (
+                            <Image
+                              source={{ uri: item.collageThumbs[idx] }}
+                              style={styles.folderCoverImg}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <Ionicons name="image-outline" size={14} color="#9CA3AF" />
+                          )}
+                        </View>
+                      ))}
+                    </View>
+                  ) : item.cover ? (
+                    <Image source={{ uri: item.cover }} style={styles.folderCoverImg} resizeMode="cover" />
+                  ) : (
+                    <Ionicons
+                      name={item.isVirtual ? "bookmark-outline" : "folder-outline"}
+                      size={28}
+                      color="#78716C"
+                    />
+                  )}
+                  {!item.isVirtual && !item.isShared ? (
+                    <Pressable
+                      style={styles.cardEditBtn}
+                      hitSlop={8}
+                      onPress={(e) => {
+                        e.stopPropagation?.();
+                        openEditModal(item);
+                      }}
+                    >
+                      <Ionicons name="pencil-outline" size={14} color={FIGMA_INK.inkStrong} />
+                    </Pressable>
+                  ) : null}
+                </View>
+                <Text style={styles.folderName} numberOfLines={2}>
+                  {item.name}
+                </Text>
+                <Text style={styles.folderMeta} numberOfLines={1}>
+                  {subtitle}
+                </Text>
+              </Pressable>
+            );
+          }}
         />
       )}
 
@@ -295,9 +433,14 @@ export default function FoldersScreen() {
         >
           <View style={styles.modalCard}>
             <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-              <Text style={styles.modalTitle}>
-                {isEditing ? "แก้ไขโฟลเดอร์" : "+ สร้างโฟลเดอร์ใหม่"}
-              </Text>
+              <View style={styles.modalHeadRow}>
+                <Text style={styles.modalTitle}>
+                  {isEditing ? "แก้ไขโฟลเดอร์" : "+ สร้างโฟลเดอร์ใหม่"}
+                </Text>
+                <Pressable hitSlop={8} onPress={closeModal}>
+                  <Ionicons name="close" size={20} color="#666666" />
+                </Pressable>
+              </View>
               <Text style={styles.label}>ภาพปกโฟลเดอร์ (อัปโหลดเองหรือใช้อัตโนมัติ)</Text>
               <View style={styles.modalCoverRow}>
                 <View style={styles.modalCoverPreview}>
@@ -314,7 +457,7 @@ export default function FoldersScreen() {
                     onPress={() => void handlePickCover()}
                   >
                     <View style={styles.coverPickInner}>
-                      <Ionicons name="image-outline" size={14} color="#4C1D95" />
+                      <Ionicons name="image-outline" size={14} color={FIGMA_INK.aiInk} />
                       <Text style={styles.coverPickBtnText}>
                         {coverUploading ? "กำลังอัปโหลด..." : "เลือกรูปจากเครื่อง"}
                       </Text>
@@ -332,7 +475,7 @@ export default function FoldersScreen() {
               <TextInput
                 style={styles.input}
                 placeholder="เช่น คาเฟ่ห้ามพลาด"
-                placeholderTextColor="#A8A29E"
+                placeholderTextColor="#9CA3AF"
                 value={newName}
                 onChangeText={setNewName}
               />
@@ -341,7 +484,11 @@ export default function FoldersScreen() {
                   <Text style={styles.cancelBtnText}>ยกเลิก</Text>
                 </Pressable>
                 <Pressable
-                  style={[styles.confirmBtn, (saving || coverUploading) && { opacity: 0.7 }]}
+                  style={[
+                    styles.confirmBtn,
+                    { backgroundColor: theme.accent },
+                    (saving || coverUploading) && { opacity: 0.7 },
+                  ]}
                   disabled={saving || coverUploading}
                   onPress={() => void handleSaveFolder()}
                 >
@@ -350,6 +497,16 @@ export default function FoldersScreen() {
                   </Text>
                 </Pressable>
               </View>
+              {isEditing ? (
+                <Pressable
+                  style={styles.deleteFolderBtn}
+                  disabled={saving}
+                  onPress={handleDeleteEditingFolder}
+                >
+                  <Ionicons name="trash-outline" size={15} color="#B91C1C" />
+                  <Text style={styles.deleteFolderBtnText}>ลบโฟลเดอร์นี้</Text>
+                </Pressable>
+              ) : null}
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
@@ -359,59 +516,114 @@ export default function FoldersScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "transparent" },
-  headerRow: {
+  root: {
+    flex: 1,
+    backgroundColor: FIGMA_INK.bgApp,
+  },
+  topbar: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: 16,
-    paddingVertical: 14,
-    backgroundColor: "#FDFBF7",
-    borderBottomWidth: 1,
-    borderBottomColor: "#EAE4DB",
+    paddingTop: 6,
+    paddingBottom: 8,
   },
-  heading: { fontSize: 18, fontWeight: "800", color: "#1C1917" },
-  subheading: { fontSize: 12, color: "#78716C", marginTop: 2 },
-  createBtn: { backgroundColor: "#9B2C2C", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999 },
-  createBtnText: { color: "#FDFBF7", fontWeight: "700", fontSize: 13 },
-  centerBox: { flex: 1, alignItems: "center", justifyContent: "center" },
-  gridContent: { padding: 14, gap: 12, paddingBottom: 100 },
-  gridRow: { gap: 12 },
+  brandHeading: {
+    fontSize: 26,
+    fontWeight: "800",
+    color: FIGMA_INK.inkPrimary,
+    letterSpacing: -0.4,
+  },
+  createBtn: {
+    height: 38,
+    paddingHorizontal: 14,
+    borderRadius: 19,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  createBtnText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 13.5,
+  },
+  searchWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 2,
+    paddingBottom: 10,
+    gap: 12,
+  },
+  searchBox: {
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: FIGMA_INK.bgMuted,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderInput,
+    paddingHorizontal: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: FIGMA_INK.inkStrong,
+    paddingVertical: 0,
+  },
+  sectionTitle: {
+    fontSize: 16.5,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  centerBox: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  gridContent: {
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  gridRow: {
+    gap: 12,
+  },
   folderCard: {
     flex: 1,
-    backgroundColor: "#FDFBF7",
-    borderRadius: 18,
-    padding: 12,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    padding: 8,
     borderWidth: 1,
-    borderColor: "#EAE4DB",
-    minHeight: 158,
-    justifyContent: "space-between",
+    borderColor: "#E2E2E6",
+    minHeight: 168,
   },
   coverBox: {
-    height: 86,
-    borderRadius: 12,
-    backgroundColor: "#F3EFE6",
+    height: 100,
+    borderRadius: 10,
+    backgroundColor: "#F3F4F6",
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
     position: "relative",
   },
+  collageGrid: {
+    width: "100%",
+    height: "100%",
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  collageCell: {
+    width: "50%",
+    height: "50%",
+    backgroundColor: "#E5E7EB",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 0.5,
+    borderColor: "#FFFFFF",
+  },
   folderCoverImg: {
     width: "100%",
     height: "100%",
   },
-  coverEmojiBadge: {
-    position: "absolute",
-    bottom: 6,
-    left: 6,
-    width: 26,
-    height: 26,
-    borderRadius: 8,
-    backgroundColor: "rgba(253, 251, 247, 0.92)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  coverEmojiBadgeText: { fontSize: 14 },
   cardEditBtn: {
     position: "absolute",
     top: 6,
@@ -419,77 +631,163 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: "rgba(253, 251, 247, 0.94)",
+    backgroundColor: "rgba(255, 255, 255, 0.94)",
     borderWidth: 1,
-    borderColor: "#E7E0D5",
+    borderColor: FIGMA_INK.borderLight,
     alignItems: "center",
     justifyContent: "center",
   },
-  cardEditBtnText: { fontSize: 13, fontWeight: "700", color: "#44403C" },
-  folderIcon: { fontSize: 30 },
-  folderName: { fontSize: 15, fontWeight: "700", color: "#1C1917", marginTop: 10 },
-  folderCount: { fontSize: 12, color: "#78716C", marginTop: 4 },
-  modalCoverRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 4 },
+  folderName: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+    marginTop: 8,
+  },
+  folderMeta: {
+    fontSize: 12,
+    color: FIGMA_INK.inkSubtle,
+    marginTop: 2,
+  },
+  emptyBox: {
+    padding: 36,
+    alignItems: "center",
+  },
+  emptyText: {
+    fontSize: 14,
+    color: FIGMA_INK.inkSecondary,
+  },
+  modalCoverRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 4,
+  },
   modalCoverPreview: {
     width: 96,
     height: 62,
     borderRadius: 12,
-    backgroundColor: "#F3EFE6",
+    backgroundColor: "#F3F4F6",
     borderWidth: 1,
-    borderColor: "#E7E0D5",
+    borderColor: FIGMA_INK.borderLight,
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
   },
-  modalCoverPlaceholder: { fontSize: 24 },
-  modalCoverActions: { flex: 1, gap: 6 },
+  modalCoverActions: {
+    flex: 1,
+    gap: 6,
+  },
   coverPickBtn: {
-    backgroundColor: "#F1EEFF",
+    backgroundColor: FIGMA_INK.lavenderBg,
     borderWidth: 1,
-    borderColor: "#DDD6FE",
+    borderColor: FIGMA_INK.lavenderBorder,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 8,
     alignItems: "center",
   },
-  coverPickInner: { flexDirection: "row", alignItems: "center", gap: 6 },
-  coverPickBtnText: { fontSize: 12, fontWeight: "700", color: "#4C1D95" },
+  coverPickInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  coverPickBtnText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: FIGMA_INK.aiInk,
+  },
   coverResetBtn: {
-    backgroundColor: "#F3EFE6",
+    backgroundColor: FIGMA_INK.bgMuted,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 7,
     alignItems: "center",
   },
-  coverResetBtnText: { fontSize: 12, fontWeight: "600", color: "#57534E" },
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "center", padding: 20 },
-  modalCard: { backgroundColor: "#FDFBF7", borderRadius: 20, padding: 20 },
-  modalTitle: { fontSize: 18, fontWeight: "800", color: "#1C1917", marginBottom: 12 },
-  label: { fontSize: 13, fontWeight: "600", color: "#44403C", marginBottom: 6, marginTop: 8 },
-  iconRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 6 },
-  iconChip: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: "#F3EFE6",
-    alignItems: "center",
-    justifyContent: "center",
+  coverResetBtnText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: FIGMA_INK.inkSecondary,
   },
-  iconChipActive: { backgroundColor: "#FEF2F2", borderWidth: 2, borderColor: "#9B2C2C" },
-  iconText: { fontSize: 20 },
-  input: {
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(23, 23, 33, 0.45)",
+    justifyContent: "center",
+    padding: 20,
+  },
+  modalCard: {
     backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 20,
+    maxHeight: "88%",
+  },
+  modalHeadRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: FIGMA_INK.inkPrimary,
+  },
+  label: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+    marginBottom: 6,
+    marginTop: 8,
+  },
+  input: {
+    backgroundColor: FIGMA_INK.bgMuted,
     borderWidth: 1,
-    borderColor: "#E7E0D5",
+    borderColor: FIGMA_INK.borderCard,
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 15,
-    color: "#1C1917",
+    color: FIGMA_INK.inkStrong,
   },
-  modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: 10, marginTop: 16 },
-  cancelBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, backgroundColor: "#F3EFE6" },
-  cancelBtnText: { color: "#44403C", fontWeight: "600" },
-  confirmBtn: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 12, backgroundColor: "#9B2C2C" },
-  confirmBtnText: { color: "#FDFBF7", fontWeight: "700" },
+  modalActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
+    marginTop: 16,
+  },
+  cancelBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: FIGMA_INK.bgChip,
+  },
+  cancelBtnText: {
+    color: "#444444",
+    fontWeight: "600",
+  },
+  confirmBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 999,
+  },
+  confirmBtnText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+  },
+  deleteFolderBtn: {
+    marginTop: 14,
+    paddingVertical: 11,
+    borderRadius: 12,
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  deleteFolderBtnText: {
+    color: "#B91C1C",
+    fontSize: 13.5,
+    fontWeight: "700",
+  },
 });

@@ -29,6 +29,7 @@ import {
   saveSession,
   updateCachedReminders,
   upsertCachedLinkItem,
+  type MobileAiConfig,
   type MobileFolderItem,
   type MobileLinkItem,
   type MobileReminderItem,
@@ -1061,31 +1062,97 @@ export async function refreshLinkPreview(
   );
 }
 
-export async function summarizeLinkItem(itemId: string, forceRefresh = false): Promise<ApiResult<JsonRecord>> {
-  const cfg = await loadAiConfig().catch(() => ({
-    provider: "built-in" as const,
-    model: "gemini-3.1-flash-lite",
-    base_url: "",
-    api_key: "",
-  }));
+const DEFAULT_BUILT_IN_AI_CONFIG: MobileAiConfig = {
+  provider: "built-in",
+  model: "gemini-3.1-flash-lite",
+  base_url: "",
+  api_key: "",
+  keyless: false,
+};
+
+function buildAiConfigPayload(cfg: MobileAiConfig) {
   const isBuiltIn = cfg.provider === "built-in";
-  const aiConfigBody = isBuiltIn
+  const isKeylessCustom = cfg.provider === "custom" && Boolean(cfg.keyless);
+  return isBuiltIn
     ? { provider: "built-in", api_key: null, base_url: null, model: cfg.model || null }
     : {
         provider: cfg.provider,
-        api_key: cfg.api_key?.trim() || null,
+        api_key: isKeylessCustom ? null : cfg.api_key?.trim() || null,
         base_url: cfg.base_url?.trim() || null,
         model: cfg.model?.trim() || null,
       };
+}
+
+export async function summarizeLinkItem(itemId: string, forceRefresh = false): Promise<ApiResult<JsonRecord>> {
+  const startGen = getAuthGeneration();
+  const startClearEpoch = getClearEpoch();
+  const cfg = await loadAiConfig().catch(() => DEFAULT_BUILT_IN_AI_CONFIG);
+  if (getAuthGeneration() !== startGen || getClearEpoch() !== startClearEpoch) {
+    return { ok: false, status: 401, data: null, error: "Session changed" };
+  }
   return apiFetch<JsonRecord>("/api/ai/summarize", {
     method: "POST",
     body: {
       item_id: itemId,
       force_refresh: forceRefresh,
       save_to_note: false,
-      ai_config: aiConfigBody,
+      ai_config: buildAiConfigPayload(cfg),
     },
   });
+}
+
+export async function testAiConnection(cfgOverride?: MobileAiConfig): Promise<ApiResult<JsonRecord>> {
+  const startGen = getAuthGeneration();
+  const startClearEpoch = getClearEpoch();
+  const cfg = cfgOverride || (await loadAiConfig().catch(() => DEFAULT_BUILT_IN_AI_CONFIG));
+  if (getAuthGeneration() !== startGen || getClearEpoch() !== startClearEpoch) {
+    return { ok: false, status: 401, data: null, error: "Session changed" };
+  }
+  return apiFetch<JsonRecord>("/api/ai/test", {
+    method: "POST",
+    body: {
+      ai_config: buildAiConfigPayload(cfg),
+    },
+  });
+}
+
+export async function updateProfileDisplayName(displayName: string): Promise<ApiResult<JsonRecord>> {
+  const cleanName = displayName.trim();
+  if (!cleanName) {
+    return { ok: false, status: 400, data: null, error: "กรุณาระบุชื่อที่ต้องการ" };
+  }
+  return apiFetch<JsonRecord>("/api/auth/me", {
+    method: "PATCH",
+    body: { display_name: cleanName },
+  });
+}
+
+export async function sendPasswordResetEmail(email: string): Promise<ApiResult<JsonRecord>> {
+  const cleanEmail = email.trim();
+  if (!cleanEmail) {
+    return { ok: false, status: 400, data: null, error: "กรุณาระบุอีเมล" };
+  }
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ email: cleanEmail }),
+    });
+    const data = await parseJsonSafe(resp);
+    if (!resp.ok) {
+      const errDesc =
+        (typeof data?.error_description === "string" && data.error_description) ||
+        (typeof data?.msg === "string" && data.msg) ||
+        "ไม่สามารถส่งลิงก์รีเซ็ตรหัสผ่านได้";
+      return { ok: false, status: resp.status, data: null, error: errDesc };
+    }
+    return { ok: true, status: resp.status, data: data ?? {} };
+  } catch (err: unknown) {
+    return { ok: false, status: 0, data: null, error: getErrorMessage(err, "เชื่อมต่อไม่ได้") };
+  }
 }
 
 const WEB_APP_ORIGIN = "https://just-save-it-web.onrender.com";
@@ -1142,6 +1209,12 @@ export async function updateFolder(
   });
 }
 
+export async function deleteFolder(folderId: string): Promise<ApiResult<JsonRecord>> {
+  return apiFetch<JsonRecord>(`/api/folders/${encodeURIComponent(folderId)}`, {
+    method: "DELETE",
+  });
+}
+
 export interface DiscordInviteCreateOptions {
   role: "viewer" | "editor";
   expires_in_minutes?: number;
@@ -1185,6 +1258,37 @@ export async function createFolderInvite(
 
 export async function listFolderMembers(folderId: string): Promise<ApiResult<JsonRecord>> {
   return apiFetch<JsonRecord>(`/api/folders/${encodeURIComponent(folderId)}/members`);
+}
+
+export interface FolderShareStateInput {
+  isVirtualInbox: boolean;
+  folder: Pick<MobileFolderItem, "owner_id" | "role"> | null;
+  members: Array<{ user_id?: string; role?: string }>;
+  ownerId?: string | null;
+  callerRole?: string | null;
+  selfUserId?: string | null;
+}
+
+export function computeFolderShareState(input: FolderShareStateInput): {
+  isOwner: boolean;
+  sharedPeerCount: number;
+  hasExplicitOwnerRow: boolean;
+} {
+  const { isVirtualInbox, folder, members, ownerId, callerRole, selfUserId } = input;
+  const effectiveRole = String(callerRole || folder?.role || "").trim().toLowerCase();
+  const isOwner = Boolean(!isVirtualInbox && folder && (!effectiveRole || effectiveRole === "owner"));
+  const effectiveOwnerId = String(ownerId || folder?.owner_id || "").trim();
+  const hasExplicitOwnerRow = members.some((m) => {
+    const mRole = String(m.role || "").trim().toLowerCase();
+    if (mRole === "owner") return true;
+    if (effectiveOwnerId && m.user_id === effectiveOwnerId) return true;
+    if (!effectiveOwnerId && isOwner && selfUserId && m.user_id === selfUserId) return true;
+    return false;
+  });
+  const sharedPeerCount = hasExplicitOwnerRow
+    ? Math.max(0, members.length - 1)
+    : members.filter((m) => String(m.role || "").trim().toLowerCase() !== "owner").length;
+  return { isOwner, sharedPeerCount, hasExplicitOwnerRow };
 }
 
 export async function revokeFolderInvite(folderId: string, token: string): Promise<ApiResult<JsonRecord>> {

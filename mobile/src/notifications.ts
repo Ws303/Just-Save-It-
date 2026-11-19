@@ -90,7 +90,7 @@ export function planIosLocalNotifications(
     candidates.push({
       reminderId: String(rem.reminder_id || rem.id || itemId || `rem-${triggerAtMs}`),
       itemId,
-      title: `เตือนความจำ Sharely: ${title}`,
+      title: `เตือนความจำ Sherlink: ${title}`,
       body: resolvedUrl ? `แตะเพื่อเปิด ${resolvedUrl}` : "แตะเพื่อกลับไปดูลิงก์ที่คุณตั้งเตือนไว้",
       url: resolvedUrl,
       triggerAtMs,
@@ -174,7 +174,7 @@ export async function registerMobilePushToken(): Promise<{
 
     if (platform === "android" && typeof Notifications.setNotificationChannelAsync === "function") {
       await Notifications.setNotificationChannelAsync("default", {
-        name: "Sharely Reminders",
+        name: "Sherlink Reminders",
         importance: Notifications.AndroidImportance?.MAX ?? 5,
         vibrationPattern: [0, 250, 250, 250],
         lightColor: "#BA0E1A",

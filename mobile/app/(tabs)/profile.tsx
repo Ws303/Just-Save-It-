@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -7,12 +7,15 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
   isPostClearSafeToNavigate,
@@ -20,6 +23,7 @@ import {
   shouldNavigateAfterLogout,
 } from "../../src/actionGuards";
 import {
+  deactivatePushDevice,
   deleteMyAccount,
   fetchWorkspace,
   flushOfflineQueue,
@@ -27,39 +31,64 @@ import {
   logoutAccount,
   registerPushDevice,
   syncRemindersFromServer,
+  updateProfileDisplayName,
 } from "../../src/api";
-import { registerMobilePushToken } from "../../src/notifications";
 import {
+  FIGMA_INK,
+  FIGMA_THEME_OPTIONS,
+  getFigmaTheme,
+  type FigmaAccentThemeId,
+} from "../../src/figmaTheme";
+import { cancelAllLocalRemindersSafe, registerMobilePushToken } from "../../src/notifications";
+import {
+  buildBoundedCsvExport,
+  clearRegisteredPushDevice,
   getAuthGeneration,
   getDebugBannerEnabled,
   getMemoryCachedWorkspace,
-  getThemePageBg,
   loadCachedWorkspace,
+  loadFigmaAccentTheme,
+  loadRegisteredPushDevice,
   loadSession,
-  loadThemeMode,
-  saveThemeMode,
+  saveFigmaAccentTheme,
   setDebugBannerEnabled,
   subscribeDebugBanner,
-  type AppThemeMode,
+  subscribeFigmaAccentTheme,
+  type MobileLinkItem,
 } from "../../src/storage";
 
 export default function ProfileScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const initialCache = getMemoryCachedWorkspace();
+
+  const [themeId, setThemeId] = useState<FigmaAccentThemeId>("sharely");
+  const theme = getFigmaTheme(themeId);
+
   const [name, setName] = useState("ผู้ใช้งาน");
   const [email, setEmail] = useState("");
-  const [itemCount, setItemCount] = useState<number>(() => initialCache?.items?.length || 0);
-  const [folderCount, setFolderCount] = useState<number>(() => initialCache?.folders?.length || 0);
+  const [cachedItems, setCachedItems] = useState<MobileLinkItem[]>(() => initialCache?.items || []);
   const [queueCount, setQueueCount] = useState(0);
-  const [themeMode, setThemeMode] = useState<AppThemeMode>("cream");
   const [debugBannerOn, setDebugBannerOn] = useState<boolean>(getDebugBannerEnabled);
-  const [pushStatus, setPushStatus] = useState("ยังไม่ได้ลงทะเบียนอุปกรณ์นี้");
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushStatus, setPushStatus] = useState("รับการแจ้งเตือนเมื่อถึงเวลาที่ตั้งไว้");
 
+  const [nicknameOpen, setNicknameOpen] = useState(false);
+  const [nicknameDraft, setNicknameDraft] = useState("");
+  const [displayModalOpen, setDisplayModalOpen] = useState(false);
+  const [securityModalOpen, setSecurityModalOpen] = useState(false);
+  const [helpModalOpen, setHelpModalOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deletePhrase, setDeletePhrase] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const actionSeqRef = useRef(0);
   const deleteInFlightRef = useRef(false);
+
+  useEffect(() => {
+    void loadFigmaAccentTheme().then(setThemeId).catch(() => {});
+    const unsub = subscribeFigmaAccentTheme((next) => setThemeId(next));
+    return () => unsub();
+  }, []);
 
   const loadProfile = useCallback(async () => {
     const startGen = getAuthGeneration();
@@ -71,21 +100,28 @@ export default function ProfileScreen() {
 
     const cached = await loadCachedWorkspace();
     if (getAuthGeneration() !== startGen) return;
-    if (cached.items.length > 0 || cached.folders.length > 0) {
-      setItemCount((prev) => (prev > 0 ? prev : cached.items.length));
-      setFolderCount((prev) => (prev > 0 ? prev : cached.folders.length));
+    if (cached.items.length > 0) {
+      setCachedItems((prev) => (prev.length ? prev : cached.items));
     }
 
-    const [ws, qCount, savedTheme] = await Promise.all([
+    const [ws, qCount, savedAccent, savedPush] = await Promise.all([
       fetchWorkspace(),
       getOfflineQueueCount(),
-      loadThemeMode(),
+      loadFigmaAccentTheme(),
+      loadRegisteredPushDevice().catch(() => null),
     ]);
     if (getAuthGeneration() !== startGen) return;
-    setThemeMode(savedTheme);
+    setThemeId(savedAccent);
     setQueueCount(qCount);
-    setItemCount(ws.items.length);
-    setFolderCount(ws.folders.length);
+    setCachedItems(ws.items);
+    setPushEnabled(Boolean(savedPush));
+    setPushStatus(
+      savedPush
+        ? savedPush.delivery_mode === "remote"
+          ? `เปิดใช้แจ้งเตือน (${savedPush.platform}) แล้ว`
+          : "เปิดใช้ซิงก์แจ้งเตือนบนเครื่องนี้แล้ว"
+        : "รับการแจ้งเตือนเมื่อถึงเวลาที่ตั้งไว้",
+    );
     setName(
       (typeof ws.me?.display_name === "string" && ws.me.display_name) ||
         (typeof ws.me?.email === "string" && ws.me.email.split("@")[0]) ||
@@ -103,11 +139,6 @@ export default function ProfileScreen() {
     }, [loadProfile]),
   );
 
-  async function handleThemeChange(mode: AppThemeMode) {
-    setThemeMode(mode);
-    await saveThemeMode(mode);
-  }
-
   async function handleEnablePush() {
     await runGuardedBusyAction(
       actionSeqRef,
@@ -116,10 +147,12 @@ export default function ProfileScreen() {
         const reg = await registerMobilePushToken();
         if (isStale()) return;
         if (!reg.granted) {
+          setPushEnabled(false);
           setPushStatus("ไม่ได้รับสิทธิ์แจ้งเตือนจากระบบ");
           Alert.alert("แจ้งเตือนถูกปิดไว้", "กรุณาอนุญาตการแจ้งเตือนในการตั้งค่าโทรศัพท์");
           return;
         }
+        setPushEnabled(true);
         const apiRes = await registerPushDevice({
           platform: reg.platform,
           delivery_mode: reg.delivery_mode,
@@ -134,12 +167,35 @@ export default function ProfileScreen() {
         if (apiRes.ok) {
           setPushStatus(
             reg.delivery_mode === "remote"
-              ? `เชื่อมต่อ Remote Push (${reg.platform}) แล้ว`
-              : `เชื่อมต่อ Local Sync (iOS/Fallback • ซิงก์ ${synced} รายการ)`,
+              ? `เปิดใช้แจ้งเตือน (${reg.platform}) แล้ว`
+              : `ซิงก์ปฏิทินแจ้งเตือนบนเครื่องแล้ว (${synced} รายการ)`,
           );
         } else {
           setPushStatus(`ซิงก์ออฟไลน์แล้ว (${synced} รายการ)`);
         }
+      },
+    );
+  }
+
+  async function handleDisablePush() {
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (busy) => setBusyAction(busy ? "push" : ""),
+      async (isStale) => {
+        const registered = await loadRegisteredPushDevice().catch(() => null);
+        if (registered) {
+          await deactivatePushDevice({
+            platform: registered.platform,
+            push_token: registered.push_token,
+          }).catch(() => {});
+        }
+        await Promise.allSettled([
+          clearRegisteredPushDevice(),
+          cancelAllLocalRemindersSafe(),
+        ]);
+        if (isStale()) return;
+        setPushEnabled(false);
+        setPushStatus("ปิดการแจ้งเตือนบนอุปกรณ์นี้แล้ว");
       },
     );
   }
@@ -156,6 +212,46 @@ export default function ProfileScreen() {
         void loadProfile();
       },
     );
+  }
+
+  async function handleSaveNickname() {
+    const clean = nicknameDraft.trim();
+    if (!clean) {
+      Alert.alert("กรุณากรอกชื่อเล่น");
+      return;
+    }
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (busy) => setBusyAction(busy ? "nickname" : ""),
+      async (isStale) => {
+        const res = await updateProfileDisplayName(clean);
+        if (isStale()) return;
+        if (!res.ok) {
+          Alert.alert("แก้ไขชื่อไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+          return;
+        }
+        setName(clean);
+        setNicknameOpen(false);
+      },
+    );
+  }
+
+  async function handleExportCsv() {
+    const { csv, truncated, exportedCount, totalCount } = buildBoundedCsvExport(cachedItems);
+    if (truncated) {
+      Alert.alert(
+        "ตัดทอนข้อมูลบางส่วน",
+        `ส่งออกได้ ${exportedCount} จาก ${totalCount} รายการ เพื่อไม่ให้เกินขีดจำกัดขนาดแชร์ของ Android`,
+      );
+    }
+    try {
+      await Share.share({
+        title: "sherlink-links-export.csv",
+        message: csv,
+      });
+    } catch {
+      Alert.alert("ส่งออกไม่สำเร็จ", "ไม่สามารถเปิดหน้าต่างแชร์ไฟล์ CSV ได้");
+    }
   }
 
   async function handleDeleteAccount() {
@@ -191,109 +287,338 @@ export default function ProfileScreen() {
     router.replace("/login");
   }
 
-  const isDark = themeMode === "dark";
-  const pageBg = getThemePageBg(themeMode);
-  const cardBg = isDark ? "#292524" : "#FDFBF7";
-  const textPrimary = isDark ? "#FAFAF9" : "#1C1917";
-
   return (
-    <ScrollView style={[styles.root, { backgroundColor: pageBg }]} contentContainerStyle={styles.content}>
-      <View style={[styles.profileCard, { backgroundColor: cardBg }]}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{name.slice(0, 1).toUpperCase()}</Text>
-        </View>
-        <Text style={[styles.nameText, { color: textPrimary }]}>{name}</Text>
-        <Text style={styles.emailText}>{email || "Cloud Authenticated"}</Text>
-        <View style={styles.statsRow}>
-          <View style={styles.statBox}>
-            <Text style={styles.statValue}>{itemCount}</Text>
-            <Text style={styles.statLabel}>ลิงก์</Text>
-          </View>
-          <View style={styles.statBox}>
-            <Text style={styles.statValue}>{folderCount}</Text>
-            <Text style={styles.statLabel}>โฟลเดอร์</Text>
-          </View>
-          <View style={styles.statBox}>
-            <Text style={styles.statValue}>{queueCount}</Text>
-            <Text style={styles.statLabel}>ค้างซิงก์</Text>
-          </View>
-        </View>
-      </View>
+    <View style={[styles.root, { paddingTop: Math.max(10, insets.top) }]}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: 112 + insets.bottom },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={styles.pageHeading}>โปรไฟล์</Text>
 
-      <View style={[styles.sectionCard, { backgroundColor: cardBg }]}>
-        <Text style={[styles.sectionTitle, { color: textPrimary }]}>ธีมการแสดงผล</Text>
-        <View style={styles.chipRow}>
-          {(
-            [
-              { id: "cream", label: "ครีม (Figma)" },
-              { id: "white", label: "ขาวสว่าง" },
-              { id: "dark", label: "โหมดมืด" },
-            ] as const
-          ).map((t) => (
-            <Pressable
-              key={t.id}
-              style={[styles.chip, themeMode === t.id && styles.chipActive]}
-              onPress={() => void handleThemeChange(t.id)}
-            >
-              <Text style={[styles.chipText, themeMode === t.id && styles.chipTextActive]}>{t.label}</Text>
-            </Pressable>
-          ))}
-        </View>
-      </View>
-
-      <View style={[styles.sectionCard, { backgroundColor: cardBg }]}>
-        <Text style={[styles.sectionTitle, { color: textPrimary }]}>แจ้งเตือน & ซิงก์ออฟไลน์</Text>
-        <Text style={styles.helperText}>{pushStatus}</Text>
-        <Pressable style={styles.rowBtn} onPress={() => void handleEnablePush()}>
-          {busyAction === "push" ? (
-            <ActivityIndicator color="#9B2C2C" />
-          ) : (
-            <View style={styles.rowBtnInner}>
-              <Ionicons name="notifications-outline" size={16} color="#1C1917" />
-              <Text style={styles.rowBtnText}>เปิดใช้ / ซิงก์การแจ้งเตือนอุปกรณ์นี้</Text>
+        {/* Horizontal Profile Card */}
+        <View style={styles.settingsCard}>
+          <Pressable
+            style={styles.profileRow}
+            onPress={() => {
+              setNicknameDraft(name);
+              setNicknameOpen(true);
+            }}
+          >
+            <View style={styles.profileLeft}>
+              <View style={[styles.avatarLg, { backgroundColor: theme.accent }]}>
+                <Text style={styles.avatarLgText}>{name.slice(0, 1).toUpperCase()}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.profileName} numberOfLines={1}>
+                  {name}
+                </Text>
+                <Text style={styles.profileEmail} numberOfLines={1}>
+                  {email || "Cloud Authenticated"}
+                </Text>
+              </View>
             </View>
-          )}
-        </Pressable>
-        <Pressable style={styles.rowBtn} onPress={() => void handleFlushQueue()}>
-          <View style={styles.rowBtnInner}>
-            <Ionicons name="sync-outline" size={16} color="#1C1917" />
-            <Text style={styles.rowBtnText}>ซิงก์ Offline Queue ตอนนี้ ({queueCount})</Text>
-          </View>
-        </Pressable>
-      </View>
+            <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+          </Pressable>
+        </View>
 
-      <View style={[styles.sectionCard, { backgroundColor: cardBg }]}>
-        <Text style={[styles.sectionTitle, { color: textPrimary }]}>บัญชีและความปลอดภัย</Text>
-        <Pressable
-          style={styles.rowBtn}
-          onPress={() => setDebugBannerEnabled(!debugBannerOn)}
+        {/* Settings Group */}
+        <View style={styles.groupBlock}>
+          <Text style={styles.groupTitle}>การตั้งค่า</Text>
+          <View style={styles.settingsCard}>
+            <View style={[styles.settingsRow, styles.rowDivider]}>
+              <View style={styles.rowLeft}>
+                <Ionicons name="notifications-outline" size={20} color={FIGMA_INK.inkSecondary} />
+                <View style={styles.rowTexts}>
+                  <Text style={styles.rowTitle}>การแจ้งเตือน</Text>
+                  <Text style={styles.rowHint}>{pushStatus}</Text>
+                </View>
+              </View>
+              {busyAction === "push" ? (
+                <ActivityIndicator color={theme.accent} />
+              ) : (
+                <Switch
+                  value={pushEnabled}
+                  onValueChange={(nextValue) =>
+                    void (nextValue ? handleEnablePush() : handleDisablePush())
+                  }
+                  trackColor={{ false: "#D1D5DB", true: theme.accent }}
+                  thumbColor="#FFFFFF"
+                />
+              )}
+            </View>
+
+            <Pressable
+              style={[styles.settingsRow, styles.rowDivider]}
+              onPress={() => router.push("/(tabs)/ai")}
+            >
+              <View style={styles.rowLeft}>
+                <MaterialCommunityIcons
+                  name="robot-outline"
+                  size={20}
+                  color={FIGMA_INK.inkSecondary}
+                />
+                <View style={styles.rowTexts}>
+                  <Text style={styles.rowTitle}>การเชื่อมต่อ AI</Text>
+                  <Text style={styles.rowHint}>จัดการผู้ให้บริการ โมเดล และ API Key</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+            </Pressable>
+
+            <Pressable
+              style={[styles.settingsRow, styles.rowDivider]}
+              onPress={() => setDisplayModalOpen(true)}
+            >
+              <View style={styles.rowLeft}>
+                <Ionicons name="color-palette-outline" size={20} color={FIGMA_INK.inkSecondary} />
+                <View style={styles.rowTexts}>
+                  <Text style={styles.rowTitle}>การแสดงผล</Text>
+                  <Text style={styles.rowHint}>เลือกธีมสี ({theme.name})</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+            </Pressable>
+
+            <Pressable style={styles.settingsRow} onPress={() => setSecurityModalOpen(true)}>
+              <View style={styles.rowLeft}>
+                <Ionicons name="shield-checkmark-outline" size={20} color={FIGMA_INK.inkSecondary} />
+                <View style={styles.rowTexts}>
+                  <Text style={styles.rowTitle}>บัญชีและความปลอดภัย</Text>
+                  <Text style={styles.rowHint}>ซิงก์คิวออฟไลน์และการจัดการบัญชี</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+            </Pressable>
+          </View>
+        </View>
+
+        {/* Other Group */}
+        <View style={styles.groupBlock}>
+          <Text style={styles.groupTitle}>อื่น ๆ</Text>
+          <View style={styles.settingsCard}>
+            <Pressable
+              style={[styles.settingsRow, styles.rowDivider]}
+              onPress={() => setHelpModalOpen(true)}
+            >
+              <View style={styles.rowLeft}>
+                <Ionicons name="help-circle-outline" size={20} color={FIGMA_INK.inkSecondary} />
+                <View style={styles.rowTexts}>
+                  <Text style={styles.rowTitle}>ศูนย์ช่วยเหลือและแจ้งปัญหา</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+            </Pressable>
+
+            <Pressable style={styles.settingsRow} onPress={() => void handleExportCsv()}>
+              <View style={styles.rowLeft}>
+                <Ionicons name="download-outline" size={20} color={FIGMA_INK.inkSecondary} />
+                <View style={styles.rowTexts}>
+                  <Text style={styles.rowTitle}>ส่งออกข้อมูลที่บันทึกไว้</Text>
+                  <Text style={styles.rowHint}>รายการลิงก์ทั้งหมดเป็นไฟล์ CSV ({cachedItems.length} รายการ)</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+            </Pressable>
+          </View>
+        </View>
+
+        {/* Logout Pill */}
+        <Pressable style={styles.logoutBtn} onPress={() => void handleLogout()}>
+          <Ionicons name="log-out-outline" size={18} color="#B91C1C" />
+          <Text style={styles.logoutBtnText}>ออกจากระบบ</Text>
+        </Pressable>
+      </ScrollView>
+
+      {/* Edit Nickname Sheet */}
+      <Modal
+        visible={nicknameOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setNicknameOpen(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.backdrop}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
-          <View style={styles.rowBtnInner}>
-            <Ionicons name="bug-outline" size={16} color="#1C1917" />
-            <Text style={styles.rowBtnText}>
-              {debugBannerOn ? "ปิด Deep Link / Auth Debug Banner" : "เปิด Deep Link / Auth Debug Banner"}
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>แก้ไขชื่อเล่น</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="กรอกชื่อที่ต้องการแสดง"
+              placeholderTextColor="#9CA3AF"
+              value={nicknameDraft}
+              onChangeText={setNicknameDraft}
+            />
+            <View style={styles.modalActions}>
+              <Pressable style={styles.cancelBtn} onPress={() => setNicknameOpen(false)}>
+                <Text style={styles.cancelBtnText}>ยกเลิก</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.primaryModalBtn, { backgroundColor: theme.accent }]}
+                disabled={busyAction === "nickname"}
+                onPress={() => void handleSaveNickname()}
+              >
+                <Text style={styles.primaryModalBtnText}>
+                  {busyAction === "nickname" ? "กำลังบันทึก..." : "บันทึก"}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Display / Theme Modal (128:360) */}
+      <Modal
+        visible={displayModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setDisplayModalOpen(false)}
+      >
+        <View style={styles.sheetBackdrop}>
+          <View style={[styles.sheetCard, { paddingBottom: Math.max(20, insets.bottom + 12) }]}>
+            <View style={styles.sheetDragBar} />
+            <View style={styles.sheetHead}>
+              <Text style={styles.modalTitle}>การแสดงผล</Text>
+              <Pressable hitSlop={8} onPress={() => setDisplayModalOpen(false)}>
+                <Ionicons name="close" size={20} color="#666666" />
+              </Pressable>
+            </View>
+            <Text style={styles.subLabel}>ธีมสี</Text>
+            <View style={{ gap: 8 }}>
+              {FIGMA_THEME_OPTIONS.map((opt) => {
+                const active = themeId === opt.id;
+                return (
+                  <Pressable
+                    key={opt.id}
+                    style={[
+                      styles.themeOptionCard,
+                      active && { borderColor: opt.accent, backgroundColor: opt.soft },
+                    ]}
+                    onPress={() => {
+                      setThemeId(opt.id);
+                      void saveFigmaAccentTheme(opt.id);
+                    }}
+                  >
+                    <View style={[styles.themeSwatchBadge, { backgroundColor: opt.soft }]}>
+                      <View style={[styles.themeSwatchDot, { backgroundColor: opt.swatch }]} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.themeOptionName}>{opt.name}</Text>
+                      <Text style={styles.rowHint}>{opt.subtitle}</Text>
+                    </View>
+                    {active ? <Ionicons name="checkmark-circle" size={20} color={opt.accent} /> : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+            <View style={[styles.themePreviewBox, { backgroundColor: theme.previewBg }]}>
+              <Text style={styles.themePreviewHeading}>ตัวอย่างการแสดงผล</Text>
+              <Text style={styles.rowHint}>{theme.name}</Text>
+              <Text style={[styles.themePreviewSample, { color: theme.swatch }]}>
+                กลับมาดูลิงก์ที่บันทึกไว้
+              </Text>
+            </View>
+            <Pressable
+              style={[styles.fullDoneBtn, { backgroundColor: theme.accent }]}
+              onPress={() => setDisplayModalOpen(false)}
+            >
+              <Text style={styles.primaryModalBtnText}>เสร็จแล้ว</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Account & Security Modal (128:407) */}
+      <Modal
+        visible={securityModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setSecurityModalOpen(false)}
+      >
+        <View style={styles.sheetBackdrop}>
+          <View style={[styles.sheetCard, { paddingBottom: Math.max(20, insets.bottom + 12) }]}>
+            <View style={styles.sheetDragBar} />
+            <View style={styles.sheetHead}>
+              <Text style={styles.modalTitle}>บัญชีและความปลอดภัย</Text>
+              <Pressable hitSlop={8} onPress={() => setSecurityModalOpen(false)}>
+                <Ionicons name="close" size={20} color="#666666" />
+              </Pressable>
+            </View>
+
+            <Pressable style={styles.actionTile} onPress={() => void handleFlushQueue()}>
+              <Ionicons name="sync-outline" size={18} color={FIGMA_INK.inkPrimary} />
+              <Text style={styles.actionTileText}>
+                {busyAction === "queue" ? "กำลังซิงก์..." : `ซิงก์ Offline Queue ตอนนี้ (${queueCount})`}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.actionTile}
+              onPress={() => setDebugBannerEnabled(!debugBannerOn)}
+            >
+              <Ionicons name="bug-outline" size={18} color={FIGMA_INK.inkPrimary} />
+              <Text style={styles.actionTileText}>
+                {debugBannerOn ? "ปิด Deep Link / Auth Debug Banner" : "เปิด Deep Link / Auth Debug Banner"}
+              </Text>
+            </Pressable>
+
+            <Text style={styles.monoMeta}>
+              user={email || "anonymous"} · items={cachedItems.length}
             </Text>
-          </View>
-        </Pressable>
-        <Pressable
-          style={[styles.rowBtn, styles.dangerRowBtn]}
-          onPress={() => {
-            setDeletePhrase("");
-            setDeleteOpen(true);
-          }}
-        >
-          <View style={styles.rowBtnInner}>
-            <Ionicons name="trash-outline" size={16} color="#B91C1C" />
-            <Text style={styles.dangerRowText}>ลบบัญชีผู้ใช้อย่างถาวร</Text>
-          </View>
-        </Pressable>
-      </View>
 
-      <Pressable style={styles.logoutBtn} onPress={() => void handleLogout()}>
-        <Text style={styles.logoutBtnText}>ออกจากระบบ</Text>
-      </Pressable>
+            <Pressable
+              style={[styles.actionTile, styles.dangerTile]}
+              onPress={() => {
+                setSecurityModalOpen(false);
+                setDeletePhrase("");
+                setDeleteOpen(true);
+              }}
+            >
+              <Ionicons name="trash-outline" size={18} color="#B91C1C" />
+              <Text style={[styles.actionTileText, { color: "#B91C1C" }]}>
+                ลบบัญชีผู้ใช้อย่างถาวร
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
-      <Modal visible={deleteOpen} animationType="fade" transparent onRequestClose={() => setDeleteOpen(false)}>
+      {/* Help Center Modal (128:429) */}
+      <Modal
+        visible={helpModalOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setHelpModalOpen(false)}
+      >
+        <View style={styles.backdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>ศูนย์ช่วยเหลือและแจ้งปัญหา</Text>
+            <Text style={styles.modalBody}>
+              1. แชร์ลิงก์จาก Instagram, TikTok, YouTube หรือเบราว์เซอร์เข้ามาที่ Sherlink ผ่านเมนู Share ของ Android ได้ทันที
+            </Text>
+            <Text style={styles.modalBody}>
+              2. หากลิงก์แสดงผลไม่ครบ กดเข้าไปหน้ารายละเอียดแล้วดึงรีเฟรช หรือตรวจสอบว่าเป็นโพสต์สาธารณะ
+            </Text>
+            <Pressable
+              style={[styles.fullDoneBtn, { backgroundColor: theme.accent, marginTop: 6 }]}
+              onPress={() => setHelpModalOpen(false)}
+            >
+              <Text style={styles.primaryModalBtnText}>เข้าใจแล้ว</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Permanent Delete Confirm Modal */}
+      <Modal
+        visible={deleteOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setDeleteOpen(false)}
+      >
         <KeyboardAvoidingView
           style={styles.backdrop}
           behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -306,7 +631,7 @@ export default function ProfileScreen() {
             <TextInput
               style={styles.deleteInput}
               placeholder="พิมพ์ DELETE"
-              placeholderTextColor="#A8A29E"
+              placeholderTextColor="#9CA3AF"
               autoCapitalize="characters"
               value={deletePhrase}
               onChangeText={setDeletePhrase}
@@ -320,7 +645,7 @@ export default function ProfileScreen() {
                 disabled={busyAction === "delete"}
                 onPress={() => void handleDeleteAccount()}
               >
-                <Text style={styles.confirmBtnText}>
+                <Text style={styles.primaryModalBtnText}>
                   {busyAction === "delete" ? "กำลังลบ..." : "ลบบัญชีถาวร"}
                 </Text>
               </Pressable>
@@ -328,150 +653,296 @@ export default function ProfileScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  content: { padding: 16, gap: 14, paddingBottom: 36 },
-  profileCard: {
-    borderRadius: 20,
-    padding: 20,
-    alignItems: "center",
+  root: {
+    flex: 1,
+    backgroundColor: FIGMA_INK.bgApp,
+  },
+  content: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    gap: 16,
+  },
+  pageHeading: {
+    fontSize: 26,
+    fontWeight: "800",
+    color: FIGMA_INK.inkPrimary,
+    letterSpacing: -0.4,
+  },
+  settingsCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#EAE4DB",
+    borderColor: FIGMA_INK.borderCard,
+    overflow: "hidden",
   },
-  avatar: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "#9B2C2C",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 10,
-  },
-  avatarText: { color: "#FDFBF7", fontSize: 26, fontWeight: "800" },
-  nameText: { fontSize: 18, fontWeight: "800" },
-  emailText: { fontSize: 13, color: "#78716C", marginTop: 2 },
-  statsRow: { flexDirection: "row", gap: 24, marginTop: 16 },
-  statBox: { alignItems: "center" },
-  statValue: { fontSize: 18, fontWeight: "800", color: "#9B2C2C" },
-  statLabel: { fontSize: 12, color: "#78716C" },
-  sectionCard: {
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "#EAE4DB",
-    gap: 10,
-  },
-  sectionTitle: { fontSize: 15, fontWeight: "800" },
-  helperText: { fontSize: 12, color: "#78716C" },
-  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  chip: { backgroundColor: "#F3EFE6", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999 },
-  chipActive: { backgroundColor: "#9B2C2C" },
-  chipText: { fontSize: 13, fontWeight: "600", color: "#44403C" },
-  chipTextActive: { color: "#FDFBF7" },
-  rowBtn: {
-    backgroundColor: "#F3EFE6",
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  rowBtnInner: {
+  profileRow: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
+    padding: 16,
+    gap: 12,
+  },
+  profileLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+  },
+  avatarLg: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarLgText: {
+    color: "#FFFFFF",
+    fontSize: 22,
+    fontWeight: "800",
+  },
+  profileName: {
+    fontSize: 19,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+  },
+  profileEmail: {
+    fontSize: 13.5,
+    color: FIGMA_INK.inkSecondary,
+    marginTop: 2,
+  },
+  groupBlock: {
     gap: 8,
   },
-  rowBtnText: { fontSize: 14, fontWeight: "600", color: "#1C1917" },
-  dangerRowBtn: { backgroundColor: "#FEF2F2" },
-  dangerRowText: { fontSize: 14, fontWeight: "700", color: "#B91C1C" },
-  tokenInputRow: { flexDirection: "row", gap: 8 },
-  tokenInput: {
+  groupTitle: {
+    fontSize: 15.5,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  settingsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 10,
+  },
+  rowDivider: {
+    borderBottomWidth: 1,
+    borderBottomColor: "#EFEFEF",
+  },
+  rowLeft: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E7E0D5",
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    color: "#1C1917",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
   },
-  smallPrimaryBtn: {
-    backgroundColor: "#9B2C2C",
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    justifyContent: "center",
+  rowTexts: {
+    flex: 1,
+    gap: 2,
   },
-  smallPrimaryBtnText: { color: "#FDFBF7", fontWeight: "700" },
-  tokenSecretBox: {
-    backgroundColor: "#FEF2F2",
-    borderRadius: 12,
-    padding: 12,
+  rowTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  rowHint: {
+    fontSize: 12,
+    color: FIGMA_INK.inkSecondary,
+  },
+  logoutBtn: {
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "#FFF5F5",
     borderWidth: 1,
     borderColor: "#FECACA",
-  },
-  tokenSecretLabel: { fontSize: 12, fontWeight: "700", color: "#9B2C2C", marginBottom: 4 },
-  tokenSecretValue: {
-    fontSize: 12,
-    color: "#1C1917",
-    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
-  },
-  tokenRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    paddingVertical: 6,
-    borderTopWidth: 1,
-    borderTopColor: "#EAE4DB",
+    justifyContent: "center",
+    gap: 8,
   },
-  tokenName: { fontSize: 13, fontWeight: "700" },
-  tokenMeta: { fontSize: 11, color: "#78716C" },
-  revokeBtn: {
-    backgroundColor: "#FEF2F2",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 8,
+  logoutBtnText: {
+    color: "#B91C1C",
+    fontWeight: "700",
+    fontSize: 15,
   },
-  revokeBtnText: { color: "#9B2C2C", fontSize: 12, fontWeight: "700" },
-  logoutBtn: {
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(23, 23, 33, 0.45)",
+    justifyContent: "center",
+    padding: 20,
+  },
+  modalCard: {
     backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#D6CFC4",
-    borderRadius: 14,
-    paddingVertical: 14,
-    alignItems: "center",
+    borderRadius: 20,
+    padding: 20,
+    gap: 12,
   },
-  logoutBtnText: { color: "#9B2C2C", fontWeight: "800", fontSize: 15 },
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "center", padding: 20 },
-  modalCard: { backgroundColor: "#FDFBF7", borderRadius: 20, padding: 20, gap: 12 },
-  modalTitle: { fontSize: 17, fontWeight: "800", color: "#1C1917" },
-  modalBody: { fontSize: 14, color: "#44403C", lineHeight: 20 },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: FIGMA_INK.inkPrimary,
+  },
+  modalBody: {
+    fontSize: 13.5,
+    color: "#44403C",
+    lineHeight: 20,
+  },
+  input: {
+    height: 46,
+    backgroundColor: FIGMA_INK.bgMuted,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderCard,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    fontSize: 15,
+    color: FIGMA_INK.inkStrong,
+  },
   deleteInput: {
+    height: 46,
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
     borderColor: "#FCA5A5",
     borderRadius: 12,
     paddingHorizontal: 12,
-    paddingVertical: 10,
     fontSize: 15,
-    color: "#1C1917",
+    color: FIGMA_INK.inkStrong,
   },
-  modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: 10 },
-  cancelBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, backgroundColor: "#F3EFE6" },
-  cancelBtnText: { color: "#44403C", fontWeight: "600" },
-  confirmBtn: {
-    backgroundColor: "#9B2C2C",
-    borderRadius: 12,
-    paddingVertical: 11,
+  modalActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
+    marginTop: 4,
+  },
+  cancelBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: FIGMA_INK.bgChip,
+  },
+  cancelBtnText: {
+    color: "#444444",
+    fontWeight: "600",
+  },
+  primaryModalBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 999,
     alignItems: "center",
+  },
+  primaryModalBtnText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 14,
   },
   deleteConfirmBtn: {
     backgroundColor: "#B91C1C",
-    borderRadius: 12,
-    paddingHorizontal: 16,
+    borderRadius: 999,
+    paddingHorizontal: 18,
     paddingVertical: 10,
     alignItems: "center",
   },
-  confirmBtnText: { color: "#FDFBF7", fontWeight: "700" },
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(23, 23, 33, 0.43)",
+    justifyContent: "flex-end",
+  },
+  sheetCard: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    gap: 12,
+  },
+  sheetDragBar: {
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#D1D5DB",
+  },
+  sheetHead: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  subLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  themeOptionCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderCard,
+    backgroundColor: "#FFFFFF",
+  },
+  themeSwatchBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  themeSwatchDot: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+  },
+  themeOptionName: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  themePreviewBox: {
+    borderRadius: 14,
+    padding: 14,
+    gap: 3,
+  },
+  themePreviewHeading: {
+    fontSize: 14.5,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+  },
+  themePreviewSample: {
+    fontSize: 14,
+    fontWeight: "700",
+    marginTop: 4,
+  },
+  fullDoneBtn: {
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  actionTile: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: FIGMA_INK.bgMuted,
+    padding: 13,
+    borderRadius: 12,
+  },
+  dangerTile: {
+    backgroundColor: "#FEF2F2",
+  },
+  actionTileText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: FIGMA_INK.inkPrimary,
+  },
+  monoMeta: {
+    fontSize: 11.5,
+    color: FIGMA_INK.inkSecondary,
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+  },
 });

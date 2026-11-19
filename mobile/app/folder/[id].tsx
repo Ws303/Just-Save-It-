@@ -1,8 +1,9 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Image,
   Modal,
   Pressable,
   ScrollView,
@@ -13,23 +14,40 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
 import {
+  computeFolderShareState,
   createFolderInvite,
   fetchWorkspace,
   listFolderMembers,
+  patchLinkItem,
   revokeFolderInvite,
   type DiscordInviteCreateOptions,
 } from "../../src/api";
-import { formatCardDisplayTitle, matchesItemSearch } from "../../src/itemHelpers";
+import { FIGMA_INK, getFigmaTheme, type FigmaAccentThemeId } from "../../src/figmaTheme";
+import {
+  formatCardDisplayTitle,
+  inferMobileDomain,
+  inferMobilePlatform,
+  matchesItemSearch,
+  resolveMobileThumbUrl,
+} from "../../src/itemHelpers";
 import {
   getAuthGeneration,
   getMemoryCachedWorkspace,
   loadCachedWorkspace,
+  loadFigmaAccentTheme,
+  loadSession,
+  resolveSessionUserId,
+  subscribeFigmaAccentTheme,
   type MobileFolderItem,
   type MobileLinkItem,
 } from "../../src/storage";
+
+const CHERRY_SELECTED_IMG = require("../../assets/figma/cherry-selected.png");
+const CHERRY_UNSELECTED_IMG = require("../../assets/figma/cherry-unselected.png");
 
 type ExpiryPresetKey = "30m" | "1h" | "6h" | "12h" | "1d" | "7d" | "never";
 
@@ -62,6 +80,26 @@ interface ActiveInviteRow {
   use_count?: number;
 }
 
+interface MemberRow {
+  user_id?: string;
+  display_name?: string;
+  email?: string;
+  role?: string;
+}
+
+function isReadStatus(raw?: string): boolean {
+  const s = String(raw || "inbox").toLowerCase();
+  return s === "done" || s === "read" || s === "archived";
+}
+
+function inferDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
 function formatInviteExpiryLabel(inv: ActiveInviteRow): string {
   if (inv.never_expires || !inv.expires_at) return "ไม่หมดอายุ";
   const d = new Date(inv.expires_at);
@@ -72,8 +110,12 @@ function formatInviteExpiryLabel(inv: ActiveInviteRow): string {
 export default function FolderDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const isVirtualInbox = id === "virtual-inbox";
   const initialCache = getMemoryCachedWorkspace();
+
+  const [themeId, setThemeId] = useState<FigmaAccentThemeId>("sharely");
+  const theme = getFigmaTheme(themeId);
 
   const [folder, setFolder] = useState<MobileFolderItem | null>(() => {
     if (!initialCache) return null;
@@ -86,7 +128,13 @@ export default function FolderDetailScreen() {
       ? initialCache.items.filter((it) => !it.folder_id)
       : initialCache.items.filter((it) => it.folder_id === id);
   });
+  const [members, setMembers] = useState<MemberRow[]>([]);
+  const [folderOwnerId, setFolderOwnerId] = useState("");
+  const [callerRole, setCallerRole] = useState("");
+  const [selfInitial, setSelfInitial] = useState("U");
+  const [selfUserId, setSelfUserId] = useState("");
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "unread" | "read" | "favorite">("all");
   const [loading, setLoading] = useState<boolean>(() => !initialCache);
   const [inviting, setInviting] = useState(false);
   const [inviteModalOpen, setInviteModalOpen] = useState(false);
@@ -98,54 +146,43 @@ export default function FolderDetailScreen() {
   const [loadingInvites, setLoadingInvites] = useState(false);
   const [revokingToken, setRevokingToken] = useState<string | null>(null);
   const actionSeqRef = useRef(0);
+  const activeFolderIdRef = useRef(id);
+  activeFolderIdRef.current = id;
+  const favInFlightRef = useRef<Set<string>>(new Set());
 
-  const loadFolder = useCallback(async () => {
-    const startGen = getAuthGeneration();
-    const cached = await loadCachedWorkspace();
-    if (getAuthGeneration() !== startGen) {
-      setLoading(false);
-      return;
-    }
-    if (cached.items.length > 0 || cached.folders.length > 0) {
-      if (isVirtualInbox) {
-        setFolder({ id: "virtual-inbox", name: "รวมไว้ดูทีหลัง" });
-        setItems(cached.items.filter((it) => !it.folder_id));
-      } else {
-        const found = cached.folders.find((f) => f.id === id);
-        if (found) setFolder(found);
-        setItems(cached.items.filter((it) => it.folder_id === id));
-      }
-      setLoading(false);
-    }
+  useEffect(() => {
+    setFolderOwnerId("");
+    setCallerRole("");
+    setMembers([]);
+    setActiveInvites([]);
+  }, [id]);
 
-    const ws = await fetchWorkspace();
-    if (getAuthGeneration() !== startGen) {
-      setLoading(false);
-      return;
-    }
-    if (isVirtualInbox) {
-      setFolder({ id: "virtual-inbox", name: "รวมไว้ดูทีหลัง" });
-      setItems(ws.items.filter((it) => !it.folder_id));
-    } else {
-      const found = ws.folders.find((f) => f.id === id) || { id: String(id), name: "โฟลเดอร์" };
-      setFolder(found);
-      setItems(ws.items.filter((it) => it.folder_id === id));
-    }
-    setLoading(false);
-  }, [id, isVirtualInbox]);
-
-  useFocusEffect(
-    useCallback(() => {
-      void loadFolder();
-    }, [loadFolder]),
-  );
+  useEffect(() => {
+    void loadFigmaAccentTheme().then(setThemeId).catch(() => {});
+    const unsub = subscribeFigmaAccentTheme((next) => setThemeId(next));
+    return () => unsub();
+  }, []);
 
   const loadInvites = useCallback(async () => {
     if (!id || isVirtualInbox) return;
+    const targetFolderId = id;
+    const startGen = getAuthGeneration();
     setLoadingInvites(true);
-    const res = await listFolderMembers(id);
+    const res = await listFolderMembers(targetFolderId);
+    if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) return;
     setLoadingInvites(false);
     if (!res.ok || !res.data) return;
+    if (typeof res.data.owner_id === "string") {
+      setFolderOwnerId(res.data.owner_id);
+    }
+    if (typeof res.data.caller_role === "string") {
+      setCallerRole(res.data.caller_role);
+    }
+    if (Array.isArray(res.data.members)) {
+      setMembers(
+        res.data.members.filter((m): m is MemberRow => Boolean(m && typeof m === "object")),
+      );
+    }
     const raw = Array.isArray(res.data.active_invites) ? res.data.active_invites : [];
     setActiveInvites(
       raw
@@ -163,9 +200,69 @@ export default function FolderDetailScreen() {
     );
   }, [id, isVirtualInbox]);
 
+  const loadFolder = useCallback(async () => {
+    const startGen = getAuthGeneration();
+    const targetFolderId = id;
+    const sess = await loadSession().catch(() => null);
+    if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) return;
+    setSelfUserId(resolveSessionUserId(sess));
+    const initChar = (sess?.user?.display_name || sess?.user?.email || "U")
+      .trim()
+      .charAt(0)
+      .toUpperCase();
+    if (initChar) setSelfInitial(initChar);
+
+    const cached = await loadCachedWorkspace();
+    if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) {
+      setLoading(false);
+      return;
+    }
+    if (cached.items.length > 0 || cached.folders.length > 0) {
+      if (isVirtualInbox) {
+        setFolder({ id: "virtual-inbox", name: "รวมไว้ดูทีหลัง" });
+        setItems(cached.items.filter((it) => !it.folder_id));
+      } else {
+        const found = cached.folders.find((f) => f.id === targetFolderId);
+        if (found) setFolder(found);
+        setItems(cached.items.filter((it) => it.folder_id === targetFolderId));
+      }
+      setLoading(false);
+    }
+
+    const ws = await fetchWorkspace();
+    if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) {
+      setLoading(false);
+      return;
+    }
+    if (isVirtualInbox) {
+      setFolder({ id: "virtual-inbox", name: "รวมไว้ดูทีหลัง" });
+      setItems(ws.items.filter((it) => !it.folder_id));
+    } else {
+      const found = ws.folders.find((f) => f.id === targetFolderId) || { id: String(targetFolderId), name: "โฟลเดอร์" };
+      setFolder(found);
+      setItems(ws.items.filter((it) => it.folder_id === targetFolderId));
+    }
+    setLoading(false);
+    if (!isVirtualInbox) {
+      void loadInvites();
+    }
+  }, [id, isVirtualInbox, loadInvites]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadFolder();
+    }, [loadFolder]),
+  );
+
   const visibleItems = useMemo(() => {
-    return items.filter((it) => matchesItemSearch(it, query, folder?.name || ""));
-  }, [items, query, folder?.name]);
+    return items.filter((it) => {
+      const seen = isReadStatus(it.status);
+      if (statusFilter === "unread" && seen) return false;
+      if (statusFilter === "read" && !seen) return false;
+      if (statusFilter === "favorite" && !it.is_favorite) return false;
+      return matchesItemSearch(it, query, folder?.name || "");
+    });
+  }, [items, query, folder?.name, statusFilter]);
 
   function openInviteModal() {
     if (!id || isVirtualInbox) return;
@@ -174,16 +271,39 @@ export default function FolderDetailScreen() {
     void loadInvites();
   }
 
+  async function toggleFavorite(item: MobileLinkItem) {
+    const startGen = getAuthGeneration();
+    const targetFolderId = id;
+    if (!item.id || favInFlightRef.current.has(item.id)) return;
+    favInFlightRef.current.add(item.id);
+    const nextFav = !item.is_favorite;
+    setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, is_favorite: nextFav } : it)));
+    try {
+      const res = await patchLinkItem(item.id, { is_favorite: nextFav });
+      if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) return;
+      if (!res.ok) {
+        setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, is_favorite: !nextFav } : it)));
+      }
+    } finally {
+      favInFlightRef.current.delete(item.id);
+    }
+  }
+
   async function shareInviteUrl(inviteUrl: string) {
     if (!inviteUrl) return;
-    await Share.share({
-      title: `เชิญเข้าร่วมโฟลเดอร์ ${folder?.name || ""}`,
-      message: `เข้าร่วมโฟลเดอร์ "${folder?.name || ""}" บน Sherlink ได้ที่: ${inviteUrl}`,
-    });
+    try {
+      await Share.share({
+        title: `เชิญเข้าร่วมโฟลเดอร์ ${folder?.name || ""}`,
+        message: `เข้าร่วมโฟลเดอร์ "${folder?.name || ""}" บน Sherlink ได้ที่: ${inviteUrl}`,
+      });
+    } catch {
+      Alert.alert("แชร์ลิงก์ไม่สำเร็จ", "ไม่สามารถเปิดหน้าต่างแชร์ได้");
+    }
   }
 
   async function handleCreateInvite() {
     if (!id || isVirtualInbox) return;
+    const targetFolderId = id;
     const preset = EXPIRY_PRESETS.find((p) => p.key === inviteExpiry) || EXPIRY_PRESETS[5];
     const options: DiscordInviteCreateOptions = {
       role: inviteRole,
@@ -195,8 +315,8 @@ export default function FolderDetailScreen() {
       ...(inviteMaxUses ? { max_uses: inviteMaxUses } : {}),
     };
     await runGuardedBusyAction(actionSeqRef, setInviting, async (isStale) => {
-      const res = await createFolderInvite(id, options);
-      if (isStale()) return;
+      const res = await createFolderInvite(targetFolderId, options);
+      if (isStale() || activeFolderIdRef.current !== targetFolderId) return;
       const inviteUrl = typeof res.data?.invite_url === "string" ? res.data.invite_url : "";
       if (!res.ok || !inviteUrl) {
         Alert.alert("สร้างลิงก์เชิญไม่สำเร็จ", res.error || "กรุณาลองใหม่");
@@ -210,83 +330,229 @@ export default function FolderDetailScreen() {
 
   async function handleRevokeInvite(token: string) {
     if (!id || !token || revokingToken) return;
+    const targetFolderId = id;
+    const startGen = getAuthGeneration();
     setRevokingToken(token);
-    const res = await revokeFolderInvite(id, token);
-    setRevokingToken(null);
-    if (!res.ok) {
-      Alert.alert("ยกเลิกลิงก์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-      return;
+    try {
+      const res = await revokeFolderInvite(targetFolderId, token);
+      if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) return;
+      if (!res.ok) {
+        Alert.alert("ยกเลิกลิงก์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+        return;
+      }
+      setActiveInvites((prev) => prev.filter((inv) => inv.token !== token));
+    } finally {
+      if (getAuthGeneration() === startGen && activeFolderIdRef.current === targetFolderId) {
+        setRevokingToken(null);
+      }
     }
-    setActiveInvites((prev) => prev.filter((inv) => inv.token !== token));
   }
 
+  const avatarInitials = useMemo(() => {
+    if (members.length > 0) {
+      return members
+        .slice(0, 3)
+        .map((m) => (m.display_name || m.email || m.user_id || "U").trim().charAt(0).toUpperCase() || "U");
+    }
+    return [selfInitial];
+  }, [members, selfInitial]);
+
+  const { isOwner, sharedPeerCount } = useMemo(
+    () =>
+      computeFolderShareState({
+        isVirtualInbox,
+        folder,
+        members,
+        ownerId: folderOwnerId,
+        callerRole,
+        selfUserId,
+      }),
+    [isVirtualInbox, folder, members, folderOwnerId, callerRole, selfUserId],
+  );
+
   return (
-    <View style={styles.root}>
-      <View style={styles.header}>
-        <View style={styles.titleRow}>
-          <View style={styles.titleLeft}>
-            <Ionicons
-              name={isVirtualInbox ? "bookmark-outline" : "folder-outline"}
-              size={20}
-              color="#1C1917"
-            />
-            <Text style={styles.title} numberOfLines={1}>
-              {folder?.name || "โฟลเดอร์"}
-            </Text>
-          </View>
-          {!isVirtualInbox ? (
-            <Pressable
-              style={[styles.inviteBtn, inviting && { opacity: 0.7 }]}
-              disabled={inviting}
-              onPress={openInviteModal}
-            >
-              <View style={styles.btnInnerRow}>
-                <Ionicons name="people-outline" size={14} color="#FDFBF7" />
-                <Text style={styles.inviteBtnText}>เชิญเพื่อนร่วมโฟลเดอร์</Text>
-              </View>
+    <View style={[styles.root, { paddingTop: Math.max(10, insets.top) }]}>
+      <View style={styles.subTopbar}>
+        <View style={styles.subTopLeft}>
+          <Pressable
+            style={styles.backBtn}
+            hitSlop={8}
+            onPress={() => {
+              if (router.canGoBack()) router.back();
+              else router.replace("/(tabs)/folders");
+            }}
+          >
+            <Ionicons name="chevron-back" size={23} color={FIGMA_INK.inkPrimary} />
+          </Pressable>
+          <Text style={styles.title} numberOfLines={1}>
+            {folder?.name || "โฟลเดอร์"}
+          </Text>
+        </View>
+        {!isVirtualInbox && isOwner ? (
+          <Pressable
+            style={[styles.inviteBtn, inviting && { opacity: 0.7 }]}
+            disabled={inviting}
+            onPress={openInviteModal}
+          >
+            <Ionicons name="people-outline" size={14} color={FIGMA_INK.inkStrong} />
+            <Text style={styles.inviteBtnText}>เชิญเพื่อน</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
+      <View style={styles.sharedBar}>
+        <View style={styles.avatarStack}>
+          {avatarInitials.map((ch, idx) => (
+            <View key={`av-${idx}`} style={styles.avatarCircle}>
+              <Text style={styles.avatarCircleText}>{ch}</Text>
+            </View>
+          ))}
+        </View>
+        <Text style={styles.sharedBarText}>
+          {sharedPeerCount > 0
+            ? `แชร์กับ ${sharedPeerCount} คน`
+            : isVirtualInbox
+              ? "ลิงก์ที่ยังไม่ได้จัดหมวดหมู่"
+              : !folder
+                ? "กำลังตรวจสอบสถานะโฟลเดอร์..."
+                : isOwner
+                  ? "โฟลเดอร์ส่วนตัว · กดเชิญเพื่อนเพื่อแชร์"
+                  : "โฟลเดอร์ที่แชร์"}
+        </Text>
+      </View>
+
+      <View style={styles.controlsWrap}>
+        <View style={styles.searchBox}>
+          <Ionicons name="search-outline" size={18} color={FIGMA_INK.inkStrong} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="ค้นหาลิงก์ในโฟลเดอร์"
+            placeholderTextColor="#8B9199"
+            value={query}
+            onChangeText={setQuery}
+          />
+          {query ? (
+            <Pressable hitSlop={8} onPress={() => setQuery("")}>
+              <Ionicons name="close-circle" size={17} color="#9CA3AF" />
             </Pressable>
           ) : null}
         </View>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="ค้นหาในโฟลเดอร์นี้..."
-          placeholderTextColor="#A8A29E"
-          value={query}
-          onChangeText={setQuery}
-        />
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filterRow}
+        >
+          {(
+            [
+              { id: "all", label: "ทั้งหมด" },
+              { id: "unread", label: "ยังไม่ได้ดู" },
+              { id: "read", label: "ดูแล้ว" },
+              { id: "favorite", label: "ชื่นชอบ", hasCherry: true },
+            ] as const
+          ).map((st) => {
+            const active = statusFilter === st.id;
+            return (
+              <Pressable
+                key={st.id}
+                style={[
+                  styles.filterPill,
+                  active && {
+                    backgroundColor: theme.soft,
+                    borderWidth: 1,
+                    borderColor: theme.softBorder,
+                  },
+                ]}
+                onPress={() => setStatusFilter(st.id)}
+              >
+                {"hasCherry" in st && st.hasCherry ? (
+                  <Image source={CHERRY_SELECTED_IMG} style={styles.chipCherry} resizeMode="contain" />
+                ) : null}
+                <Text
+                  style={[
+                    styles.filterPillText,
+                    active && { color: theme.accentText, fontWeight: "700" },
+                  ]}
+                >
+                  {st.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+
+        <Text style={styles.sectionHeading}>ลิงก์ในโฟลเดอร์ ({visibleItems.length})</Text>
       </View>
 
       {loading ? (
         <View style={styles.centerBox}>
-          <ActivityIndicator size="large" color="#9B2C2C" />
+          <ActivityIndicator size="large" color={theme.accent} />
         </View>
       ) : (
         <FlatList
           data={visibleItems}
           keyExtractor={(it) => it.id}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[
+            styles.listContent,
+            { paddingBottom: Math.max(28, insets.bottom + 16) },
+          ]}
           ListEmptyComponent={
             <View style={styles.emptyBox}>
-              <Text style={styles.emptyText}>ยังไม่มีลิงก์ในโฟลเดอร์นี้</Text>
+              <Text style={styles.emptyText}>ยังไม่มีลิงก์ที่ตรงกับตัวกรองในโฟลเดอร์นี้</Text>
             </View>
           }
-          renderItem={({ item }) => (
-            <Pressable
-              style={styles.card}
-              onPress={() =>
-                router.push(
-                  `/item/${encodeURIComponent(item.id)}?folderId=${encodeURIComponent(String(id || ""))}` as never,
-                )
-              }
-            >
-              <Text style={styles.cardTitle} numberOfLines={2}>
-                {formatCardDisplayTitle(item) || item.url}
-              </Text>
-              <Text style={styles.cardUrl} numberOfLines={1}>
-                {item.url}
-              </Text>
-            </Pressable>
-          )}
+          renderItem={({ item }) => {
+            const seen = isReadStatus(item.status);
+            const thumbUri = resolveMobileThumbUrl(item);
+            const platLabel = inferMobilePlatform(item) || inferMobileDomain(item.url) || inferDomain(item.url);
+            const codeBadge = String(platLabel || "WEB").slice(0, 3).toUpperCase();
+
+            return (
+              <Pressable
+                style={styles.figmaLinkCard}
+                onPress={() =>
+                  router.push(
+                    `/item/${encodeURIComponent(item.id)}?folderId=${encodeURIComponent(String(id || ""))}` as never,
+                  )
+                }
+              >
+                <View style={styles.figmaLinkThumb}>
+                  {thumbUri ? (
+                    <Image source={{ uri: thumbUri }} style={styles.fullImg} resizeMode="cover" />
+                  ) : (
+                    <Text style={styles.figmaThumbCode}>{codeBadge}</Text>
+                  )}
+                </View>
+
+                <View style={styles.figmaLinkMain}>
+                  <Text style={styles.figmaLinkPlatform} numberOfLines={1}>
+                    {platLabel}
+                  </Text>
+                  <Text style={styles.figmaLinkTitle} numberOfLines={2}>
+                    {formatCardDisplayTitle(item) || item.url}
+                  </Text>
+                  <Text style={styles.figmaLinkMeta} numberOfLines={1}>
+                    {seen ? "ดูแล้ว" : "ยังไม่ได้ดู"}
+                  </Text>
+                </View>
+
+                <Pressable
+                  style={styles.cardActionIconBtn}
+                  hitSlop={8}
+                  onPress={(e) => {
+                    e.stopPropagation?.();
+                    void toggleFavorite(item);
+                  }}
+                >
+                  <Image
+                    source={item.is_favorite ? CHERRY_SELECTED_IMG : CHERRY_UNSELECTED_IMG}
+                    style={styles.cherryActionImg}
+                    resizeMode="contain"
+                  />
+                </Pressable>
+              </Pressable>
+            );
+          }}
         />
       )}
 
@@ -297,14 +563,14 @@ export default function FolderDetailScreen() {
         onRequestClose={() => setInviteModalOpen(false)}
       >
         <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
+          <View style={[styles.modalCard, { paddingBottom: Math.max(20, insets.bottom + 12) }]}>
             <View style={styles.modalHead}>
               <View style={styles.btnInnerRow}>
-                <Ionicons name="link-outline" size={18} color="#1C1917" />
+                <Ionicons name="link-outline" size={18} color={FIGMA_INK.inkPrimary} />
                 <Text style={styles.modalTitle}>ตั้งค่าลิงก์เชิญโฟลเดอร์</Text>
               </View>
               <Pressable hitSlop={8} onPress={() => setInviteModalOpen(false)}>
-                <Ionicons name="close" size={20} color="#78716C" />
+                <Ionicons name="close" size={20} color="#666666" />
               </Pressable>
             </View>
             <ScrollView showsVerticalScrollIndicator={false}>
@@ -315,66 +581,84 @@ export default function FolderDetailScreen() {
                     { key: "viewer", label: "Viewer (ดูอย่างเดียว)" },
                     { key: "editor", label: "Editor (เพิ่ม/แก้ไขได้)" },
                   ] as const
-                ).map((opt) => (
-                  <Pressable
-                    key={opt.key}
-                    style={[styles.choiceChip, inviteRole === opt.key && styles.choiceChipActive]}
-                    onPress={() => setInviteRole(opt.key)}
-                  >
-                    <Text
+                ).map((opt) => {
+                  const active = inviteRole === opt.key;
+                  return (
+                    <Pressable
+                      key={opt.key}
                       style={[
-                        styles.choiceChipText,
-                        inviteRole === opt.key && styles.choiceChipTextActive,
+                        styles.choiceChip,
+                        active && { backgroundColor: theme.accent, borderColor: theme.accent },
                       ]}
+                      onPress={() => setInviteRole(opt.key)}
                     >
-                      {opt.label}
-                    </Text>
-                  </Pressable>
-                ))}
+                      <Text
+                        style={[
+                          styles.choiceChipText,
+                          active && styles.choiceChipTextActive,
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
               </View>
 
               <Text style={styles.modalLabel}>วันหมดอายุ (Expiration)</Text>
               <View style={styles.chipRow}>
-                {EXPIRY_PRESETS.map((opt) => (
-                  <Pressable
-                    key={opt.key}
-                    style={[styles.choiceChip, inviteExpiry === opt.key && styles.choiceChipActive]}
-                    onPress={() => setInviteExpiry(opt.key)}
-                  >
-                    <Text
+                {EXPIRY_PRESETS.map((opt) => {
+                  const active = inviteExpiry === opt.key;
+                  return (
+                    <Pressable
+                      key={opt.key}
                       style={[
-                        styles.choiceChipText,
-                        inviteExpiry === opt.key && styles.choiceChipTextActive,
+                        styles.choiceChip,
+                        active && { backgroundColor: theme.accent, borderColor: theme.accent },
                       ]}
+                      onPress={() => setInviteExpiry(opt.key)}
                     >
-                      {opt.label}
-                    </Text>
-                  </Pressable>
-                ))}
+                      <Text
+                        style={[
+                          styles.choiceChipText,
+                          active && styles.choiceChipTextActive,
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
               </View>
 
               <Text style={styles.modalLabel}>จำนวนครั้งที่ใช้ได้ (Max Uses)</Text>
               <View style={styles.chipRow}>
-                {MAX_USE_PRESETS.map((opt) => (
-                  <Pressable
-                    key={opt.key || "unlimited"}
-                    style={[styles.choiceChip, inviteMaxUses === opt.value && styles.choiceChipActive]}
-                    onPress={() => setInviteMaxUses(opt.value)}
-                  >
-                    <Text
+                {MAX_USE_PRESETS.map((opt) => {
+                  const active = inviteMaxUses === opt.value;
+                  return (
+                    <Pressable
+                      key={opt.key || "unlimited"}
                       style={[
-                        styles.choiceChipText,
-                        inviteMaxUses === opt.value && styles.choiceChipTextActive,
+                        styles.choiceChip,
+                        active && { backgroundColor: theme.accent, borderColor: theme.accent },
                       ]}
+                      onPress={() => setInviteMaxUses(opt.value)}
                     >
-                      {opt.label}
-                    </Text>
-                  </Pressable>
-                ))}
+                      <Text
+                        style={[
+                          styles.choiceChipText,
+                          active && styles.choiceChipTextActive,
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
               </View>
 
               <Pressable
-                style={[styles.createInviteBtn, inviting && { opacity: 0.7 }]}
+                style={[styles.createInviteBtn, { backgroundColor: theme.accent }, inviting && { opacity: 0.7 }]}
                 disabled={inviting}
                 onPress={() => void handleCreateInvite()}
               >
@@ -399,7 +683,7 @@ export default function FolderDetailScreen() {
 
               <Text style={[styles.modalLabel, { marginTop: 16 }]}>ลิงก์คำเชิญที่ใช้งานอยู่</Text>
               {loadingInvites ? (
-                <ActivityIndicator size="small" color="#9B2C2C" style={{ marginVertical: 10 }} />
+                <ActivityIndicator size="small" color={theme.accent} style={{ marginVertical: 10 }} />
               ) : activeInvites.length === 0 ? (
                 <Text style={styles.noInvitesText}>ยังไม่มีลิงก์ที่เปิดใช้งานอยู่</Text>
               ) : (
@@ -441,46 +725,223 @@ export default function FolderDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "transparent" },
-  header: {
-    backgroundColor: "#FDFBF7",
-    padding: 16,
+  root: {
+    flex: 1,
+    backgroundColor: FIGMA_INK.bgApp,
+  },
+  subTopbar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingTop: 6,
+    paddingBottom: 8,
     gap: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#EAE4DB",
   },
-  titleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 },
-  title: { flex: 1, fontSize: 18, fontWeight: "800", color: "#1C1917" },
-  inviteBtn: { backgroundColor: "#9B2C2C", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999 },
-  inviteBtnText: { color: "#FDFBF7", fontSize: 12, fontWeight: "700" },
-  searchInput: {
-    backgroundColor: "#F3EFE6",
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontSize: 14,
-    color: "#1C1917",
+  subTopLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minWidth: 0,
   },
-  centerBox: { flex: 1, alignItems: "center", justifyContent: "center" },
-  listContent: { padding: 16, gap: 10, paddingBottom: 40 },
-  emptyBox: { padding: 40, alignItems: "center" },
-  emptyText: { fontSize: 14, color: "#78716C" },
-  card: {
-    backgroundColor: "#FDFBF7",
-    borderRadius: 16,
-    padding: 14,
+  backBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  title: {
+    flex: 1,
+    fontSize: 21,
+    fontWeight: "800",
+    color: FIGMA_INK.inkPrimary,
+  },
+  inviteBtn: {
+    height: 36,
+    paddingHorizontal: 14,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: "#EAE4DB",
+    borderColor: FIGMA_INK.borderCard,
+    backgroundColor: "#FFFFFF",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
-  cardTitle: { fontSize: 15, fontWeight: "700", color: "#1C1917" },
-  cardUrl: { fontSize: 12, color: "#78716C", marginTop: 4 },
+  inviteBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  sharedBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+  },
+  avatarStack: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  avatarCircle: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: "#D1D5DB",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarCircleText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#374151",
+  },
+  sharedBarText: {
+    fontSize: 13,
+    color: FIGMA_INK.inkSecondary,
+  },
+  controlsWrap: {
+    paddingHorizontal: 16,
+    gap: 10,
+    paddingBottom: 10,
+  },
+  searchBox: {
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: FIGMA_INK.bgMuted,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderInput,
+    paddingHorizontal: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: FIGMA_INK.inkStrong,
+    paddingVertical: 0,
+  },
+  filterRow: {
+    gap: 7,
+    alignItems: "center",
+  },
+  filterPill: {
+    height: 34,
+    paddingHorizontal: 13,
+    borderRadius: 17,
+    backgroundColor: FIGMA_INK.bgChip,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  chipCherry: {
+    width: 14,
+    height: 14,
+  },
+  filterPillText: {
+    fontSize: 12.5,
+    fontWeight: "500",
+    color: "#444444",
+  },
+  sectionHeading: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+    marginTop: 2,
+  },
+  centerBox: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  listContent: {
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  emptyBox: {
+    padding: 32,
+    borderRadius: 14,
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "#EFEFEF",
+    alignItems: "center",
+  },
+  emptyText: {
+    fontSize: 13.5,
+    color: FIGMA_INK.inkSecondary,
+    textAlign: "center",
+  },
+  figmaLinkCard: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderCard,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  figmaLinkThumb: {
+    width: 54,
+    height: 54,
+    borderRadius: 10,
+    backgroundColor: FIGMA_INK.bgThumb,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  fullImg: {
+    width: "100%",
+    height: "100%",
+  },
+  figmaThumbCode: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#55596A",
+  },
+  figmaLinkMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  figmaLinkPlatform: {
+    fontSize: 11,
+    fontWeight: "500",
+    color: "#777777",
+  },
+  figmaLinkTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+    lineHeight: 19,
+  },
+  figmaLinkMeta: {
+    fontSize: 11,
+    color: FIGMA_INK.inkSubtle,
+    marginTop: 2,
+  },
+  cardActionIconBtn: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cherryActionImg: {
+    width: 20,
+    height: 20,
+  },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.48)",
+    backgroundColor: "rgba(23, 23, 33, 0.45)",
     justifyContent: "flex-end",
   },
   modalCard: {
-    backgroundColor: "#FDFBF7",
+    backgroundColor: "#FFFFFF",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 20,
@@ -492,67 +953,119 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 12,
   },
-  titleLeft: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 },
-  btnInnerRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  modalTitle: { fontSize: 17, fontWeight: "800", color: "#1C1917" },
-  modalClose: { fontSize: 18, color: "#78716C", padding: 4 },
-  modalLabel: { fontSize: 13, fontWeight: "700", color: "#44403C", marginTop: 10, marginBottom: 6 },
-  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  btnInnerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  modalTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: FIGMA_INK.inkPrimary,
+  },
+  modalLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
   choiceChip: {
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 999,
-    backgroundColor: "#F3EFE6",
+    backgroundColor: FIGMA_INK.bgMuted,
     borderWidth: 1,
-    borderColor: "#E7E0D5",
+    borderColor: FIGMA_INK.borderCard,
   },
-  choiceChipActive: { backgroundColor: "#9B2C2C", borderColor: "#9B2C2C" },
-  choiceChipText: { fontSize: 12, fontWeight: "600", color: "#44403C" },
-  choiceChipTextActive: { color: "#FDFBF7" },
+  choiceChipText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: FIGMA_INK.inkStrong,
+  },
+  choiceChipTextActive: {
+    color: "#FFFFFF",
+  },
   createInviteBtn: {
-    backgroundColor: "#E24C4B",
-    borderRadius: 14,
-    paddingVertical: 13,
+    height: 48,
+    borderRadius: 24,
     alignItems: "center",
+    justifyContent: "center",
     marginTop: 16,
   },
-  createInviteBtnText: { color: "#FFFFFF", fontSize: 15, fontWeight: "700" },
+  createInviteBtnText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "700",
+  },
   generatedBox: {
     marginTop: 12,
-    backgroundColor: "#F1EEFF",
+    backgroundColor: FIGMA_INK.lavenderBg,
     borderRadius: 12,
     padding: 12,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
   },
-  generatedUrl: { flex: 1, fontSize: 12, color: "#312E81" },
-  activeInvList: { gap: 8, paddingBottom: 16 },
+  generatedUrl: {
+    flex: 1,
+    fontSize: 12,
+    color: "#312E81",
+  },
+  activeInvList: {
+    gap: 8,
+    paddingBottom: 16,
+  },
   activeInvRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
-    borderColor: "#EAE4DB",
+    borderColor: FIGMA_INK.borderCard,
     borderRadius: 12,
     padding: 10,
   },
-  activeInvRole: { fontSize: 13, fontWeight: "700", color: "#1C1917" },
-  activeInvExp: { fontSize: 11, color: "#78716C", marginTop: 2 },
+  activeInvRole: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  activeInvExp: {
+    fontSize: 11,
+    color: FIGMA_INK.inkSecondary,
+    marginTop: 2,
+  },
   shareSmallBtn: {
     backgroundColor: "#EEF2FF",
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
   },
-  shareSmallBtnText: { fontSize: 12, fontWeight: "700", color: "#3730A3" },
+  shareSmallBtnText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#3730A3",
+  },
   revokeBtn: {
     backgroundColor: "#FEE2E2",
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
   },
-  revokeBtnText: { fontSize: 12, fontWeight: "700", color: "#B91C1C" },
-  noInvitesText: { fontSize: 12, color: "#78716C", paddingVertical: 8 },
+  revokeBtnText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#B91C1C",
+  },
+  noInvitesText: {
+    fontSize: 12,
+    color: FIGMA_INK.inkSecondary,
+    paddingVertical: 8,
+  },
 });

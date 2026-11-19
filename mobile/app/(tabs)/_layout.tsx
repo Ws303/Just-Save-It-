@@ -1,97 +1,176 @@
-import React from "react";
-import { Platform } from "react-native";
+import React, { useEffect, useState } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Tabs } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { getFigmaTheme, type FigmaAccentThemeId } from "../../src/figmaTheme";
+import { loadFigmaAccentTheme, subscribeFigmaAccentTheme } from "../../src/storage";
+
+const VISIBLE_TABS: Record<
+  string,
+  {
+    label: string;
+    renderIcon: (color: string, focused: boolean) => React.ReactNode;
+  }
+> = {
+  index: {
+    label: "หน้าหลัก",
+    renderIcon: (color, focused) => (
+      <Ionicons name={focused ? "home" : "home-outline"} size={22} color={color} />
+    ),
+  },
+  folders: {
+    label: "โฟลเดอร์",
+    renderIcon: (color, focused) => (
+      <Ionicons name={focused ? "folder" : "folder-outline"} size={22} color={color} />
+    ),
+  },
+  ai: {
+    label: "AI",
+    renderIcon: (color) => (
+      <MaterialCommunityIcons name="robot-outline" size={22} color={color} />
+    ),
+  },
+  profile: {
+    label: "โปรไฟล์",
+    renderIcon: (color, focused) => (
+      <Ionicons name={focused ? "person-circle" : "person-circle-outline"} size={23} color={color} />
+    ),
+  },
+};
+
+type ExpoTabBarBaseProps = Parameters<NonNullable<React.ComponentProps<typeof Tabs>["tabBar"]>>[0];
+
+interface CustomTabBarProps extends ExpoTabBarBaseProps {
+  bottomOffset: number;
+  themeId: FigmaAccentThemeId;
+}
+
+function FigmaFloatingTabBar({ state, navigation, bottomOffset, themeId }: CustomTabBarProps) {
+  const theme = getFigmaTheme(themeId);
+  const activeRouteKey = state.routes[state.index]?.key;
+  const visibleRoutes = state.routes.filter((r) => Boolean(VISIBLE_TABS[r.name]));
+
+  return (
+    <View style={[styles.wrap, { bottom: bottomOffset }]} pointerEvents="box-none">
+      <View style={styles.pill}>
+        {visibleRoutes.map((route) => {
+          const meta = VISIBLE_TABS[route.name];
+          const focused = route.key === activeRouteKey;
+          const color = focused ? theme.accentText : "#4F4F4F";
+
+          return (
+            <Pressable
+              key={route.key}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: focused }}
+              style={[
+                styles.item,
+                focused && { backgroundColor: theme.soft },
+              ]}
+              onPress={() => {
+                const evt = navigation.emit({
+                  type: "tabPress",
+                  target: route.key,
+                  canPreventDefault: true,
+                });
+                if (!focused && !evt.defaultPrevented) {
+                  navigation.navigate(route.name, route.params);
+                }
+              }}
+              onLongPress={() => {
+                navigation.emit({
+                  type: "tabLongPress",
+                  target: route.key,
+                });
+              }}
+            >
+              {meta.renderIcon(color, focused)}
+              <Text
+                style={[
+                  styles.label,
+                  { color, fontWeight: focused ? "700" : "600" },
+                ]}
+                numberOfLines={1}
+              >
+                {meta.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
-  const bottomOffset = Math.max(10, insets.bottom);
+  const bottomOffset = Math.max(12, insets.bottom);
+  const [themeId, setThemeId] = useState<FigmaAccentThemeId>("sharely");
+
+  useEffect(() => {
+    void loadFigmaAccentTheme().then(setThemeId).catch(() => {});
+    const unsub = subscribeFigmaAccentTheme((next) => setThemeId(next));
+    return () => unsub();
+  }, []);
 
   return (
     <Tabs
       screenOptions={{
-        sceneStyle: { backgroundColor: "#FDFBF7" },
-        headerStyle: { backgroundColor: "#FDFBF7" },
-        headerTintColor: "#1E1B18",
-        headerTitleStyle: { fontWeight: "800", fontSize: 18 },
-        headerShadowVisible: false,
-        tabBarActiveTintColor: "#E24C4B",
-        tabBarInactiveTintColor: "#6E675F",
-        tabBarLabelStyle: {
-          fontSize: 11,
-          fontWeight: "700",
-          marginBottom: Platform.OS === "ios" ? 0 : 4,
-        },
-        tabBarStyle: {
-          position: "absolute",
-          left: 16,
-          right: 16,
-          bottom: bottomOffset,
-          height: 62,
-          borderRadius: 31,
-          backgroundColor: "#FFFFFF",
-          borderTopWidth: 1,
-          borderWidth: 1,
-          borderColor: "#EFE9DF",
-          paddingTop: 6,
-          paddingBottom: 6,
-          shadowColor: "#1E1B18",
-          shadowOffset: { width: 0, height: 6 },
-          shadowOpacity: 0.08,
-          shadowRadius: 14,
-          elevation: 8,
-        },
+        headerShown: false,
+        sceneStyle: { backgroundColor: "#FFFFFF" },
       }}
+      tabBar={(props) => (
+        <FigmaFloatingTabBar
+          {...props}
+          bottomOffset={bottomOffset}
+          themeId={themeId}
+        />
+      )}
     >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: "หน้าหลัก",
-          headerTitle: "SHERLINK",
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? "home" : "home-outline"} size={21} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="folders"
-        options={{
-          title: "โฟลเดอร์",
-          headerTitle: "โฟลเดอร์ของฉัน",
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? "folder" : "folder-outline"} size={21} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="ai"
-        options={{
-          title: "AI",
-          headerTitle: "ตั้งค่า AI สรุปเนื้อหา",
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? "sparkles" : "sparkles-outline"} size={21} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="profile"
-        options={{
-          title: "โปรไฟล์",
-          headerTitle: "โปรไฟล์และตั้งค่า",
-          tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? "person" : "person-outline"} size={21} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="favorites"
-        options={{
-          href: null,
-          title: "ชื่นชอบ",
-          headerTitle: "รายการโปรด",
-        }}
-      />
+      <Tabs.Screen name="index" options={{ title: "หน้าหลัก" }} />
+      <Tabs.Screen name="folders" options={{ title: "โฟลเดอร์" }} />
+      <Tabs.Screen name="ai" options={{ title: "AI" }} />
+      <Tabs.Screen name="profile" options={{ title: "โปรไฟล์" }} />
+      <Tabs.Screen name="favorites" options={{ href: null, title: "ชื่นชอบ" }} />
     </Tabs>
   );
 }
+
+const styles = StyleSheet.create({
+  wrap: {
+    position: "absolute",
+    left: 14,
+    right: 14,
+    zIndex: 20,
+  },
+  pill: {
+    height: 68,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 32,
+    borderWidth: 1,
+    borderColor: "#EFEFEF",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    shadowColor: "#1A1A1A",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.14,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  item: {
+    flex: 1,
+    height: 54,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 3,
+  },
+  label: {
+    fontSize: 11,
+    lineHeight: 14,
+  },
+});

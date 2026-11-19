@@ -14,7 +14,8 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as WebBrowser from "expo-web-browser";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
@@ -29,11 +30,13 @@ import {
   summarizeLinkItem,
   syncRemindersFromServer,
 } from "../../src/api";
+import { FIGMA_INK, getFigmaTheme, type FigmaAccentThemeId } from "../../src/figmaTheme";
 import {
   deriveVideoEmbedInfo,
   formatPostDetailTitleAndDesc,
   formatRemindTimeAndZone,
   getPreviewMediaImages,
+  inferMobileDomain,
   inferMobilePlatform,
   isGenericOrNoisyTitle,
   isPrivateOrRestrictedItem,
@@ -43,15 +46,39 @@ import {
 import {
   getAuthGeneration,
   getMemoryCachedWorkspace,
+  loadFigmaAccentTheme,
+  subscribeFigmaAccentTheme,
   upsertCachedLinkItem,
   type MobileLinkItem,
 } from "../../src/storage";
 
+const CHERRY_SELECTED_IMG = require("../../assets/figma/cherry-selected.png");
+const CHERRY_UNSELECTED_IMG = require("../../assets/figma/cherry-unselected.png");
+
+const QUICK_TAG_SUGGESTIONS = ["#อ่านทีหลัง", "#คาเฟ่", "#เที่ยว", "#ไอเดีย", "#อาหาร"];
+
 const _autoEnrichedItemIds = new Set<string>();
+
+function parseTagList(rawText: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of rawText.split(/[\s,]+/)) {
+    const cleaned = part.replace(/^#/, "").trim();
+    if (!cleaned || seen.has(cleaned.toLowerCase())) continue;
+    seen.add(cleaned.toLowerCase());
+    out.push(cleaned);
+  }
+  return out;
+}
 
 export default function ItemDetailScreen() {
   const { id, folderId } = useLocalSearchParams<{ id: string; folderId?: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+
+  const [themeId, setThemeId] = useState<FigmaAccentThemeId>("sharely");
+  const theme = getFigmaTheme(themeId);
+
   const cachedMatch = getMemoryCachedWorkspace()?.items.find((it) => it.id === id) || null;
   const [item, setItem] = useState<MobileLinkItem | null>(cachedMatch);
   const [note, setNote] = useState(cachedMatch?.note || cachedMatch?.user_note || "");
@@ -64,11 +91,23 @@ export default function ItemDetailScreen() {
   const [busy, setBusy] = useState("");
   const [carouselIdx, setCarouselIdx] = useState(0);
   const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [noteModalOpen, setNoteModalOpen] = useState(false);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [tagModalOpen, setTagModalOpen] = useState(false);
+  const [tagDraft, setTagDraft] = useState("");
+  const [reminderModalOpen, setReminderModalOpen] = useState(false);
+  const [reminderLabelOverride, setReminderLabelOverride] = useState<string | null>(null);
   const [videoLoading, setVideoLoading] = useState(false);
   const [imageRatios, setImageRatios] = useState<Record<string, number>>({});
   const actionSeqRef = useRef(0);
   const activeIdRef = useRef<string | undefined>(id);
   activeIdRef.current = id;
+
+  useEffect(() => {
+    void loadFigmaAccentTheme().then(setThemeId).catch(() => {});
+    const unsub = subscribeFigmaAccentTheme((next) => setThemeId(next));
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     const match = getMemoryCachedWorkspace()?.items.find((it) => it.id === id) || null;
@@ -78,6 +117,7 @@ export default function ItemDetailScreen() {
     setAiSummary(match?.ai_summary || "");
     setDescExpanded(false);
     setCarouselIdx(0);
+    setReminderLabelOverride(null);
     setLoading(!match);
   }, [id]);
 
@@ -122,9 +162,12 @@ export default function ItemDetailScreen() {
             const st = String(pvRes.data?.status || "").toLowerCase();
             if (pvRes.ok && st !== "failed" && pvRes.data) {
               const rawNext = (pvRes.data.item ?? pvRes.data) as MobileLinkItem;
-              const merged: MobileLinkItem = { ...loaded, ...rawNext, id: itemId };
-              setItem(merged);
-              void upsertCachedLinkItem(merged).catch(() => {});
+              setItem((cur) => {
+                if (!cur || cur.id !== itemId) return cur;
+                const merged: MobileLinkItem = { ...cur, ...rawNext, id: itemId };
+                void upsertCachedLinkItem(merged).catch(() => {});
+                return merged;
+              });
             }
           })
           .catch(() => {});
@@ -142,7 +185,8 @@ export default function ItemDetailScreen() {
   const mediaImages = useMemo(() => getPreviewMediaImages(item), [item]);
   const derivedVideo = useMemo(() => deriveVideoEmbedInfo(item), [item]);
   const coverUri = resolveMobileThumbUrl(item) || mediaImages[0] || derivedVideo.thumbUrl || "";
-  const activeSlideIndex = mediaImages.length > 0 ? ((carouselIdx % mediaImages.length) + mediaImages.length) % mediaImages.length : 0;
+  const activeSlideIndex =
+    mediaImages.length > 0 ? ((carouselIdx % mediaImages.length) + mediaImages.length) % mediaImages.length : 0;
   const activeSlideUri = mediaImages[activeSlideIndex] || coverUri;
 
   useEffect(() => {
@@ -168,11 +212,13 @@ export default function ItemDetailScreen() {
 
   function openExternalUrlSafe(rawInput?: string | null) {
     const rawUrl = String(rawInput ?? item?.url ?? "").trim();
-    if (!/^https?:\/\//i.test(rawUrl)) {
+    if (!/^https?:\/\/[^\s"'<>]+$/i.test(rawUrl)) {
       Alert.alert("ลิงก์ไม่ปลอดภัย", "อนุญาตเปิดเฉพาะลิงก์ http หรือ https เท่านั้น");
       return;
     }
-    void Linking.openURL(rawUrl);
+    void Linking.openURL(rawUrl).catch(() => {
+      Alert.alert("ไม่สามารถเปิดลิงก์ได้", "กรุณาตรวจสอบแอปเบราว์เซอร์ในเครื่อง");
+    });
   }
 
   async function handlePlayVideo() {
@@ -207,7 +253,7 @@ export default function ItemDetailScreen() {
     try {
       await WebBrowser.openBrowserAsync(targetPlayUrl, {
         presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET,
-        controlsColor: "#9B2C2C",
+        controlsColor: theme.accent,
       });
     } catch {
       openExternalUrlSafe(targetPlayUrl);
@@ -216,32 +262,58 @@ export default function ItemDetailScreen() {
 
   async function handleToggleSeen() {
     if (!item) return;
-    const prevItem = item;
-    const cur = String(item.status || "inbox").toLowerCase();
-    const currentlySeen = cur === "done" || cur === "read";
+    const targetId = item.id;
+    const prevStatus = item.status;
+    const curStr = String(prevStatus || "inbox").toLowerCase();
+    const currentlySeen = curStr === "done" || curStr === "read";
     const nextStatus = currentlySeen ? "inbox" : "done";
     const startGen = getAuthGeneration();
-    const optimistic: MobileLinkItem = { ...item, status: nextStatus };
-    setItem(optimistic);
-    const res = await patchLinkItem(item.id, { status: nextStatus });
-    if (getAuthGeneration() !== startGen) return;
+    setItem((cur) => (cur && cur.id === targetId ? { ...cur, status: nextStatus } : cur));
+    const res = await patchLinkItem(targetId, { status: nextStatus });
+    if (getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
     if (!res.ok) {
-      setItem(prevItem);
+      setItem((cur) => (cur && cur.id === targetId ? { ...cur, status: prevStatus } : cur));
       return;
     }
-    void upsertCachedLinkItem(optimistic).catch(() => {});
+    setItem((cur) => {
+      if (cur && cur.id === targetId) {
+        void upsertCachedLinkItem(cur).catch(() => {});
+      }
+      return cur;
+    });
+  }
+
+  async function handleToggleFavorite() {
+    if (!item) return;
+    const targetId = item.id;
+    const prevFav = Boolean(item.is_favorite);
+    const nextFav = !prevFav;
+    const startGen = getAuthGeneration();
+    setItem((cur) => (cur && cur.id === targetId ? { ...cur, is_favorite: nextFav } : cur));
+    const res = await patchLinkItem(targetId, { is_favorite: nextFav });
+    if (getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
+    if (!res.ok) {
+      setItem((cur) => (cur && cur.id === targetId ? { ...cur, is_favorite: prevFav } : cur));
+      return;
+    }
+    setItem((cur) => {
+      if (cur && cur.id === targetId) {
+        void upsertCachedLinkItem(cur).catch(() => {});
+      }
+      return cur;
+    });
   }
 
   async function handleAiSummarize() {
     if (!item) return;
     const targetId = item.id;
-    const prevSnapshot = item;
+    const startGen = getAuthGeneration();
     await runGuardedBusyAction(
       actionSeqRef,
       (isBusy) => setBusy(isBusy ? "ai" : ""),
       async (isStale) => {
-        const res = await summarizeLinkItem(targetId, false);
-        if (isStale()) return;
+        const res = await summarizeLinkItem(targetId, Boolean(aiSummary));
+        if (isStale() || getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
         if (res.ok && res.data) {
           const summary = typeof res.data.summary_th === "string" ? res.data.summary_th : "";
           const suggested = Array.isArray(res.data.suggested_tags)
@@ -250,16 +322,19 @@ export default function ItemDetailScreen() {
           if (summary) {
             setAiSummary(summary);
           }
-          const updatedItem: MobileLinkItem = {
-            ...prevSnapshot,
-            ...(summary ? { ai_summary: summary } : {}),
-            ...(suggested.length ? { tags: suggested, tag_names: suggested } : {}),
-          };
-          setItem(updatedItem);
           if (suggested.length && !tagsText.trim()) {
             setTagsText(suggested.join(" "));
           }
-          await upsertCachedLinkItem(updatedItem).catch(() => {});
+          setItem((cur) => {
+            if (!cur || cur.id !== targetId) return cur;
+            const nextItem: MobileLinkItem = {
+              ...cur,
+              ...(summary ? { ai_summary: summary } : {}),
+              ...(suggested.length ? { tags: suggested, tag_names: suggested } : {}),
+            };
+            void upsertCachedLinkItem(nextItem).catch(() => {});
+            return nextItem;
+          });
         } else {
           Alert.alert("สรุปด้วย AI ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
         }
@@ -267,25 +342,39 @@ export default function ItemDetailScreen() {
     );
   }
 
-  async function handleSaveEdits() {
+  async function handleSaveEdits(overrideNote?: string, overrideTags?: string[]) {
     if (!item) return;
     const targetId = item.id;
+    const startGen = getAuthGeneration();
     await runGuardedBusyAction(
       actionSeqRef,
       (isBusy) => setBusy(isBusy ? "save" : ""),
       async (isStale) => {
-        const parsedTags = tagsText
-          .split(/[\s,]+/)
-          .map((t) => t.replace(/^#/, "").trim())
-          .filter(Boolean);
+        const nextNote = typeof overrideNote === "string" ? overrideNote : note;
+        const nextTags = Array.isArray(overrideTags) ? overrideTags : parseTagList(tagsText);
         const res = await patchLinkItem(targetId, {
-          note: note.trim(),
-          tags: parsedTags,
+          note: nextNote.trim(),
+          tags: nextTags,
         });
-        if (isStale()) return;
+        if (isStale() || getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
         if (res.ok) {
-          Alert.alert("บันทึกการแก้ไขแล้ว");
-          void loadItem();
+          setNote(nextNote.trim());
+          setTagsText(nextTags.join(" "));
+          setNoteModalOpen(false);
+          setTagModalOpen(false);
+          setTagDraft("");
+          setItem((cur) => {
+            if (!cur || cur.id !== targetId) return cur;
+            const updated: MobileLinkItem = {
+              ...cur,
+              note: nextNote.trim(),
+              user_note: nextNote.trim(),
+              tags: nextTags,
+              tag_names: nextTags,
+            };
+            void upsertCachedLinkItem(updated).catch(() => {});
+            return updated;
+          });
         } else {
           Alert.alert("บันทึกไม่สำเร็จ", res.error || "กรุณาลองใหม่");
         }
@@ -301,10 +390,11 @@ export default function ItemDetailScreen() {
       actionSeqRef,
       (isBusy) => setBusy(isBusy ? "rem" : ""),
       async (isStale) => {
+        const startGen = getAuthGeneration();
         if (itemSt === "done" || itemSt === "read" || itemSt === "archived") {
           Alert.alert(
             "ตั้งเตือนไม่ได้",
-            "ลิงก์นี้อยู่ในสถานะอ่านแล้วหรือเก็บถาวร กรุณาเปลี่ยนสถานะเป็นกล่องรับหรือรออ่านก่อนตั้งเตือน",
+            "ลิงก์นี้อยู่ในสถานะอ่านแล้วหรือเก็บถาวร กรุณาเปลี่ยนสถานะเป็นยังไม่ดูก่อนตั้งเตือน",
           );
           return;
         }
@@ -318,7 +408,7 @@ export default function ItemDetailScreen() {
           timezone,
           repeat_every_days: repeatDays,
         });
-        if (isStale()) return;
+        if (isStale() || getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
         if (!res.ok) {
           if (res.status === 409) {
             Alert.alert(
@@ -331,8 +421,11 @@ export default function ItemDetailScreen() {
           return;
         }
         await syncRemindersFromServer();
-        if (isStale()) return;
-        Alert.alert("ตั้งเวลาเตือนความจำแล้ว", `แจ้งเตือนเมื่อ ${dt.toLocaleString("th-TH")}`);
+        if (isStale() || getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
+        const formatted = dt.toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
+        setReminderLabelOverride(formatted);
+        setReminderModalOpen(false);
+        Alert.alert("ตั้งเวลาเตือนความจำแล้ว", `แจ้งเตือนเมื่อ ${formatted}`);
       },
     );
   }
@@ -340,18 +433,21 @@ export default function ItemDetailScreen() {
   async function handleClearReminder() {
     if (!item) return;
     const targetId = item.id;
+    const startGen = getAuthGeneration();
     await runGuardedBusyAction(
       actionSeqRef,
       (isBusy) => setBusy(isBusy ? "rem" : ""),
       async (isStale) => {
         const res = await deleteReminder(targetId);
-        if (isStale()) return;
+        if (isStale() || getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
         if (!res.ok) {
           Alert.alert("ปิดการเตือนไม่สำเร็จ", res.error || "กรุณาลองใหม่");
           return;
         }
         await syncRemindersFromServer();
-        if (isStale()) return;
+        if (isStale() || getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
+        setReminderLabelOverride("");
+        setReminderModalOpen(false);
         Alert.alert("ลบการแจ้งเตือนแล้ว");
       },
     );
@@ -359,6 +455,7 @@ export default function ItemDetailScreen() {
 
   function confirmDelete() {
     if (!item) return;
+    const targetId = item.id;
     const modalGen = getAuthGeneration();
     Alert.alert("ลบลิงก์นี้?", "ลิงก์จะถูกลบออกจากพื้นที่ทำงานของคุณ", [
       { text: "ยกเลิก", style: "cancel" },
@@ -366,10 +463,15 @@ export default function ItemDetailScreen() {
         text: "ลบ",
         style: "destructive",
         onPress: () => {
-          if (getAuthGeneration() !== modalGen) return;
-          void deleteLinkItem(item.id).then((res) => {
-            if (getAuthGeneration() !== modalGen) return;
-            if (res.ok) router.back();
+          if (getAuthGeneration() !== modalGen || activeIdRef.current !== targetId) return;
+          void deleteLinkItem(targetId).then((res) => {
+            if (getAuthGeneration() !== modalGen || activeIdRef.current !== targetId) return;
+            if (res.ok) {
+              if (router.canGoBack()) router.back();
+              else router.replace("/(tabs)");
+            } else {
+              Alert.alert("ลบไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+            }
           });
         },
       },
@@ -378,15 +480,15 @@ export default function ItemDetailScreen() {
 
   if (loading) {
     return (
-      <View style={styles.centerBox}>
-        <ActivityIndicator size="large" color="#9B2C2C" />
+      <View style={[styles.centerBox, { paddingTop: insets.top }]}>
+        <ActivityIndicator size="large" color={theme.accent} />
       </View>
     );
   }
 
   if (!item) {
     return (
-      <View style={styles.centerBox}>
+      <View style={[styles.centerBox, { paddingTop: insets.top }]}>
         <Text style={styles.emptyTitle}>ไม่พบรายละเอียดลิงก์</Text>
       </View>
     );
@@ -395,11 +497,20 @@ export default function ItemDetailScreen() {
   const currentStatus = String(item.status || "inbox").toLowerCase();
   const isSeen = currentStatus === "done" || currentStatus === "read";
   const isPrivate = isPrivateOrRestrictedItem(item);
-  const platBadge = inferMobilePlatform(item);
+  const platBadge = inferMobilePlatform(item) || inferMobileDomain(item.url) || "Web";
   const { displayTitle, displayDesc } = formatPostDetailTitleAndDesc(item);
   const originalDescription = (displayDesc || String(item.description || "").trim()).trim();
   const showDescToggle = originalDescription.length > 160 || originalDescription.includes("\n");
-  const allCachedItems = getMemoryCachedWorkspace()?.items || [];
+
+  const memWs = getMemoryCachedWorkspace();
+  const allCachedItems = memWs?.items || [];
+  const allFolders = memWs?.folders || [];
+  const resolvedFolderId = folderId || item.folder_id || "";
+  const matchedFolderName =
+    resolvedFolderId === "virtual-inbox"
+      ? "รวมไว้ดูทีหลัง"
+      : allFolders.find((f) => f.id === resolvedFolderId)?.name || "";
+
   const scopedItems = folderId
     ? folderId === "virtual-inbox"
       ? allCachedItems.filter((it) => !it.folder_id)
@@ -417,6 +528,28 @@ export default function ItemDetailScreen() {
         : (`/item/${encodeURIComponent(targetId)}` as never),
     );
   };
+
+  const cachedReminder = (memWs?.reminders || []).find(
+    (r) =>
+      r.item_id === item.id &&
+      r.enabled !== false &&
+      r.is_enabled !== false &&
+      String(r.status || "").toLowerCase() !== "cancelled",
+  );
+  const activeReminderLabel = (() => {
+    if (reminderLabelOverride !== null) return reminderLabelOverride;
+    const rawWhen =
+      cachedReminder?.remind_at ||
+      cachedReminder?.next_remind_at ||
+      cachedReminder?.next_run_at ||
+      cachedReminder?.scheduled_for;
+    if (!rawWhen) return "";
+    const d = new Date(rawWhen);
+    if (Number.isNaN(d.getTime())) return "ตั้งเตือนไว้แล้ว";
+    return d.toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
+  })();
+
+  const activeTags = parseTagList(tagsText);
   const activeAspect =
     (activeSlideUri && imageRatios[activeSlideUri]) ||
     (derivedVideo.embedUrl && derivedVideo.isVertical ? 0.8 : 1.58);
@@ -425,149 +558,260 @@ export default function ItemDetailScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.root}
+      style={[styles.root, { paddingTop: Math.max(6, insets.top) }]}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={Platform.OS === "ios" ? 88 : 0}
     >
-      <ScrollView style={styles.root} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      {/* Custom Figma Detail Topbar */}
+      <View style={styles.topbar}>
+        <Pressable
+          style={styles.topbarIconBtn}
+          hitSlop={8}
+          onPress={() => {
+            if (router.canGoBack()) router.back();
+            else router.replace("/(tabs)");
+          }}
+        >
+          <Ionicons name="chevron-back" size={23} color="#20283E" />
+        </Pressable>
+        <View style={styles.topTitles}>
+          <Text style={styles.topHeading}>รายละเอียด</Text>
+          <Text style={styles.topSub} numberOfLines={1}>
+            {navIds.length > 0 && navIdx >= 0 ? `${navIdx + 1}/${navIds.length} · ` : ""}
+            {matchedFolderName || "บันทึกล่าสุด"}
+          </Text>
+        </View>
+        <View style={styles.topRightActions}>
+          <Pressable style={styles.topbarIconBtn} hitSlop={6} onPress={() => void handleToggleFavorite()}>
+            <Image
+              source={item.is_favorite ? CHERRY_SELECTED_IMG : CHERRY_UNSELECTED_IMG}
+              style={styles.cherryTopIcon}
+              resizeMode="contain"
+            />
+          </Pressable>
+          <Pressable style={styles.topbarIconBtn} hitSlop={6} onPress={confirmDelete}>
+            <Ionicons name="trash-outline" size={20} color="#55596A" />
+          </Pressable>
+        </View>
+      </View>
+
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         {navIds.length > 1 && navIdx >= 0 ? (
-          <View style={styles.navBar}>
-            <Pressable
-              style={[styles.navBtn, !prevNavId && styles.navBtnDisabled]}
-              disabled={!prevNavId}
-              onPress={() => goToAdjacentItem(prevNavId)}
-            >
-              <Text style={[styles.navBtnText, !prevNavId && styles.navBtnTextDisabled]}>‹ ก่อนหน้า</Text>
-            </Pressable>
-            <Text style={styles.navCounter}>
-              {navIdx + 1} / {navIds.length}
+          <Pressable
+            style={[styles.edgeHintBtn, !prevNavId && styles.edgeHintDisabled]}
+            disabled={!prevNavId}
+            onPress={() => goToAdjacentItem(prevNavId)}
+          >
+            <Ionicons name="chevron-up" size={14} color={prevNavId ? "#57596A" : "#CBD5E1"} />
+            <Text style={[styles.edgeHintText, !prevNavId && styles.edgeHintTextDisabled]}>
+              โพสต์ก่อนหน้า
             </Text>
-            <Pressable
-              style={[styles.navBtn, !nextNavId && styles.navBtnDisabled]}
-              disabled={!nextNavId}
-              onPress={() => goToAdjacentItem(nextNavId)}
-            >
-              <Text style={[styles.navBtnText, !nextNavId && styles.navBtnTextDisabled]}>ถัดไป ›</Text>
-            </Pressable>
-          </View>
+          </Pressable>
         ) : null}
-        <View style={styles.card}>
-          {derivedVideo.embedUrl ? (
-            <Pressable
-              style={[styles.mediaContainer, { aspectRatio: activeAspect }]}
-              onPress={() => void handlePlayVideo()}
-            >
-              {coverUri ? (
-                <Image source={{ uri: coverUri }} style={styles.mediaFill} resizeMode="cover" />
+
+        {/* Rich Preview Box */}
+        {derivedVideo.embedUrl ? (
+          <Pressable
+            style={[styles.mediaContainer, { aspectRatio: activeAspect }]}
+            onPress={() => void handlePlayVideo()}
+          >
+            {coverUri ? (
+              <Image source={{ uri: coverUri }} style={styles.mediaFill} resizeMode="cover" />
+            ) : (
+              <View style={styles.videoFallbackPoster} />
+            )}
+            <View style={styles.playBtnCircle}>
+              {videoLoading ? (
+                <ActivityIndicator color={theme.accent} />
               ) : (
-                <View style={styles.videoFallbackPoster} />
+                <Ionicons name="play" size={24} color={theme.accent} style={{ marginLeft: 2 }} />
               )}
-              <View style={styles.playBtnCircle}>
-                {videoLoading ? (
-                  <ActivityIndicator color="#FDFBF7" />
-                ) : (
-                  <Text style={styles.playBtnIcon}>▶</Text>
-                )}
-              </View>
-              <View style={styles.mediaBadge}>
-                <Text style={styles.mediaBadgeText}>
-                  {derivedVideo.platform || platBadge || "Video"} ·{" "}
-                  {videoLoading ? "กำลังเตรียมคลิป..." : "แตะเพื่อเล่น"}
-                </Text>
-              </View>
-            </Pressable>
-          ) : totalSlides >= 2 ? (
-            <View style={[styles.mediaContainer, { aspectRatio: activeAspect }]}>
-              <Pressable style={styles.mediaFill} onPress={() => setLightboxOpen(true)}>
-                <Image source={{ uri: activeSlideUri }} style={styles.mediaFill} resizeMode="cover" />
-              </Pressable>
-              <Pressable
-                style={[styles.carouselArrow, styles.carouselArrowLeft]}
-                hitSlop={8}
-                onPress={() => setCarouselIdx((prev) => (prev - 1 + totalSlides) % totalSlides)}
-              >
-                <Text style={styles.carouselArrowText}>‹</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.carouselArrow, styles.carouselArrowRight]}
-                hitSlop={8}
-                onPress={() => setCarouselIdx((prev) => (prev + 1) % totalSlides)}
-              >
-                <Text style={styles.carouselArrowText}>›</Text>
-              </Pressable>
-              <View style={styles.mediaBadge}>
-                <Text style={styles.mediaBadgeText}>
-                  {activeSlideIndex + 1}/{totalSlides}
-                </Text>
-              </View>
-              <Pressable style={styles.zoomBtn} onPress={() => setLightboxOpen(true)}>
-                <Text style={styles.zoomBtnText}>⤢ ขยาย</Text>
-              </Pressable>
-              {isLastSlide ? (
-                <Pressable style={styles.moreInPostBtn} onPress={() => openExternalUrlSafe(item.url)}>
-                  <Text style={styles.moreInPostText}>ดูรูปทั้งหมดในโพสต์ต้นฉบับ ↗</Text>
-                </Pressable>
-              ) : null}
-              <View style={styles.dotsRow}>
-                {mediaImages.map((_, idx) => (
-                  <Pressable
-                    key={`dot-${idx}`}
-                    hitSlop={6}
-                    onPress={() => setCarouselIdx(idx)}
-                    style={[styles.dot, idx === activeSlideIndex && styles.dotActive]}
-                  />
-                ))}
-              </View>
             </View>
-          ) : coverUri ? (
-            <View style={[styles.mediaContainer, { aspectRatio: activeAspect }]}>
-              <Pressable style={styles.mediaFill} onPress={() => setLightboxOpen(true)}>
-                <Image source={{ uri: coverUri }} style={styles.mediaFill} resizeMode="cover" />
-              </Pressable>
-              <Pressable style={styles.zoomBtn} onPress={() => setLightboxOpen(true)}>
-                <Text style={styles.zoomBtnText}>⤢ ขยาย</Text>
-              </Pressable>
-            </View>
-          ) : isPrivate ? (
-            <View style={styles.privateBox}>
-              <Text style={styles.privateTitle}>ไม่สามารถแสดงตัวอย่างได้</Text>
-              <Text style={styles.privateSub}>
-                โพสต์นี้เป็นแบบส่วนตัว (Private) หรือถูกจำกัดสิทธิ์การเข้าถึง กรุณากดเปิดลิงก์ต้นฉบับเพื่อดูเนื้อหา
+            <View style={styles.mediaBadge}>
+              <Text style={styles.mediaBadgeText}>
+                {derivedVideo.platform || platBadge} · {videoLoading ? "กำลังเตรียมคลิป..." : "แตะเพื่อเล่น"}
               </Text>
             </View>
-          ) : null}
-
-          <View style={styles.cardBody}>
-            <Text style={styles.platformBadge}>{platBadge || "web"}</Text>
-            <Text style={styles.title}>{displayTitle || item.title || item.url}</Text>
-            <Text style={styles.urlText} numberOfLines={2}>
-              {item.url}
-            </Text>
-            <View style={styles.actionRow}>
-              <Pressable style={styles.primaryBtn} onPress={() => openExternalUrlSafe(item.url)}>
-                <Text style={styles.primaryBtnText}>เปิดลิงก์ ↗</Text>
-              </Pressable>
+          </Pressable>
+        ) : totalSlides >= 2 ? (
+          <View style={[styles.mediaContainer, { aspectRatio: activeAspect }]}>
+            <Pressable style={styles.mediaFill} onPress={() => setLightboxOpen(true)}>
+              <Image source={{ uri: activeSlideUri }} style={styles.mediaFill} resizeMode="cover" />
+            </Pressable>
+            <Pressable
+              style={[styles.carouselArrow, styles.carouselArrowLeft]}
+              hitSlop={8}
+              onPress={() => setCarouselIdx((prev) => (prev - 1 + totalSlides) % totalSlides)}
+            >
+              <Ionicons name="chevron-back" size={18} color="#FFFFFF" />
+            </Pressable>
+            <Pressable
+              style={[styles.carouselArrow, styles.carouselArrowRight]}
+              hitSlop={8}
+              onPress={() => setCarouselIdx((prev) => (prev + 1) % totalSlides)}
+            >
+              <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+            </Pressable>
+            <View style={styles.mediaBadge}>
+              <Text style={styles.mediaBadgeText}>
+                {activeSlideIndex + 1}/{totalSlides}
+              </Text>
+            </View>
+            <Pressable style={styles.zoomBtn} onPress={() => setLightboxOpen(true)}>
+              <View style={styles.inlineIconRow}>
+                <Ionicons name="expand-outline" size={12} color="#FFFFFF" />
+                <Text style={styles.zoomBtnText}>ขยาย</Text>
+              </View>
+            </Pressable>
+            {isLastSlide ? (
               <Pressable
-                style={[styles.secondaryBtn, isSeen && styles.seenBtnActive]}
-                onPress={() => void handleToggleSeen()}
+                style={[styles.moreInPostBtn, { backgroundColor: theme.accent }]}
+                onPress={() => openExternalUrlSafe(item.url)}
               >
                 <View style={styles.inlineIconRow}>
-                  <Ionicons
-                    name={isSeen ? "checkmark-circle" : "ellipse-outline"}
-                    size={16}
-                    color={isSeen ? "#065F46" : "#44403C"}
-                  />
-                  <Text style={[styles.secondaryBtnText, isSeen && styles.seenBtnTextActive]}>
-                    {isSeen ? "ดูแล้ว" : "ยังไม่ดู"}
-                  </Text>
+                  <Text style={styles.moreInPostText}>ดูรูปทั้งหมดในโพสต์ต้นฉบับ</Text>
+                  <Ionicons name="open-outline" size={12} color="#FFFFFF" />
                 </View>
               </Pressable>
+            ) : null}
+            <View style={styles.dotsRow}>
+              {mediaImages.map((_, idx) => (
+                <Pressable
+                  key={`dot-${idx}`}
+                  hitSlop={6}
+                  onPress={() => setCarouselIdx(idx)}
+                  style={[styles.dot, idx === activeSlideIndex && styles.dotActive]}
+                />
+              ))}
             </View>
+          </View>
+        ) : coverUri ? (
+          <View style={[styles.mediaContainer, { aspectRatio: activeAspect }]}>
+            <Pressable style={styles.mediaFill} onPress={() => setLightboxOpen(true)}>
+              <Image source={{ uri: coverUri }} style={styles.mediaFill} resizeMode="cover" />
+            </Pressable>
+            <Pressable style={styles.zoomBtn} onPress={() => setLightboxOpen(true)}>
+              <View style={styles.inlineIconRow}>
+                <Ionicons name="expand-outline" size={12} color="#FFFFFF" />
+                <Text style={styles.zoomBtnText}>ขยาย</Text>
+              </View>
+            </Pressable>
+          </View>
+        ) : isPrivate ? (
+          <View style={styles.privateBox}>
+            <Text style={styles.privateTitle}>ไม่สามารถแสดงตัวอย่างได้</Text>
+            <Text style={styles.privateSub}>
+              โพสต์นี้เป็นแบบส่วนตัว (Private) หรือถูกจำกัดสิทธิ์การเข้าถึง กรุณากดเปิดลิงก์ต้นฉบับเพื่อดูเนื้อหา
+            </Text>
+          </View>
+        ) : null}
+
+        {/* Underlined Title + Meta */}
+        <View style={styles.postInfoBlock}>
+          <Pressable style={styles.postTitleRow} onPress={() => openExternalUrlSafe(item.url)}>
+            <Text style={styles.postTitleLink}>
+              {displayTitle || item.title || item.url}
+            </Text>
+            <Ionicons name="open-outline" size={19} color="#0F172A" style={{ marginTop: 3 }} />
+          </Pressable>
+          <Text style={styles.postMeta}>
+            {platBadge} · {matchedFolderName || "ทั่วไป"}
+          </Text>
+        </View>
+
+        {/* Reminder Pill */}
+        <Pressable style={styles.reminderPill} onPress={() => setReminderModalOpen(true)}>
+          <Ionicons name="time-outline" size={16} color={FIGMA_INK.inkPrimary} />
+          <Text style={styles.reminderPillText}>
+            {activeReminderLabel || "ยังไม่ได้ตั้งเตือน"}
+          </Text>
+        </Pressable>
+
+        {/* Status Toggle + Tags */}
+        <View style={styles.statusBlock}>
+          <View style={styles.rowBetween}>
+            <Text style={styles.secLabel}>สถานะการรับชม</Text>
+            <Pressable
+              style={[
+                styles.statusTogglePill,
+                isSeen
+                  ? styles.statusToggleSeen
+                  : { backgroundColor: theme.soft, borderColor: theme.softBorder },
+              ]}
+              onPress={() => void handleToggleSeen()}
+            >
+              {isSeen ? <Ionicons name="checkmark" size={14} color="#065F46" /> : null}
+              <Text
+                style={[
+                  styles.statusToggleText,
+                  { color: isSeen ? "#065F46" : theme.accentText },
+                ]}
+              >
+                {isSeen ? "ดูแล้ว" : "ยังไม่ดู"}
+              </Text>
+              <Ionicons
+                name="swap-horizontal"
+                size={14}
+                color={isSeen ? "#065F46" : theme.accentText}
+              />
+            </Pressable>
+          </View>
+
+          <View style={styles.tagsWrap}>
+            {activeTags.map((tag) => (
+              <Pressable
+                key={tag}
+                style={styles.tagPill}
+                onPress={() => {
+                  const next = activeTags.filter((t) => t !== tag);
+                  void handleSaveEdits(note, next);
+                }}
+              >
+                <Text style={styles.tagPillText}>
+                  {tag.startsWith("#") ? tag : `#${tag}`} ×
+                </Text>
+              </Pressable>
+            ))}
+            <Pressable style={styles.addTagBtn} onPress={() => setTagModalOpen(true)}>
+              <Text style={styles.addTagBtnText}>+ เพิ่มแท็ก</Text>
+            </Pressable>
           </View>
         </View>
 
-        <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>คำอธิบายจากโพสต์ต้นฉบับ</Text>
+        {/* My Note (Read + Edit Modal trigger) */}
+        <View style={styles.noteBlock}>
+          <View style={styles.rowBetween}>
+            <Text style={styles.secLabel}>โน้ตของฉัน</Text>
+            <Pressable
+              style={styles.editPillBtn}
+              onPress={() => {
+                setNoteDraft(note);
+                setNoteModalOpen(true);
+              }}
+            >
+              <Text style={styles.editPillBtnText}>แก้ไข</Text>
+            </Pressable>
+          </View>
+          <Pressable
+            style={styles.noteReadBox}
+            onPress={() => {
+              setNoteDraft(note);
+              setNoteModalOpen(true);
+            }}
+          >
+            <Text style={note ? styles.noteReadText : styles.notePlaceholderText}>
+              {note || "เพิ่มโน้ต..."}
+            </Text>
+          </Pressable>
+        </View>
+
+        {/* Original Description (separate & never overwritten by AI) */}
+        <View style={styles.descBlock}>
+          <Text style={styles.secLabel}>คำอธิบายจากโพสต์ต้นฉบับ</Text>
           {originalDescription ? (
             <>
               <Text style={styles.descText} numberOfLines={descExpanded ? undefined : 4}>
@@ -575,9 +819,16 @@ export default function ItemDetailScreen() {
               </Text>
               {showDescToggle ? (
                 <Pressable style={styles.descToggleBtn} onPress={() => setDescExpanded((v) => !v)}>
-                  <Text style={styles.descToggleText}>
-                    {descExpanded ? "ย่อข้อความ ▲" : "อ่านเพิ่มเติม ▼"}
-                  </Text>
+                  <View style={styles.inlineIconRow}>
+                    <Text style={[styles.descToggleText, { color: theme.accentText }]}>
+                      {descExpanded ? "ย่อข้อความ" : "อ่านเพิ่มเติม"}
+                    </Text>
+                    <Ionicons
+                      name={descExpanded ? "chevron-up" : "chevron-down"}
+                      size={14}
+                      color={theme.accentText}
+                    />
+                  </View>
                 </Pressable>
               ) : null}
             </>
@@ -586,73 +837,209 @@ export default function ItemDetailScreen() {
           )}
         </View>
 
-        <View style={[styles.sectionCard, styles.aiSectionCard]}>
-          <View style={styles.rowBetween}>
-            <View style={styles.inlineIconRow}>
-              <Ionicons name="sparkles-outline" size={16} color="#4C1D95" />
-              <Text style={[styles.sectionTitle, styles.aiSectionTitle]}>สรุปจากต้นฉบับ</Text>
+        {/* Lavender AI Summary Card (372:873) */}
+        {aiSummary ? (
+          <View style={styles.aiCard}>
+            <View style={styles.rowBetween}>
+              <View style={styles.inlineIconRow}>
+                <MaterialCommunityIcons name="robot-outline" size={18} color={FIGMA_INK.aiInk} />
+                <Text style={styles.aiCardTitle}>สรุปจากต้นฉบับ</Text>
+              </View>
+              <Pressable
+                style={styles.aiRerunPill}
+                disabled={busy === "ai"}
+                onPress={() => void handleAiSummarize()}
+              >
+                <Text style={styles.aiRerunPillText}>
+                  {busy === "ai" ? "กำลังสรุป..." : "สรุปใหม่"}
+                </Text>
+              </Pressable>
             </View>
-            <Pressable style={styles.smallPrimaryBtn} onPress={() => void handleAiSummarize()}>
-              <Text style={styles.smallPrimaryBtnText}>
-                {busy === "ai" ? "กำลังสรุป..." : aiSummary ? "สรุปใหม่" : "สรุปเนื้อหา"}
-              </Text>
-            </Pressable>
+            <Text style={styles.aiCardBody}>{aiSummary}</Text>
           </View>
-          <Text style={styles.summaryText}>
-            {aiSummary || "แตะ 'สรุปเนื้อหา' เพื่อให้ AI สรุปสาระสำคัญจากลิงก์นี้เป็นภาษาไทย"}
-          </Text>
-        </View>
-
-        <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>โน้ตและแท็ก</Text>
-          <TextInput
-            style={[styles.input, styles.textArea]}
-            placeholder="บันทึกส่วนตัว..."
-            placeholderTextColor="#A8A29E"
-            multiline
-            value={note}
-            onChangeText={setNote}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="#แท็ก คั่นด้วยเว้นวรรค"
-            placeholderTextColor="#A8A29E"
-            value={tagsText}
-            onChangeText={setTagsText}
-          />
-          <Pressable style={styles.primaryBtn} onPress={() => void handleSaveEdits()}>
-            <Text style={styles.primaryBtnText}>
-              {busy === "save" ? "กำลังบันทึก..." : "บันทึกโน้ตและแท็ก"}
+        ) : (
+          <Pressable
+            style={[styles.aiTriggerBtn, busy === "ai" && { opacity: 0.7 }]}
+            disabled={busy === "ai"}
+            onPress={() => void handleAiSummarize()}
+          >
+            <MaterialCommunityIcons name="robot-outline" size={18} color={FIGMA_INK.aiInk} />
+            <Text style={styles.aiTriggerText}>
+              {busy === "ai" ? "กำลังสรุป..." : "สรุปด้วย AI"}
             </Text>
           </Pressable>
-        </View>
+        )}
 
-        <View style={styles.sectionCard}>
-          <View style={styles.inlineIconRow}>
-            <Ionicons name="notifications-outline" size={16} color="#1C1917" />
-            <Text style={styles.sectionTitle}>เตือนความจำ</Text>
-          </View>
-          <View style={styles.chipRow}>
-            <Pressable style={styles.chip} onPress={() => void handleQuickReminder(2, null)}>
-              <Text style={styles.chipText}>อีก 2 ชม.</Text>
-            </Pressable>
-            <Pressable style={styles.chip} onPress={() => void handleQuickReminder(24, null)}>
-              <Text style={styles.chipText}>พรุ่งนี้เวลานี้</Text>
-            </Pressable>
-            <Pressable style={styles.chip} onPress={() => void handleQuickReminder(72, null)}>
-              <Text style={styles.chipText}>อีก 3 วัน</Text>
-            </Pressable>
-            <Pressable style={styles.chip} onPress={() => void handleClearReminder()}>
-              <Text style={styles.chipText}>ปิดการเตือน</Text>
-            </Pressable>
-          </View>
-        </View>
-
-        <Pressable style={styles.deleteBtn} onPress={confirmDelete}>
-          <Text style={styles.deleteBtnText}>ลบลิงก์นี้ออก</Text>
-        </Pressable>
+        {navIds.length > 1 && navIdx >= 0 ? (
+          <Pressable
+            style={[styles.edgeHintBtn, { marginTop: 4 }, !nextNavId && styles.edgeHintDisabled]}
+            disabled={!nextNavId}
+            onPress={() => goToAdjacentItem(nextNavId)}
+          >
+            <Ionicons name="chevron-down" size={14} color={nextNavId ? "#57596A" : "#CBD5E1"} />
+            <Text style={[styles.edgeHintText, !nextNavId && styles.edgeHintTextDisabled]}>
+              โพสต์ถัดไป
+            </Text>
+          </Pressable>
+        ) : null}
       </ScrollView>
 
+      {/* Sticky Bottom Open URL CTA */}
+      <View style={[styles.stickyCtaBar, { paddingBottom: Math.max(14, insets.bottom) }]}>
+        <Pressable
+          style={[styles.stickyOpenBtn, { backgroundColor: theme.accent }]}
+          onPress={() => openExternalUrlSafe(item.url)}
+        >
+          <Text style={styles.stickyOpenBtnText}>เปิดลิงก์ต้นฉบับ</Text>
+        </Pressable>
+      </View>
+
+      {/* Edit Note Dialog */}
+      <Modal
+        visible={noteModalOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setNoteModalOpen(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.dialogBackdrop}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          <View style={styles.dialogCard}>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <Text style={styles.dialogTitle}>แก้ไขโน้ต</Text>
+              <TextInput
+                style={[styles.dialogTextArea, { marginTop: 12 }]}
+                placeholder="กลับมาเปิดลิงก์นี้ช่วงวันหยุด..."
+                placeholderTextColor="#9CA3AF"
+                multiline
+                value={noteDraft}
+                onChangeText={setNoteDraft}
+              />
+              <View style={[styles.dialogActions, { marginTop: 12 }]}>
+                <Pressable style={styles.dialogOutlineBtn} onPress={() => setNoteModalOpen(false)}>
+                  <Text style={styles.dialogOutlineBtnText}>ยกเลิก</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.dialogRedBtn, { backgroundColor: theme.accent }]}
+                  disabled={busy === "save"}
+                  onPress={() => void handleSaveEdits(noteDraft, activeTags)}
+                >
+                  <Text style={styles.dialogRedBtnText}>
+                    {busy === "save" ? "กำลังบันทึก..." : "บันทึก"}
+                  </Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Add Tag Dialog */}
+      <Modal
+        visible={tagModalOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setTagModalOpen(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.dialogBackdrop}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          <View style={styles.dialogCard}>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <Text style={styles.dialogTitle}>เพิ่มแท็ก</Text>
+              <TextInput
+                style={[styles.dialogInput, { marginTop: 12 }]}
+                placeholder="เช่น อ่านทีหลัง"
+                placeholderTextColor="#9CA3AF"
+                value={tagDraft}
+                onChangeText={setTagDraft}
+              />
+              <View style={[styles.quickTagsRow, { marginTop: 12 }]}>
+                {QUICK_TAG_SUGGESTIONS.map((qt) => (
+                  <Pressable
+                    key={qt}
+                    style={styles.quickTagChip}
+                    onPress={() => {
+                      const clean = qt.replace(/^#/, "").trim();
+                      const merged = activeTags.includes(clean) ? activeTags : [...activeTags, clean];
+                      void handleSaveEdits(note, merged);
+                    }}
+                  >
+                    <Text style={styles.quickTagChipText}>{qt}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <View style={[styles.dialogActions, { marginTop: 12 }]}>
+                <Pressable style={styles.dialogOutlineBtn} onPress={() => setTagModalOpen(false)}>
+                  <Text style={styles.dialogOutlineBtnText}>ยกเลิก</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.dialogRedBtn, { backgroundColor: theme.accent }]}
+                  disabled={busy === "save"}
+                  onPress={() => {
+                    const extra = parseTagList(tagDraft);
+                    if (!extra.length) {
+                      setTagModalOpen(false);
+                      return;
+                    }
+                    const merged = Array.from(new Set([...activeTags, ...extra]));
+                    void handleSaveEdits(note, merged);
+                  }}
+                >
+                  <Text style={styles.dialogRedBtnText}>เพิ่มแท็ก</Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Reminder Quick Sheet */}
+      <Modal
+        visible={reminderModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setReminderModalOpen(false)}
+      >
+        <Pressable style={styles.sheetBackdrop} onPress={() => setReminderModalOpen(false)}>
+          <Pressable
+            style={[styles.sheetCard, { paddingBottom: Math.max(20, insets.bottom + 12) }]}
+            onPress={() => {}}
+          >
+            <View style={styles.sheetDragBar} />
+            <View style={styles.rowBetween}>
+              <View style={styles.inlineIconRow}>
+                <Ionicons name="time-outline" size={18} color={FIGMA_INK.inkPrimary} />
+                <Text style={styles.dialogTitle}>ตั้งเวลาเตือนความจำ</Text>
+              </View>
+              <Pressable hitSlop={8} onPress={() => setReminderModalOpen(false)}>
+                <Ionicons name="close" size={20} color="#666666" />
+              </Pressable>
+            </View>
+            <View style={styles.reminderGrid}>
+              <Pressable style={styles.remOptionChip} onPress={() => void handleQuickReminder(2, null)}>
+                <Text style={styles.remOptionText}>อีก 2 ชม.</Text>
+              </Pressable>
+              <Pressable style={styles.remOptionChip} onPress={() => void handleQuickReminder(24, null)}>
+                <Text style={styles.remOptionText}>พรุ่งนี้เวลานี้</Text>
+              </Pressable>
+              <Pressable style={styles.remOptionChip} onPress={() => void handleQuickReminder(72, null)}>
+                <Text style={styles.remOptionText}>อีก 3 วัน</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.remOptionChip, { backgroundColor: "#FEF2F2", borderColor: "#FECACA" }]}
+                onPress={() => void handleClearReminder()}
+              >
+                <Text style={[styles.remOptionText, { color: "#B91C1C" }]}>ปิดการเตือน</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Fullscreen Media Lightbox */}
       <Modal
         visible={lightboxOpen}
         animationType="fade"
@@ -686,13 +1073,13 @@ export default function ItemDetailScreen() {
                   style={[styles.carouselArrow, styles.carouselArrowLeft]}
                   onPress={() => setCarouselIdx((prev) => (prev - 1 + totalSlides) % totalSlides)}
                 >
-                  <Text style={styles.carouselArrowText}>‹</Text>
+                  <Ionicons name="chevron-back" size={18} color="#FFFFFF" />
                 </Pressable>
                 <Pressable
                   style={[styles.carouselArrow, styles.carouselArrowRight]}
                   onPress={() => setCarouselIdx((prev) => (prev + 1) % totalSlides)}
                 >
-                  <Text style={styles.carouselArrowText}>›</Text>
+                  <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
                 </Pressable>
               </>
             ) : null}
@@ -704,20 +1091,91 @@ export default function ItemDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "transparent" },
-  content: { padding: 16, gap: 14, paddingBottom: 36 },
-  centerBox: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "transparent" },
-  emptyTitle: { fontSize: 16, fontWeight: "700", color: "#44403C" },
-  card: {
-    backgroundColor: "#FDFBF7",
+  root: {
+    flex: 1,
+    backgroundColor: FIGMA_INK.bgApp,
+  },
+  centerBox: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: FIGMA_INK.bgApp,
+  },
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: FIGMA_INK.inkStrong,
+  },
+  topbar: {
+    height: 54,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#FFFFFF",
+  },
+  topbarIconBtn: {
+    width: 36,
+    height: 36,
     borderRadius: 18,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "#EAE4DB",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  topTitles: {
+    flex: 1,
+    minWidth: 0,
+  },
+  topHeading: {
+    fontSize: 19,
+    fontWeight: "700",
+    color: "#20283E",
+    lineHeight: 23,
+  },
+  topSub: {
+    fontSize: 12,
+    color: "#55596A",
+  },
+  topRightActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+  },
+  cherryTopIcon: {
+    width: 22,
+    height: 22,
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 24,
+    gap: 14,
+  },
+  edgeHintBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    paddingVertical: 4,
+  },
+  edgeHintDisabled: {
+    opacity: 0.45,
+  },
+  edgeHintText: {
+    fontSize: 11.5,
+    fontWeight: "700",
+    color: "#57596A",
+  },
+  edgeHintTextDisabled: {
+    color: "#94A3B8",
   },
   mediaContainer: {
     width: "100%",
-    backgroundColor: "#1C1917",
+    maxHeight: 390,
+    borderRadius: 15,
+    backgroundColor: "#0F172A",
     position: "relative",
     alignItems: "center",
     justifyContent: "center",
@@ -730,36 +1188,33 @@ const styles = StyleSheet.create({
   videoFallbackPoster: {
     width: "100%",
     height: "100%",
-    backgroundColor: "#292524",
+    backgroundColor: "#20283E",
   },
   playBtnCircle: {
     position: "absolute",
-    width: 58,
-    height: 58,
-    borderRadius: 29,
-    backgroundColor: "rgba(155, 44, 44, 0.92)",
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "rgba(255, 255, 255, 0.94)",
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#FDFBF7",
-  },
-  playBtnIcon: {
-    color: "#FDFBF7",
-    fontSize: 22,
-    fontWeight: "800",
-    marginLeft: 3,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 6,
   },
   mediaBadge: {
     position: "absolute",
     top: 10,
     left: 10,
-    backgroundColor: "rgba(28, 25, 23, 0.78)",
-    paddingHorizontal: 10,
+    backgroundColor: "rgba(17, 24, 39, 0.72)",
+    paddingHorizontal: 9,
     paddingVertical: 4,
     borderRadius: 999,
   },
   mediaBadgeText: {
-    color: "#FDFBF7",
+    color: "#FFFFFF",
     fontSize: 11,
     fontWeight: "700",
   },
@@ -767,44 +1222,37 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 10,
     right: 10,
-    backgroundColor: "rgba(28, 25, 23, 0.78)",
+    backgroundColor: "rgba(17, 24, 39, 0.72)",
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 999,
   },
   zoomBtnText: {
-    color: "#FDFBF7",
+    color: "#FFFFFF",
     fontSize: 11,
     fontWeight: "700",
   },
   carouselArrow: {
     position: "absolute",
-    top: "42%",
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(28, 25, 23, 0.75)",
+    top: "44%",
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "rgba(17, 24, 39, 0.72)",
     alignItems: "center",
     justifyContent: "center",
   },
   carouselArrowLeft: { left: 10 },
   carouselArrowRight: { right: 10 },
-  carouselArrowText: {
-    color: "#FFFFFF",
-    fontSize: 22,
-    fontWeight: "700",
-    lineHeight: 24,
-  },
   moreInPostBtn: {
     position: "absolute",
     bottom: 28,
-    backgroundColor: "rgba(155, 44, 44, 0.92)",
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 999,
   },
   moreInPostText: {
-    color: "#FDFBF7",
+    color: "#FFFFFF",
     fontSize: 11,
     fontWeight: "700",
   },
@@ -823,88 +1271,374 @@ const styles = StyleSheet.create({
   },
   dotActive: {
     width: 18,
-    backgroundColor: "#FDFBF7",
+    backgroundColor: "#FFFFFF",
   },
   privateBox: {
-    backgroundColor: "#F3EFE6",
+    backgroundColor: "#FDF2F4",
+    borderRadius: 15,
     padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "#EAE4DB",
+    borderWidth: 1,
+    borderColor: "#F4CFD7",
     gap: 4,
   },
-  privateTitle: { fontSize: 13, fontWeight: "700", color: "#9B2C2C" },
-  privateSub: { fontSize: 12, color: "#57534E", lineHeight: 18 },
-  cardBody: { padding: 16, gap: 8 },
-  platformBadge: {
-    alignSelf: "flex-start",
-    fontSize: 11,
+  privateTitle: {
+    fontSize: 14,
     fontWeight: "700",
-    color: "#9B2C2C",
-    backgroundColor: "#FEF2F2",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    textTransform: "uppercase",
+    color: "#A62639",
   },
-  title: { fontSize: 18, fontWeight: "800", color: "#1C1917" },
-  descText: { fontSize: 13, color: "#44403C", lineHeight: 19 },
-  urlText: { fontSize: 12, color: "#78716C" },
-  actionRow: { flexDirection: "row", gap: 10, marginTop: 6 },
-  primaryBtn: {
+  privateSub: {
+    fontSize: 13,
+    color: "#55596A",
+    lineHeight: 19,
+  },
+  postInfoBlock: {
+    gap: 4,
+  },
+  postTitleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  postTitleLink: {
     flex: 1,
-    backgroundColor: "#9B2C2C",
-    borderRadius: 12,
-    paddingVertical: 11,
-    alignItems: "center",
+    fontSize: 19,
+    fontWeight: "700",
+    color: "#0F172A",
+    lineHeight: 26,
+    textDecorationLine: "underline",
   },
-  primaryBtnText: { color: "#FDFBF7", fontWeight: "700", fontSize: 14 },
-  secondaryBtn: {
-    backgroundColor: "#F3EFE6",
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    alignItems: "center",
+  postMeta: {
+    fontSize: 12.5,
+    color: "#55596A",
   },
-  secondaryBtnText: { color: "#1C1917", fontWeight: "600", fontSize: 14 },
-  sectionCard: {
-    backgroundColor: "#FDFBF7",
-    borderRadius: 18,
-    padding: 16,
+  reminderPill: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    backgroundColor: FIGMA_INK.bgMuted,
     borderWidth: 1,
-    borderColor: "#EAE4DB",
+    borderColor: FIGMA_INK.borderLight,
+    borderRadius: 999,
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+  },
+  reminderPillText: {
+    fontSize: 12.5,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+  },
+  statusBlock: {
     gap: 10,
   },
-  rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  inlineIconRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  sectionTitle: { fontSize: 15, fontWeight: "800", color: "#1C1917" },
-  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  chip: { backgroundColor: "#F3EFE6", paddingHorizontal: 13, paddingVertical: 8, borderRadius: 999 },
-  chipActive: { backgroundColor: "#9B2C2C" },
-  chipText: { fontSize: 13, fontWeight: "600", color: "#44403C" },
-  chipTextActive: { color: "#FDFBF7" },
-  smallPrimaryBtn: { backgroundColor: "#9B2C2C", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
-  smallPrimaryBtnText: { color: "#FDFBF7", fontSize: 12, fontWeight: "700" },
-  summaryText: { fontSize: 14, color: "#44403C", lineHeight: 21 },
-  input: {
+  rowBetween: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  secLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+  },
+  statusTogglePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  statusToggleSeen: {
+    backgroundColor: "#ECFDF5",
+    borderColor: "#A7F3D0",
+  },
+  statusToggleText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  tagsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  tagPill: {
+    backgroundColor: FIGMA_INK.lavenderTag,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  tagPillText: {
+    fontSize: 12.5,
+    fontWeight: "600",
+    color: FIGMA_INK.inkPrimary,
+  },
+  addTagBtn: {
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
-    borderColor: "#E7E0D5",
+    borderColor: FIGMA_INK.borderCard,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  addTagBtnText: {
+    fontSize: 12.5,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+  },
+  noteBlock: {
+    gap: 8,
+  },
+  editPillBtn: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderCard,
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  editPillBtnText: {
+    fontSize: 12.5,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+  },
+  noteReadBox: {
+    minHeight: 72,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#FFFFFF",
+    padding: 13,
+  },
+  noteReadText: {
+    fontSize: 14,
+    color: FIGMA_INK.inkStrong,
+    lineHeight: 20,
+  },
+  notePlaceholderText: {
+    fontSize: 14,
+    color: "#9CA3AF",
+  },
+  descBlock: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#EAE4DB",
+    backgroundColor: "#FFFFFF",
+    padding: 14,
+    gap: 6,
+  },
+  descText: {
+    fontSize: 13.5,
+    color: "#334155",
+    lineHeight: 20,
+  },
+  descToggleBtn: {
+    alignSelf: "flex-start",
+    paddingTop: 2,
+  },
+  descToggleText: {
+    fontSize: 12.5,
+    fontWeight: "700",
+  },
+  emptyDescText: {
+    fontSize: 13,
+    color: FIGMA_INK.inkSecondary,
+  },
+  aiCard: {
+    backgroundColor: FIGMA_INK.lavenderBg,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.lavenderBorder,
+    padding: 14,
+    gap: 8,
+  },
+  inlineIconRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  aiCardTitle: {
+    fontSize: 14.5,
+    fontWeight: "800",
+    color: FIGMA_INK.aiInk,
+  },
+  aiRerunPill: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#D8D0FC",
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  aiRerunPillText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: FIGMA_INK.aiInk,
+  },
+  aiCardBody: {
+    fontSize: 13.5,
+    color: "#1E1B4B",
+    lineHeight: 21,
+  },
+  aiTriggerBtn: {
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: FIGMA_INK.lavenderBg,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.lavenderBorder,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  aiTriggerText: {
+    fontSize: 14.5,
+    fontWeight: "700",
+    color: FIGMA_INK.aiInk,
+  },
+  stickyCtaBar: {
+    backgroundColor: "#FFFFFF",
+    borderTopWidth: 1,
+    borderTopColor: "#EFEFEF",
+    paddingHorizontal: 16,
+    paddingTop: 10,
+  },
+  stickyOpenBtn: {
+    height: 50,
+    borderRadius: 25,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stickyOpenBtnText: {
+    color: "#FFFFFF",
+    fontSize: 15.5,
+    fontWeight: "700",
+  },
+  dialogBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(23, 23, 33, 0.45)",
+    justifyContent: "center",
+    padding: 20,
+  },
+  dialogCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 20,
+    gap: 12,
+    maxHeight: "86%",
+  },
+  dialogTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: FIGMA_INK.inkPrimary,
+  },
+  dialogTextArea: {
+    minHeight: 96,
+    backgroundColor: FIGMA_INK.bgMuted,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderCard,
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 14.5,
+    color: FIGMA_INK.inkStrong,
+    textAlignVertical: "top",
+  },
+  dialogInput: {
+    height: 46,
+    backgroundColor: FIGMA_INK.bgMuted,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderCard,
     borderRadius: 12,
     paddingHorizontal: 12,
+    fontSize: 14.5,
+    color: FIGMA_INK.inkStrong,
+  },
+  quickTagsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  quickTagChip: {
+    backgroundColor: FIGMA_INK.lavenderTag,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  quickTagChipText: {
+    fontSize: 12.5,
+    fontWeight: "600",
+    color: FIGMA_INK.inkPrimary,
+  },
+  dialogActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
+    marginTop: 4,
+  },
+  dialogOutlineBtn: {
+    paddingHorizontal: 16,
     paddingVertical: 10,
-    fontSize: 14,
-    color: "#1C1917",
-  },
-  textArea: { minHeight: 80, textAlignVertical: "top" },
-  deleteBtn: {
-    backgroundColor: "#FEF2F2",
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#FECACA",
-    borderRadius: 14,
-    paddingVertical: 13,
-    alignItems: "center",
+    borderColor: FIGMA_INK.borderCard,
+    backgroundColor: "#FFFFFF",
   },
-  deleteBtnText: { color: "#B91C1C", fontWeight: "700", fontSize: 15 },
+  dialogOutlineBtnText: {
+    color: FIGMA_INK.inkStrong,
+    fontWeight: "600",
+  },
+  dialogRedBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 999,
+  },
+  dialogRedBtnText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+  },
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(23, 23, 33, 0.43)",
+    justifyContent: "flex-end",
+  },
+  sheetCard: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    gap: 12,
+  },
+  sheetDragBar: {
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#D1D5DB",
+    marginBottom: 4,
+  },
+  reminderGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    paddingBottom: 6,
+  },
+  remOptionChip: {
+    backgroundColor: FIGMA_INK.bgMuted,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderCard,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 999,
+  },
+  remOptionText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: FIGMA_INK.inkPrimary,
+  },
   lightboxBackdrop: {
     flex: 1,
     backgroundColor: "rgba(12, 10, 9, 0.95)",
@@ -942,65 +1676,5 @@ const styles = StyleSheet.create({
   lightboxImage: {
     width: "100%",
     height: "100%",
-  },
-  navBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#FDFBF7",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#EAE4DB",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  navBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 10,
-    backgroundColor: "#F3EFE6",
-  },
-  navBtnDisabled: {
-    opacity: 0.4,
-  },
-  navBtnText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#1C1917",
-  },
-  navBtnTextDisabled: {
-    color: "#78716C",
-  },
-  navCounter: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#78716C",
-  },
-  seenBtnActive: {
-    backgroundColor: "#ECFDF5",
-    borderColor: "#A7F3D0",
-  },
-  seenBtnTextActive: {
-    color: "#065F46",
-  },
-  descToggleBtn: {
-    alignSelf: "flex-start",
-    paddingVertical: 4,
-  },
-  descToggleText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#9B2C2C",
-  },
-  emptyDescText: {
-    fontSize: 13,
-    color: "#78716C",
-  },
-  aiSectionCard: {
-    backgroundColor: "#F1EEFF",
-    borderColor: "#DDD6FE",
-  },
-  aiSectionTitle: {
-    color: "#4C1D95",
   },
 });

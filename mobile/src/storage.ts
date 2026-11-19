@@ -1,4 +1,5 @@
 export type AppThemeMode = "cream" | "white" | "dark";
+export type FigmaAccentThemeId = "sharely" | "christmas" | "collab";
 export type WorkflowStatus = "inbox" | "todo" | "done" | "archived";
 
 export interface StoredUser {
@@ -64,6 +65,7 @@ export interface MobileAiConfig {
   model?: string;
   base_url?: string;
   api_key?: string;
+  keyless?: boolean;
 }
 
 export interface MobileReminderItem {
@@ -125,6 +127,7 @@ const KEYS = {
   pushDevice: "jsi_mobile_push_device",
   aiConfig: "sherlink_mobile_ai_config",
   aiApiKey: "sherlink_mobile_ai_api_key",
+  figmaTheme: "sherlink_mobile_figma_theme",
 };
 
 const memoryStore = new Map<string, string>();
@@ -968,47 +971,162 @@ export async function saveThemeMode(mode: AppThemeMode): Promise<void> {
   }
 }
 
-export async function loadAiConfig(): Promise<MobileAiConfig> {
-  const backend = await getStorageBackend();
-  const secureBackend = await getSecureSessionBackend();
-  let parsed: Partial<MobileAiConfig> = {};
-  try {
-    const raw = await backend.getItem(KEYS.aiConfig);
-    if (raw) parsed = JSON.parse(raw) as Partial<MobileAiConfig>;
-  } catch {}
-  let apiKey = "";
-  try {
-    apiKey = (await secureBackend.getItem(KEYS.aiApiKey)) || "";
-  } catch {}
-  const prov = parsed.provider === "byok" || parsed.provider === "custom" ? parsed.provider : "built-in";
-  return {
-    provider: prov,
-    vendor: parsed.vendor || (prov === "built-in" ? "built-in" : "openai"),
-    model: parsed.model || (prov === "built-in" ? "gemini-3.1-flash-lite" : "gpt-4o-mini"),
-    base_url: parsed.base_url || "",
-    api_key: apiKey,
+type FigmaAccentListener = (id: FigmaAccentThemeId) => void;
+const _figmaThemeListeners = new Set<FigmaAccentListener>();
+
+export function subscribeFigmaAccentTheme(listener: FigmaAccentListener): () => void {
+  _figmaThemeListeners.add(listener);
+  return () => {
+    _figmaThemeListeners.delete(listener);
   };
 }
 
-export async function saveAiConfig(cfg: MobileAiConfig): Promise<void> {
+export async function loadFigmaAccentTheme(): Promise<FigmaAccentThemeId> {
   const backend = await getStorageBackend();
-  const secureBackend = await getSecureSessionBackend();
-  const meta: Omit<MobileAiConfig, "api_key"> = {
-    provider: cfg.provider,
-    vendor: cfg.vendor || (cfg.provider === "built-in" ? "built-in" : "openai"),
-    model: cfg.model || "",
-    base_url: cfg.base_url || "",
-  };
-  await backend.setItem(KEYS.aiConfig, JSON.stringify(meta));
-  const cleanKey = String(cfg.api_key || "").trim();
-  if (cleanKey && cfg.provider !== "built-in") {
-    await secureBackend.setItem(KEYS.aiApiKey, cleanKey);
-  } else {
-    await secureBackend.removeItem(KEYS.aiApiKey);
+  const raw = await backend.getItem(KEYS.figmaTheme);
+  if (raw === "christmas" || raw === "collab" || raw === "sharely") return raw;
+  return "sharely";
+}
+
+export async function saveFigmaAccentTheme(id: FigmaAccentThemeId): Promise<void> {
+  const backend = await getStorageBackend();
+  await backend.setItem(KEYS.figmaTheme, id);
+  for (const listener of _figmaThemeListeners) {
+    listener(id);
   }
 }
 
+function defaultBuiltInAiConfig(): MobileAiConfig {
+  return {
+    provider: "built-in",
+    vendor: "built-in",
+    model: "gemini-3.1-flash-lite",
+    base_url: "",
+    api_key: "",
+    keyless: false,
+  };
+}
+
+export async function loadAiConfig(): Promise<MobileAiConfig> {
+  const startGen = _authGeneration;
+  const startClearEpoch = _clearEpoch;
+  return runSerializedAuthStorage(async () => {
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return defaultBuiltInAiConfig();
+    }
+    const backend = await getStorageBackend();
+    const secureBackend = await getSecureSessionBackend();
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return defaultBuiltInAiConfig();
+    }
+    let parsed: Partial<MobileAiConfig> = {};
+    try {
+      const raw = await backend.getItem(KEYS.aiConfig);
+      if (raw) parsed = JSON.parse(raw) as Partial<MobileAiConfig>;
+    } catch {}
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return defaultBuiltInAiConfig();
+    }
+    let apiKey = "";
+    try {
+      apiKey = (await secureBackend.getItem(KEYS.aiApiKey)) || "";
+    } catch {}
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) {
+      return defaultBuiltInAiConfig();
+    }
+    const prov = parsed.provider === "byok" || parsed.provider === "custom" ? parsed.provider : "built-in";
+    return {
+      provider: prov,
+      vendor: parsed.vendor || (prov === "built-in" ? "built-in" : "openai"),
+      model: parsed.model || (prov === "built-in" ? "gemini-3.1-flash-lite" : "gpt-4o-mini"),
+      base_url: parsed.base_url || "",
+      api_key: apiKey,
+      keyless: Boolean(parsed.keyless),
+    };
+  });
+}
+
+export async function saveAiConfig(cfg: MobileAiConfig): Promise<void> {
+  const startGen = _authGeneration;
+  const startClearEpoch = _clearEpoch;
+  return runSerializedAuthStorage(async () => {
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) return;
+    const backend = await getStorageBackend();
+    const secureBackend = await getSecureSessionBackend();
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) return;
+    const isKeylessCustom = cfg.provider === "custom" && Boolean(cfg.keyless);
+    const meta: Omit<MobileAiConfig, "api_key"> = {
+      provider: cfg.provider,
+      vendor: cfg.vendor || (cfg.provider === "built-in" ? "built-in" : "openai"),
+      model: cfg.model || "",
+      base_url: cfg.base_url || "",
+      keyless: isKeylessCustom,
+    };
+    await backend.setItem(KEYS.aiConfig, JSON.stringify(meta));
+    if (_authGeneration !== startGen || _clearEpoch !== startClearEpoch) return;
+    const cleanKey = String(cfg.api_key || "").trim();
+    if (cleanKey && cfg.provider !== "built-in" && !isKeylessCustom) {
+      await secureBackend.setItem(KEYS.aiApiKey, cleanKey);
+    } else {
+      await secureBackend.removeItem(KEYS.aiApiKey);
+    }
+  });
+}
+
 export const DEFAULT_ANDROID_BINDER_MAX_CHARS = 250_000;
+
+export function csvCell(val: unknown): string {
+  const s = String(val ?? "");
+  const neutralized = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  if (/[",\n\r]/.test(neutralized)) {
+    return `"${neutralized.replace(/"/g, '""')}"`;
+  }
+  return neutralized;
+}
+
+export function buildBoundedCsvExport(
+  items: MobileLinkItem[],
+  maxChars: number = DEFAULT_ANDROID_BINDER_MAX_CHARS,
+): {
+  csv: string;
+  truncated: boolean;
+  exportedCount: number;
+  totalCount: number;
+} {
+  const bom = "\uFEFF";
+  const header = "title,url,platform,status,favorite,note,tags,saved_at";
+  const lines = [bom + header];
+  let totalLen = lines[0].length;
+  let exportedCount = 0;
+  let truncated = false;
+
+  for (const it of items) {
+    const row = [
+      csvCell(it.title || ""),
+      csvCell(it.url || ""),
+      csvCell(it.platform || ""),
+      csvCell(it.status || "inbox"),
+      csvCell(it.is_favorite ? "true" : "false"),
+      csvCell(it.note || it.user_note || ""),
+      csvCell((it.tags || it.tag_names || []).join(";")),
+      csvCell(it.saved_at || ""),
+    ].join(",");
+    if (totalLen + 1 + row.length > maxChars) {
+      truncated = true;
+      break;
+    }
+    lines.push(row);
+    totalLen += 1 + row.length;
+    exportedCount += 1;
+  }
+
+  return {
+    csv: lines.join("\n"),
+    truncated,
+    exportedCount,
+    totalCount: items.length,
+  };
+}
 
 export function buildBoundedExportPayloadJson(
   exportData: Record<string, unknown>,

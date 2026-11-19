@@ -325,13 +325,14 @@ function RootLayoutContent() {
     };
   }, [incomingUrl, bootState.ready, navReady, router]);
 
-  const bgColor = getThemePageBg(themeMode);
+  const bgColor = themeMode === "dark" ? getThemePageBg(themeMode) : "#FFFFFF";
+  const statusBarStyle = themeMode === "dark" ? "light" : "dark";
 
   if (!bootState.ready) {
     return (
       <View style={[debugStyles.bootGate, { backgroundColor: bgColor }]}>
-        <StatusBar style={themeMode === "dark" ? "light" : "dark"} backgroundColor="#880808" />
-        <ActivityIndicator size="large" color="#9B2C2C" />
+        <StatusBar style={statusBarStyle} backgroundColor={bgColor} />
+        <ActivityIndicator size="large" color="#C72D2D" />
         <Text style={debugStyles.bootText}>กำลังเตรียม Sherlink...</Text>
       </View>
     );
@@ -339,21 +340,19 @@ function RootLayoutContent() {
 
   return (
     <View style={{ flex: 1, backgroundColor: bgColor }}>
-      <StatusBar style="light" backgroundColor="#880808" />
+      <StatusBar style={statusBarStyle} backgroundColor={bgColor} />
       <Stack
         initialRouteName={bootState.hasSession ? "(tabs)" : "login"}
         screenOptions={{
-          headerStyle: { backgroundColor: "#880808" },
-          headerTintColor: "#FDFBF7",
-          headerTitleStyle: { fontWeight: "700" },
+          headerShown: false,
           contentStyle: { backgroundColor: bgColor },
         }}
       >
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="login" options={{ headerShown: false }} />
         <Stack.Screen name="auth-callback" options={{ headerShown: false }} />
-        <Stack.Screen name="item/[id]" options={{ title: "รายละเอียดลิงก์" }} />
-        <Stack.Screen name="folder/[id]" options={{ title: "โฟลเดอร์" }} />
+        <Stack.Screen name="item/[id]" options={{ headerShown: false }} />
+        <Stack.Screen name="folder/[id]" options={{ headerShown: false }} />
       </Stack>
 
       {debugEnabled ? (
@@ -406,7 +405,7 @@ const debugStyles = StyleSheet.create({
   },
   crashRoot: {
     flex: 1,
-    backgroundColor: "#F6F3EC",
+    backgroundColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
     padding: 24,
@@ -424,7 +423,7 @@ const debugStyles = StyleSheet.create({
   crashTitle: {
     fontSize: 17,
     fontWeight: "700",
-    color: "#880808",
+    color: "#C72D2D",
   },
   crashMsg: {
     fontSize: 13,
@@ -432,7 +431,7 @@ const debugStyles = StyleSheet.create({
     lineHeight: 19,
   },
   crashBtn: {
-    backgroundColor: "#9B2C2C",
+    backgroundColor: "#C72D2D",
     borderRadius: 999,
     paddingVertical: 11,
     alignItems: "center",

@@ -7,26 +7,31 @@ import assert from "node:assert/strict";
 
 import { planIosLocalNotifications } from "../notifications.ts";
 import {
+  buildBoundedCsvExport,
   buildBoundedExportPayloadJson,
   classifyQueueFlushStatus,
   clearAuthDebugEvents,
   clearSession,
+  csvCell,
   enqueueOfflineItem,
   flushOfflineQueueWithSender,
   getAuthDebugEvents,
   getAuthGeneration,
   getMemoryCachedWorkspace,
   getThemePageBg,
+  loadAiConfig,
   loadCachedWorkspace,
   loadOfflineQueue,
   recordAuthDebugEvent,
   removeCachedLinkItem,
   resolveSessionUserId,
+  saveAiConfig,
   saveCachedWorkspace,
   saveSession,
   saveThemeMode,
   setOfflineQueue,
   subscribeThemeMode,
+  __setStorageBackendsForTests,
 } from "../storage.ts";
 
 registerHooks({
@@ -2433,5 +2438,258 @@ test("Sherlink Figma: saveAiConfig/loadAiConfig clearing on clearSession and Dis
       role: "editor",
       expires_in_days: 1,
     },
+  );
+});
+
+test("23. Sherlink Figma 1:1 Mobile UI: rasterized assets, theme presets, and zero legacy #880808 chrome", async () => {
+  const { getFigmaTheme } = await import("../figmaTheme.ts");
+  assert.equal(getFigmaTheme("sharely").accent, "#C72D2D");
+  assert.equal(getFigmaTheme("christmas").accent, "#9B3976");
+  assert.equal(getFigmaTheme("collab").accent, "#16756A");
+  assert.equal(getFigmaTheme("unknown").accent, "#C72D2D");
+
+  const testDir = dirname(fileURLToPath(import.meta.url));
+  const figmaDir = resolve(testDir, "../../assets/figma");
+  const expectedAssets = [
+    "cherry-selected.png",
+    "cherry-unselected.png",
+    "google-logo.png",
+    "home-cherry-mascot.png",
+    "login-cherry-illustration.png",
+    "login-lavender-wave.png",
+    "login-red-corner.png",
+    "login-wordmark-accent.png",
+  ];
+  for (const fn of expectedAssets) {
+    assert.equal(existsSync(resolve(figmaDir, fn)), true, `Expected rasterized Figma asset mobile/assets/figma/${fn}`);
+  }
+
+  for (const rel of ["../../app/_layout.tsx", "../../app/login.tsx"]) {
+    const src = readFileSync(resolve(testDir, rel), "utf8");
+    assert.equal(src.includes("#880808"), false, `Legacy maroon #880808 must not remain in ${rel}`);
+  }
+});
+
+test("24. Round 3 CHRIS fixes: saveAiConfig race vs clearSession, CSV formula injection + BOM + cap, deleteFolder API, and quota parsing", async () => {
+  const kv = new Map();
+  const delayedBackend = {
+    async getItem(k) {
+      await new Promise((r) => setTimeout(r, 8));
+      return kv.has(k) ? kv.get(k) : null;
+    },
+    async setItem(k, v) {
+      await new Promise((r) => setTimeout(r, 15));
+      kv.set(k, v);
+    },
+    async removeItem(k) {
+      await new Promise((r) => setTimeout(r, 8));
+      kv.delete(k);
+    },
+  };
+  __setStorageBackendsForTests({ standard: delayedBackend, secure: delayedBackend });
+  try {
+    await saveSession({
+      access_token: "tok-race-a",
+      refresh_token: "ref-race-a",
+      user: { id: "uid-race-a", email: "race@sherlink.app" },
+    });
+    const savePromise = saveAiConfig({
+      provider: "byok",
+      vendor: "openai",
+      model: "gpt-4o-mini",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-must-not-leak-after-clear",
+    });
+    await clearSession();
+    await savePromise;
+    const postClearAi = await loadAiConfig();
+    assert.equal(postClearAi.api_key, "", "Stale saveAiConfig racing against clearSession must not leak BYOK key");
+  } finally {
+    await clearSession();
+    __setStorageBackendsForTests(null);
+  }
+
+  assert.equal(csvCell("=CMD()"), "'=CMD()");
+  assert.equal(csvCell("+1+2"), "'+1+2");
+  assert.equal(csvCell("-2+3"), "'-2+3");
+  assert.equal(csvCell("@SUM(A1)"), "'@SUM(A1)");
+  const csvRes = buildBoundedCsvExport(
+    [
+      { id: "1", url: "https://example.com/1", title: "=1+1", note: "สวัสดี", tags: ["a", "b"], is_favorite: true },
+      { id: "2", url: "https://example.com/2", title: "Second", note: "x".repeat(300) },
+    ],
+    220,
+  );
+  assert.equal(csvRes.csv.startsWith("\uFEFFtitle,url,"), true);
+  assert.ok(csvRes.csv.includes("'=1+1"));
+  assert.equal(csvRes.truncated, true);
+  assert.equal(csvRes.exportedCount, 1);
+  assert.equal(csvRes.totalCount, 2);
+
+  const { deleteFolder } = await import("../api.ts");
+  const origFetch = globalThis.fetch;
+  let delUrl = "";
+  let delMethod = "";
+  try {
+    globalThis.fetch = async (url, init) => {
+      delUrl = String(url);
+      delMethod = String(init?.method || "GET");
+      return { ok: true, status: 200, text: async () => "{}" };
+    };
+    const delRes = await deleteFolder("fld-99");
+    assert.equal(delRes.ok, true);
+    assert.equal(delMethod, "DELETE");
+    assert.match(delUrl, /\/api\/folders\/fld-99$/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  const testDir = dirname(fileURLToPath(import.meta.url));
+  const aiSrc = readFileSync(resolve(testDir, "../../app/(tabs)/ai.tsx"), "utf8");
+  assert.match(aiSrc, /meRes\?\.data\?\.ai_quota/);
+  assert.match(aiSrc, /runGuardedBusyAction/);
+  const notifSrc = readFileSync(resolve(testDir, "../notifications.ts"), "utf8");
+  assert.equal(notifSrc.includes("Sharely"), false, "notifications.ts must use Sherlink branding");
+});
+
+test("25. Round 4 CHRIS fixes: loadAiConfig/summarize/testAiConnection auth-transition fence, folders non-owner edit gate, and computeFolderShareState", async () => {
+  const { computeFolderShareState, summarizeLinkItem, testAiConnection } = await import("../api.ts");
+  const kv = new Map();
+  const delayedBackend = {
+    async getItem(k) {
+      await new Promise((r) => setTimeout(r, 15));
+      return kv.has(k) ? kv.get(k) : null;
+    },
+    async setItem(k, v) {
+      await new Promise((r) => setTimeout(r, 5));
+      kv.set(k, v);
+    },
+    async removeItem(k) {
+      await new Promise((r) => setTimeout(r, 5));
+      kv.delete(k);
+    },
+  };
+  const origFetch = globalThis.fetch;
+  let fetchCount = 0;
+  __setStorageBackendsForTests({ standard: delayedBackend, secure: delayedBackend });
+  try {
+    await saveSession({
+      access_token: "tok-r4-a",
+      refresh_token: "ref-r4-a",
+      user: { id: "uid-r4-a", email: "r4a@sherlink.app" },
+    });
+    await saveAiConfig({
+      provider: "byok",
+      vendor: "openai",
+      model: "gpt-4o-mini",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-secret-r4",
+    });
+
+    // M-1a: loadAiConfig raced by clearSession must fail closed with empty key
+    const loadPromise = loadAiConfig();
+    await clearSession();
+    const racedCfg = await loadPromise;
+    assert.equal(racedCfg.api_key, "", "loadAiConfig raced by clearSession must never leak BYOK key");
+
+    // Seed session + BYOK again, then race summarizeLinkItem / testAiConnection against clearSession
+    await saveSession({
+      access_token: "tok-r4-a2",
+      refresh_token: "ref-r4-a2",
+      user: { id: "uid-r4-a2", email: "r4a2@sherlink.app" },
+    });
+    await saveAiConfig({
+      provider: "byok",
+      vendor: "openai",
+      model: "gpt-4o-mini",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-secret-r4-2",
+    });
+    globalThis.fetch = async () => {
+      fetchCount += 1;
+      return { ok: true, status: 200, text: async () => "{}" };
+    };
+    const sumPromise = summarizeLinkItem("itm-r4-1", false);
+    const testPromise = testAiConnection();
+    await clearSession();
+    const [sumRes, testRes] = await Promise.all([sumPromise, testPromise]);
+    assert.equal(sumRes.ok, false);
+    assert.equal(sumRes.status, 401);
+    assert.equal(testRes.ok, false);
+    assert.equal(testRes.status, 401);
+    assert.equal(fetchCount, 0, "Stale summarizeLinkItem/testAiConnection after auth change must not send HTTP fetch");
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+    __setStorageBackendsForTests(null);
+  }
+
+  // M-2: folders.tsx must hide edit button & guard openEditModal for shared folders
+  const testDir = dirname(fileURLToPath(import.meta.url));
+  const foldersSrc = readFileSync(resolve(testDir, "../../app/(tabs)/folders.tsx"), "utf8");
+  assert.match(foldersSrc, /if\s*\(card\.isVirtual\s*\|\|\s*card\.isShared\)\s*return;/);
+  assert.match(foldersSrc, /!item\.isVirtual\s*&&\s*!item\.isShared/);
+
+  // M-3: computeFolderShareState accurate for non-owner peers, owner, explicit owner row, and cold-load null
+  assert.deepEqual(
+    computeFolderShareState({
+      isVirtualInbox: false,
+      folder: { owner_id: "alice", role: "editor" },
+      members: [{ user_id: "bob", role: "editor" }],
+      ownerId: "alice",
+      callerRole: "editor",
+      selfUserId: "bob",
+    }),
+    { isOwner: false, sharedPeerCount: 1, hasExplicitOwnerRow: false },
+  );
+  assert.deepEqual(
+    computeFolderShareState({
+      isVirtualInbox: false,
+      folder: { owner_id: "alice", role: "viewer" },
+      members: [
+        { user_id: "bob", role: "editor" },
+        { user_id: "carol", role: "viewer" },
+      ],
+      ownerId: "alice",
+      callerRole: "viewer",
+      selfUserId: "bob",
+    }),
+    { isOwner: false, sharedPeerCount: 2, hasExplicitOwnerRow: false },
+  );
+  assert.deepEqual(
+    computeFolderShareState({
+      isVirtualInbox: false,
+      folder: null,
+      members: [],
+      ownerId: "",
+      callerRole: "",
+      selfUserId: "bob",
+    }),
+    { isOwner: false, sharedPeerCount: 0, hasExplicitOwnerRow: false },
+  );
+  assert.deepEqual(
+    computeFolderShareState({
+      isVirtualInbox: false,
+      folder: { owner_id: "alice", role: "owner" },
+      members: [
+        { user_id: "alice", role: "owner" },
+        { user_id: "bob", role: "editor" },
+      ],
+      ownerId: "alice",
+      callerRole: "owner",
+      selfUserId: "alice",
+    }),
+    { isOwner: true, sharedPeerCount: 1, hasExplicitOwnerRow: true },
+  );
+  assert.deepEqual(
+    computeFolderShareState({
+      isVirtualInbox: false,
+      folder: { owner_id: "alice", role: "owner" },
+      members: [],
+      ownerId: "alice",
+      callerRole: "owner",
+      selfUserId: "alice",
+    }),
+    { isOwner: true, sharedPeerCount: 0, hasExplicitOwnerRow: false },
   );
 });
