@@ -430,7 +430,6 @@ export function renderInviteLandingScreen(state) {
   const folderId = preview?.folder_id || folder?.id || state.ui.inviteFolderId || "";
   const folderName = preview?.folder_name || folder?.name || "โฟลเดอร์ที่แชร์";
   const folderCover = preview?.folder_cover_url || folder?.cover || "";
-  const folderEmoji = preview?.folder_emoji || folder?.emoji || "📁";
   const count = preview ? Number(preview.item_count || 0) : folder ? getFolderCount(folder) : 0;
   const memberCount = preview?.member_count ?? folder?.sharedCount ?? 0;
   const inviterName = preview?.inviter_name || (folder && state.data.user?.isAuthenticated ? state.data.user.displayName : "เพื่อนของคุณ");
@@ -478,7 +477,7 @@ export function renderInviteLandingScreen(state) {
             ${
               safeCover
                 ? `<img src="${escHtml(safeCover)}" alt="" style="width:100%;height:100%;object-fit:cover;" />`
-                : `<span style="font-size:44px;">${escHtml(folderEmoji)}</span>`
+                : `<span style="color:var(--ink-secondary);display:inline-flex;">${icons.folder(38)}</span>`
             }
           </div>
           <div style="padding:13px;">
@@ -575,7 +574,7 @@ export function renderWebAuthView(state) {
                   ${
                     invCover
                       ? `<img src="${escHtml(invCover)}" alt="" />`
-                      : `<span>${escHtml(preview.folder_emoji || "📁")}</span>`
+                      : `<span style="color:var(--ink-secondary);display:inline-flex;">${icons.folder(22)}</span>`
                   }
                 </div>
                 <div style="min-width:0;">

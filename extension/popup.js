@@ -275,7 +275,6 @@
     folderSelect: document.getElementById("folderSelect"),
     toggleNewFolderBtn: document.getElementById("toggleNewFolderBtn"),
     newFolderBox: document.getElementById("newFolderBox"),
-    newFolderEmoji: document.getElementById("newFolderEmoji"),
     newFolderName: document.getElementById("newFolderName"),
     createFolderBtn: document.getElementById("createFolderBtn"),
 
@@ -311,6 +310,7 @@
     savedTitleLabel: document.getElementById("savedTitleLabel"),
     savedMetaText: document.getElementById("savedMetaText"),
     aiSummarizeBtn: document.getElementById("aiSummarizeBtn"),
+    aiSummarizeLabel: document.getElementById("aiSummarizeLabel"),
     aiResultBox: document.getElementById("aiResultBox"),
 
     recentPane: document.getElementById("recentPane"),
@@ -469,6 +469,23 @@
     }
   }
 
+  function createFolderSvgIcon() {
+    const svgNs = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNs, "svg");
+    svg.setAttribute("class", "ext-ico");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(svgNs, "path");
+    path.setAttribute("d", "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z");
+    svg.appendChild(path);
+    return svg;
+  }
+
   function renderFoldersDropdown(folders) {
     state.cachedFolders = Array.isArray(folders) ? folders : [];
     const currentId = state.selectedFolderId;
@@ -480,7 +497,7 @@
       for (const folder of state.cachedFolders) {
         const opt = document.createElement("option");
         opt.value = folder.id;
-        opt.textContent = `${folder.emoji ? folder.emoji + " " : ""}${folder.name}`;
+        opt.textContent = String(folder.name || "");
         els.folderSelect.appendChild(opt);
       }
       els.folderSelect.value = validCurrent;
@@ -491,12 +508,17 @@
       oldChip.remove();
     }
 
-    const createBtn = (label, fid) => {
+    const createBtn = (label, fid, withFolderIcon = false) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = `figma-pill-choice${fid === validCurrent ? " selected" : ""}`;
       btn.setAttribute("data-folder-choice", fid);
-      btn.textContent = label;
+      if (withFolderIcon) {
+        btn.appendChild(createFolderSvgIcon());
+      }
+      const span = document.createElement("span");
+      span.textContent = label;
+      btn.appendChild(span);
       btn.addEventListener("click", () => selectFolder(fid));
       return btn;
     };
@@ -513,10 +535,9 @@
       }
     };
 
-    insertFolderChip(createBtn("ไม่ใส่โฟลเดอร์", ""));
+    insertFolderChip(createBtn("ไม่ใส่โฟลเดอร์", "", false));
     for (const folder of state.cachedFolders) {
-      const prefix = folder.emoji ? `${folder.emoji} ` : "";
-      insertFolderChip(createBtn(`${prefix}${folder.name}`, folder.id));
+      insertFolderChip(createBtn(String(folder.name || ""), folder.id, true));
     }
   }
 
@@ -684,11 +705,11 @@
     }
     if (els.reminderSummaryLabel) {
       if (!hasActive) {
-        els.reminderSummaryLabel.textContent = "⏰ ไม่ตั้งเตือน";
+        els.reminderSummaryLabel.textContent = "ไม่ตั้งเตือน";
       } else if (r.scheduleType === "every_n_days") {
-        els.reminderSummaryLabel.textContent = `🔁 ซ้ำทุก ${r.repeatEveryDays} วัน · ${r.time}`;
+        els.reminderSummaryLabel.textContent = `ซ้ำทุก ${r.repeatEveryDays} วัน · ${r.time}`;
       } else {
-        els.reminderSummaryLabel.textContent = `📅 ${formatThaiDateShort(r.selectedDate)} · ${r.time}`;
+        els.reminderSummaryLabel.textContent = `${formatThaiDateShort(r.selectedDate)} · ${r.time}`;
       }
     }
 
@@ -897,7 +918,7 @@
     const quotaLeft =
       ws && ws.ai_quota && typeof ws.ai_quota.remaining === "number" ? ` · AI เหลือ ${ws.ai_quota.remaining}` : "";
     if (els.userLabel) {
-      els.userLabel.textContent = `👤 ${name}${quotaLeft}`;
+      els.userLabel.textContent = `${name}${quotaLeft}`;
     }
 
     void api.setWorkspaceCache({
@@ -948,7 +969,7 @@
       state.previewMeta = preview;
       state.previewUrl = targetUrl;
       if (els.previewSourceBadge) {
-        els.previewSourceBadge.textContent = preview.cached ? "แคช" : "✓";
+        els.previewSourceBadge.textContent = preview.cached ? "แคช" : "พร้อม";
       }
 
       if (shouldOverwritePopupTitle(els.titleInput.value.trim(), preview.title, targetUrl, forceRefresh)) {
@@ -995,7 +1016,7 @@
   function applySocialLinkWarningUi(warn, { autoExpand = false, clearInput = false } = {}) {
     if (warn) {
       if (els.socialFeedWarningTitle) {
-        els.socialFeedWarningTitle.textContent = `⚠️ กรุณาใส่ลิงก์แชร์ของโพสต์ (${warn.platform})`;
+        els.socialFeedWarningTitle.textContent = `กรุณาใส่ลิงก์แชร์ของโพสต์ (${warn.platform})`;
       }
       if (els.socialFeedWarningText) {
         els.socialFeedWarningText.textContent = warn.message;
@@ -1166,7 +1187,7 @@
     renderReminderPicker();
     const userDisplay = (cachedUser && (cachedUser.display_name || cachedUser.email)) || "บัญชี Sherlink";
     if (els.userLabel) {
-      els.userLabel.textContent = `👤 ${userDisplay}`;
+      els.userLabel.textContent = `${userDisplay}`;
     }
 
     renderFoldersDropdown(cache.folders || []);
@@ -1405,7 +1426,6 @@
   async function handleCreateFolder() {
     const startGen = getSessionGen();
     const name = els.newFolderName.value.trim();
-    const emoji = els.newFolderEmoji.value.trim() || "📁";
     if (!name) return;
     const startSess = await api.getSessionState();
     if (isSessionStale(startGen) || !startSess.accessToken) return;
@@ -1414,7 +1434,7 @@
     try {
       const folder = await api.apiRequest("/api/folders", {
         method: "POST",
-        body: { name, emoji },
+        body: { name },
       });
       if (isSessionStale(startGen)) return;
       state.selectedFolderId = folder.id;
@@ -1530,7 +1550,7 @@
       state.lastSavedItemId = saved.id;
       els.aiResultBox.classList.add("hidden");
       els.aiResultBox.textContent = "";
-      els.savedTitleLabel.textContent = saved.deduplicated ? "✓ อัปเดตลิงก์เดิมในคลังแล้ว" : "✓ บันทึกลิงก์แล้ว";
+      els.savedTitleLabel.textContent = saved.deduplicated ? "อัปเดตลิงก์เดิมในคลังแล้ว" : "บันทึกลิงก์แล้ว";
       els.savedMetaText.textContent = `${saved.platform || "web"} · ${formatDomainDisplay(saved.url || url)}`;
       els.savedResultCard.classList.remove("hidden");
       els.blockedTabCard.classList.add("hidden");
@@ -1590,7 +1610,11 @@
     const startSess = await api.getSessionState();
     if (isSessionStale(startGen) || !startSess.accessToken) return;
     els.aiSummarizeBtn.disabled = true;
-    els.aiSummarizeBtn.textContent = "กำลังสรุป...";
+    if (els.aiSummarizeLabel) {
+      els.aiSummarizeLabel.textContent = "กำลังสรุป...";
+    } else {
+      els.aiSummarizeBtn.textContent = "กำลังสรุป...";
+    }
     try {
       const resp = await api.apiRequest("/api/ai/summarize", {
         method: "POST",
@@ -1611,7 +1635,11 @@
       els.aiResultBox.classList.remove("hidden");
     } finally {
       els.aiSummarizeBtn.disabled = false;
-      els.aiSummarizeBtn.textContent = "✨ สรุปด้วย AI";
+      if (els.aiSummarizeLabel) {
+        els.aiSummarizeLabel.textContent = "สรุปด้วย AI";
+      } else {
+        els.aiSummarizeBtn.textContent = "สรุปด้วย AI";
+      }
     }
   }
 

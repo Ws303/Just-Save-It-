@@ -109,7 +109,7 @@ if (!seed.folders.some((f) => f.name === "ยังไม่จัดหมว�
   seed.folders.unshift({
     id: "f1a10000-0000-4000-8000-000000000000",
     name: "ยังไม่จัดหมวด",
-    emoji: "🗂️",
+    emoji: "",
     cover: "./assets/covers/project.png",
     sharedCount: 0,
     sharedUsers: [],
@@ -617,7 +617,7 @@ export const store = {
       this.state.ui.activeDialog = null;
       this.state.ui.aiDropdown = null;
       this.state.ui.showNotifications = false;
-      this.showToast("🔒 กรุณาเข้าสู่ระบบก่อนเข้าถึงหน้านี้ (Protected Route)");
+      this.showToast("กรุณาเข้าสู่ระบบก่อนเข้าถึงหน้านี้ (Protected Route)");
       return false;
     }
 

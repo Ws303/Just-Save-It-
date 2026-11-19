@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -275,11 +276,12 @@ export default function LoginScreen() {
           </Pressable>
 
           <Pressable
-            style={{ marginTop: 14, alignItems: "center", paddingVertical: 6 }}
+            style={{ marginTop: 14, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 6, paddingVertical: 6 }}
             onPress={() => setDebugBannerEnabled(!debugOn)}
           >
+            <Ionicons name="bug-outline" size={14} color="#78716C" />
             <Text style={{ fontSize: 12, color: "#78716C", fontWeight: "600" }}>
-              {debugOn ? "ซ่อน Auth / Deep Link Debug" : "🔍 Debug Deep Link / Auth"}
+              {debugOn ? "ซ่อน Auth / Deep Link Debug" : "Debug Deep Link / Auth"}
             </Text>
           </Pressable>
         </View>

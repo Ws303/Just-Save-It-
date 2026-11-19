@@ -4,7 +4,7 @@
  * External Intent & Invite Flow simulators, 13-tool MCP Runner, HTTP Request/Response Inspector,
  * and Backend Implementation Coverage Matrix.
  */
-import { escHtml } from "../components/icons.js";
+import { icons, escHtml } from "../components/icons.js";
 import { MCP_TOOLS_CATALOG } from "../data/seed.js";
 import { buildAiHeadersAndConfig } from "../services/apiClient.js";
 import { getAuthMode, hasValidSession } from "../services/routeGuard.js";
@@ -110,7 +110,7 @@ function renderControlsTab(state, selectedLink, headers, preset) {
       }
 
       <label style="display:flex;align-items:center;justify-content:space-between;background:#fff;padding:6px 8px;border-radius:6px;border:1px solid var(--tb-border);margin-bottom:6px;font-size:11.5px;cursor:pointer;">
-        <span>🛡️ Protected Route Guard (${state.ui.authGuardEnabled !== false ? "ON" : "OFF"})</span>
+        <span style="display:inline-flex;align-items:center;gap:5px;">${icons.shield(14)}<span>Protected Route Guard (${state.ui.authGuardEnabled !== false ? "ON" : "OFF"})</span></span>
         <input type="checkbox" ${state.ui.authGuardEnabled !== false ? "checked" : ""} data-toggle-auth-guard="1" />
       </label>
 
@@ -125,28 +125,28 @@ function renderControlsTab(state, selectedLink, headers, preset) {
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
         <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="loginPassword" title="POST /api/auth/login or Supabase Sign In">
-          🔑 Login (Test Account)
+          Login (Test Account)
         </button>
         <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="magicLink" title="Magic Link OTP">
-          ✉️ Magic Link
+          Magic Link
         </button>
         <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="getMe" title="GET /api/auth/me">
-          👤 Get /api/auth/me
+          Get /api/auth/me
         </button>
         <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="testProtectedRoute" title="ทดสอบ Protected Route + GET /api/items">
-          🛡️ Test Protected Route
+          Test Protected Route
         </button>
         <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="refreshToken" title="Refresh Session JWT">
-          🔄 Refresh Session
+          Refresh Session
         </button>
         <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="googleOauth" title="Google OAuth">
-          🌐 Google OAuth URL
+          Google OAuth URL
         </button>
         <button class="tb-btn" style="justify-content:center;background:#fff;" data-tb-test-auth="createToken" title="POST /api/auth/tokens">
-          🎟️ Create MCP Token
+          Create MCP Token
         </button>
         <button class="tb-btn" style="justify-content:center;background:#fff;color:#dc2626;" data-tb-test-auth="logout" title="Sign Out & Lock Protected Routes">
-          🚪 Logout (Lock)
+          Logout (Lock)
         </button>
       </div>
     </div>
@@ -167,27 +167,27 @@ function renderControlsTab(state, selectedLink, headers, preset) {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
         <button
           class="tb-btn"
-          style="background:#fed053;color:#000;font-weight:800;border:1.5px solid #000;box-shadow:2px 2px 0 #000;justify-content:center;"
+          style="background:#fed053;color:#000;font-weight:800;border:1.5px solid #000;box-shadow:2px 2px 0 #000;justify-content:center;gap:5px;"
           data-sim-share-preset="tiktok"
           title="จำลองแชร์จาก TikTok ตรงตามรูปตัวอย่าง"
         >
-          🎵 TikTok (ตามรูปตัวอย่าง)
+          ${icons.tiktok(14)} <span>TikTok (ตามรูปตัวอย่าง)</span>
         </button>
         <button
           class="tb-btn"
-          style="justify-content:center;"
+          style="justify-content:center;gap:5px;"
           data-sim-share-preset="instagram"
           title="จำลองแชร์คลิป Reels จาก Instagram"
         >
-          📸 Instagram Reels
+          ${icons.instagram(14)} <span>Instagram Reels</span>
         </button>
         <button
           class="tb-btn"
-          style="justify-content:center;"
+          style="justify-content:center;gap:5px;"
           data-sim-share-preset="youtube"
           title="จำลองแชร์จาก YouTube"
         >
-          ▶️ YouTube
+          ${icons.youtube(14)} <span>YouTube</span>
         </button>
         <button
           class="tb-btn"
@@ -213,7 +213,7 @@ function renderControlsTab(state, selectedLink, headers, preset) {
         <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;background:#fff;padding:8px;border-radius:8px;border:1px solid var(--tb-border);">
           <input class="tb-mini-input" type="text" id="customShareTitle" placeholder="ชื่อโพสต์ เช่น คาเฟ่เปิดใหม่ชวนไปลอง" value="TikTok - Make Your Day" />
           <input class="tb-mini-input" type="url" id="customShareUrl" placeholder="URL เช่น https://vt.tiktok.com/ZSjXample/" value="https://vt.tiktok.com/ZSjXample/" />
-          <button class="tb-btn primary" data-sim-custom-share="1">⚡ ส่งแชร์เข้าแอป Just Save It</button>
+          <button class="tb-btn primary" data-sim-custom-share="1">ส่งแชร์เข้าแอป Sherlink</button>
         </div>
       </details>
     </div>
@@ -222,7 +222,7 @@ function renderControlsTab(state, selectedLink, headers, preset) {
     <div class="tb-card" style="border: 2px solid ${data.lastSharedEvent ? "#10b981" : "var(--tb-border)"};">
       <h3 class="tb-card-title">
         <span style="display:inline-flex;align-items:center;gap:6px;">
-          <span>📥 ตรวจสอบข้อมูลที่ถูกส่งเข้าแอป</span>
+          <span>ตรวจสอบข้อมูลที่ถูกส่งเข้าแอป</span>
           ${
             data.lastSharedEvent
               ? `<span class="tag-badge live" style="background:#10b981;">DATA RECEIVED</span>`
@@ -237,25 +237,25 @@ function renderControlsTab(state, selectedLink, headers, preset) {
         <div style="display:flex;flex-direction:column;gap:8px;">
           <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.5;">
             <div style="color:#065f46;font-weight:700;display:flex;align-items:center;gap:4px;">
-              <span>✓ ข้อมูลถูกส่งเข้าแอปและบันทึกเรียบร้อย</span>
+              ${icons.check(13)}<span>ข้อมูลถูกส่งเข้าแอปและบันทึกเรียบร้อย</span>
               <span class="tiny-hint" style="color:#047857;">(${escHtml(data.lastSharedEvent.at)})</span>
             </div>
             <div style="margin-top:4px;">
               <strong>ชื่อโพสต์:</strong> ${escHtml(data.lastSharedEvent.title)}<br/>
               <strong>URL:</strong> <a href="${escHtml(data.lastSharedEvent.url)}" target="_blank" style="text-decoration:underline;">${escHtml(data.lastSharedEvent.url)}</a><br/>
               <strong>แพลตฟอร์ม:</strong> ${escHtml(data.lastSharedEvent.platform)} (${escHtml(data.lastSharedEvent.domain)})<br/>
-              <strong>คอลเลกชัน:</strong> 📁 ${escHtml(data.lastSharedEvent.folderName)}<br/>
-              <strong>สถานะการปักหมุด:</strong> ${data.lastSharedEvent.pinned ? "📌 ปักหมุดไว้บนสุด" : "ธรรมดา"}<br/>
+              <strong>คอลเลกชัน:</strong> ${escHtml(data.lastSharedEvent.folderName)}<br/>
+              <strong>สถานะการปักหมุด:</strong> ${data.lastSharedEvent.pinned ? "ปักหมุดไว้บนสุด" : "ธรรมดา"}<br/>
               <strong>แท็ก:</strong> ${(data.lastSharedEvent.tags || []).join(", ") || "-"}
             </div>
           </div>
 
           <div style="display:flex;gap:6px;">
             <button class="tb-btn primary" style="flex:1;" data-open-link="${data.lastSharedEvent.id}">
-              👀 เปิดดูการ์ดที่แชร์เข้ามาในแอป
+              เปิดดูการ์ดที่แชร์เข้ามาในแอป
             </button>
-            <button class="tb-btn" style="flex:1;" data-open-folder="${data.lastSharedEvent.folderId}">
-              📁 ไปที่คอลเลกชัน ${escHtml(data.lastSharedEvent.folderName)}
+            <button class="tb-btn" style="flex:1;justify-content:center;gap:4px;" data-open-folder="${data.lastSharedEvent.folderId}">
+              ${icons.folder(13)} <span>ไปที่คอลเลกชัน ${escHtml(data.lastSharedEvent.folderName)}</span>
             </button>
           </div>
 
@@ -267,7 +267,7 @@ function renderControlsTab(state, selectedLink, headers, preset) {
           : `
         <div style="padding:10px;text-align:center;color:var(--ink-secondary);font-size:12.5px;">
           ยังไม่มีข้อมูลที่เพิ่งแชร์เข้ามา<br/>
-          <span class="tiny-hint">ลองกดปุ่ม <strong>"🎵 TikTok (ตามรูปตัวอย่าง)"</strong> ด้านบน แล้วกด <strong>"บันทึกลิงก์"</strong> ในแชร์ชีต</span>
+          <span class="tiny-hint">ลองกดปุ่ม <strong>"TikTok (ตามรูปตัวอย่าง)"</strong> ด้านบน แล้วกด <strong>"บันทึกลิงก์"</strong> ในแชร์ชีต</span>
         </div>`
       }
     </div>

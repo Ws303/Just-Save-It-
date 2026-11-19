@@ -30,6 +30,10 @@
     <section id="settingsPanel" class="submenu-card hidden" aria-label="ตั้งค่าและบัญชี">
       <div id="submenuAccountRow" class="submenu-account hidden">
         <div class="submenu-account-info">
+          <svg class="ext-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+            <circle cx="12" cy="7" r="4"></circle>
+          </svg>
           <span id="userLabel" class="user-label">กำลังโหลดผู้ใช้...</span>
         </div>
         <button id="logoutBtn" type="button" class="submenu-logout-btn">ออกจากระบบ</button>
@@ -38,8 +42,20 @@
       <div class="submenu-section">
         <label for="backendUrlInput" class="field-label">Backend API URL</label>
         <div class="preset-row">
-          <button id="presetCloudBtn" type="button" class="btn-chip">☁️ Production Cloud</button>
-          <button id="presetLocalBtn" type="button" class="btn-chip">💻 Localhost</button>
+          <button id="presetCloudBtn" type="button" class="btn-chip">
+            <svg class="ext-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path>
+            </svg>
+            <span>Production Cloud</span>
+          </button>
+          <button id="presetLocalBtn" type="button" class="btn-chip">
+            <svg class="ext-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+              <line x1="8" y1="21" x2="16" y2="21"></line>
+              <line x1="12" y1="17" x2="12" y2="21"></line>
+            </svg>
+            <span>Localhost</span>
+          </button>
         </div>
         <div class="inline-row">
           <input
@@ -169,8 +185,19 @@
 
           <!-- Active Reminder Pill Strip (visible only when scheduled) -->
           <div id="reminderSummaryChip" class="reminder-active-strip hidden">
-            <span id="reminderSummaryLabel">⏰ ไม่ตั้งเตือน</span>
-            <button id="clearReminderInlineBtn" type="button" class="reminder-clear-x" aria-label="ล้างการตั้งเตือน">✕</button>
+            <span class="reminder-strip-left">
+              <svg class="ext-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9"></circle>
+                <polyline points="12 7 12 12 15.5 14"></polyline>
+              </svg>
+              <span id="reminderSummaryLabel">ไม่ตั้งเตือน</span>
+            </span>
+            <button id="clearReminderInlineBtn" type="button" class="reminder-clear-x" aria-label="ล้างการตั้งเตือน">
+              <svg class="ext-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
           </div>
 
           <!-- Reminder Popover (Thai calendar + presets + repeat N days) -->
@@ -232,7 +259,14 @@
 
           <!-- Non-post Social Feed Warning (visible when browsing FB/IG/TikTok feed instead of a direct post link) -->
           <div id="socialFeedWarningCard" class="social-feed-warning hidden">
-            <strong id="socialFeedWarningTitle" class="social-feed-warning-title">⚠️ กรุณาใช้ลิงก์แชร์ของโพสต์</strong>
+            <div class="warning-head-row">
+              <svg class="ext-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"></path>
+                <line x1="12" y1="9" x2="12" y2="13"></line>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+              </svg>
+              <strong id="socialFeedWarningTitle" class="social-feed-warning-title">กรุณาใช้ลิงก์แชร์ของโพสต์</strong>
+            </div>
             <p id="socialFeedWarningText" class="social-feed-warning-text">
               หน้านี้เป็นหน้าฟีดหลัก ไม่ใช่ลิงก์โพสต์โดยตรง — กรุณากดปุ่ม 'แชร์ (Share) &gt; คัดลอกลิงก์' จากโพสต์หรือคลิปที่ต้องการ แล้วนำมาวางในช่อง URL ด้านล่าง
             </p>
@@ -266,7 +300,6 @@
               <option value="">-- ยังไม่เลือกโฟลเดอร์ --</option>
             </select>
             <div id="newFolderBox" class="inline-folder-box hidden">
-              <input id="newFolderEmoji" type="text" class="input input-emoji" value="📁" maxlength="4" />
               <input id="newFolderName" type="text" class="input" placeholder="ชื่อโฟลเดอร์ใหม่..." />
               <button id="createFolderBtn" type="button" class="btn-chip btn-chip-dark">เพิ่ม</button>
             </div>
@@ -297,8 +330,18 @@
           <!-- Instant Optimistic Save Confirmation + AI Summary CTA (placed above Save button so visible without scrolling) -->
           <section id="savedResultCard" class="saved-inline-card hidden">
             <div class="label-row">
-              <strong id="savedTitleLabel" class="success-title">✓ บันทึกลิงก์แล้ว</strong>
-              <button id="aiSummarizeBtn" type="button" class="btn-lavender-pill">✨ สรุปด้วย AI</button>
+              <span class="saved-title-row">
+                <svg class="ext-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                <strong id="savedTitleLabel" class="success-title">บันทึกลิงก์แล้ว</strong>
+              </span>
+              <button id="aiSummarizeBtn" type="button" class="btn-lavender-pill">
+                <svg class="ext-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"></path>
+                </svg>
+                <span id="aiSummarizeLabel">สรุปด้วย AI</span>
+              </button>
             </div>
             <p id="savedMetaText" class="hint"></p>
             <div id="aiResultBox" class="ai-box hidden"></div>

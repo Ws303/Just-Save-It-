@@ -115,9 +115,9 @@ function renderSimulatedHostApp(appName) {
     <div class="simulated-host-app">
       <div class="sim-host-topbar">
         <button style="background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:20px;padding:5px 12px;font-size:11.5px;cursor:pointer;" data-close-host-app="1">
-          ✕ ปิดโหมดจำลองแอป
+          ปิดโหมดจำลองแอป
         </button>
-        <span style="font-weight:700;">${isTikTok ? "🎵 TikTok (กำลังเล่นคลิป)" : isIG ? "📸 Instagram Reels" : isYT ? "▶️ YouTube" : "𝕏 X"}</span>
+        <span style="font-weight:700;">${isTikTok ? "TikTok (กำลังเล่นคลิป)" : isIG ? "Instagram Reels" : isYT ? "YouTube" : "𝕏 X"}</span>
         <span style="font-size:11px;opacity:0.85;">Host App</span>
       </div>
       <div class="sim-host-content" style="background-image:url('./assets/covers/coffee.png');">
@@ -138,7 +138,7 @@ function renderSimulatedHostApp(appName) {
         <div class="sim-host-meta">
           <strong style="font-size:15px;">${isTikTok ? "@minimal.lifestyle" : isIG ? "@cafe.hopping" : "@traveler.bkk"}</strong>
           <p style="margin:0;font-size:13px;line-height:1.4;opacity:0.95;">
-            ${isTikTok ? "TikTok - Make Your Day ✨ แนะนำคลิปไวรัลยอดนิยม" : "รีวิวคาเฟ่มินิมอลย่านอารีย์ 2026"}
+            ${isTikTok ? "TikTok - Make Your Day — แนะนำคลิปไวรัลยอดนิยม" : "รีวิวคาเฟ่มินิมอลย่านอารีย์ 2026"}
           </p>
         </div>
       </div>
@@ -246,8 +246,8 @@ function renderApp() {
         ${renderViewportContent(state)}
         ${
           showQaToggle
-            ? `<button class="qa-floating-toggle" data-action="toggle-qa-panel" title="เปิด QA & API Testbed Panel">
-          🛠️ QA &amp; API
+            ? `<button class="qa-floating-toggle" data-action="toggle-qa-panel" title="เปิด QA & API Testbed Panel" style="display:inline-flex;align-items:center;gap:6px;">
+          ${icons.shield(14)} <span>QA &amp; API</span>
         </button>`
             : ""
         }
@@ -306,7 +306,7 @@ function renderApp() {
                     (b.id === "reminderSheet" && state.ui.activeSheet?.type === "reminder") ||
                     (b.id === "inviteSheet" && state.ui.activeSheet?.type === "invite") ||
                     (state.ui.viewportMode === "mobile" && !state.ui.activeSheet && state.ui.screen === b.id);
-                  return `<button class="tb-qbtn ${isActive ? "active" : ""}" data-quick-jump="${b.id}">${b.protected && !isUnlocked ? "🔒 " : ""}${b.label}</button>`;
+                  return `<button class="tb-qbtn ${isActive ? "active" : ""}" data-quick-jump="${b.id}" style="display:inline-flex;align-items:center;gap:4px;">${b.protected && !isUnlocked ? icons.lock(12) : ""}${b.label}</button>`;
                 })
                 .join("")}
             </div>
@@ -1036,7 +1036,7 @@ appEl.addEventListener("click", async (e) => {
     if (act === "open-create-folder-sheet") {
       ui.createFolderSheetOpen = true;
       ui.inlineFolderName = "";
-      ui.inlineFolderEmoji = "☕";
+      ui.inlineFolderEmoji = "";
       store.emit();
       return;
     }
@@ -1046,13 +1046,13 @@ appEl.addEventListener("click", async (e) => {
       return;
     }
     if (act === "select-inline-emoji") {
-      ui.inlineFolderEmoji = d.emoji || "📁";
+      ui.inlineFolderEmoji = d.emoji || "";
       store.emit();
       return;
     }
     if (act === "create-folder-inline") {
       const name = (ui.inlineFolderName || "").trim() || "โฟลเดอร์ใหม่";
-    const created = await apiClient.saveFolder({ name, emoji: ui.inlineFolderEmoji || "📁" });
+    const created = await apiClient.saveFolder({ name, emoji: ui.inlineFolderEmoji || "" });
     if (!created) return;
     ui.createFolderSheetOpen = false;
     ui.folderPickerSheetOpen = false;
@@ -2161,13 +2161,13 @@ appEl.addEventListener("click", async (e) => {
       return;
     }
     const res = await apiClient.updateAccountEmail(val);
-    store.showToast(res.ok ? "อัปเดตอีเมลบัญชีเรียบร้อย" : `❌ ${res.error}`);
+    store.showToast(res.ok ? "อัปเดตอีเมลบัญชีเรียบร้อย" : `${res.error}`);
     return;
   }
   if (d.sendPasswordReset) {
     const res = await apiClient.sendPasswordReset(data.user.email);
     store.showToast(
-      res.ok ? `ส่งลิงก์ตั้งรหัสผ่านไปที่ ${data.user.email} แล้ว` : `❌ ${res.error}`
+      res.ok ? `ส่งลิงก์ตั้งรหัสผ่านไปที่ ${data.user.email} แล้ว` : `${res.error}`
     );
     return;
   }
@@ -2377,7 +2377,7 @@ appEl.addEventListener("click", async (e) => {
       const email = ui.authEmail || (api.useDevBypass ? data.user.email || "may@example.com" : "");
       const password = ui.authPassword || (api.useDevBypass ? "password123" : "");
       if (!email || !password) {
-        store.showToast("❌ กรุณากรอกอีเมลและรหัสผ่านจริงในหน้า Cloud");
+        store.showToast("กรุณากรอกอีเมลและรหัสผ่านจริงในหน้า Cloud");
         return;
       }
       const res = await apiClient.signInPassword(email, password);
@@ -2385,41 +2385,41 @@ appEl.addEventListener("click", async (e) => {
       if (res.ok && hasValidSession(store.state)) {
         completePostAuthNavigation("home");
       }
-      store.showToast(res.ok ? "🔑 Login รหัสผ่านสำเร็จ" : `❌ ${res.error}`);
+      store.showToast(res.ok ? "Login รหัสผ่านสำเร็จ" : `${res.error}`);
     } else if (act === "magicLink") {
       const email = ui.authEmail || (api.useDevBypass ? data.user.email || "may@example.com" : "");
       if (!email) {
-        store.showToast("❌ กรุณากรอกอีเมลจริงในหน้า Cloud");
+        store.showToast("กรุณากรอกอีเมลจริงในหน้า Cloud");
         return;
       }
       const res = await apiClient.signInEmail(email);
       if (res.ok && hasValidSession(store.state)) {
         completePostAuthNavigation("home");
       }
-      store.showToast(res.ok ? "✉️ ส่ง Magic Link สำเร็จ" : `❌ ${res.error}`);
+      store.showToast(res.ok ? "ส่ง Magic Link สำเร็จ" : `${res.error}`);
     } else if (act === "getMe") {
       const res = await apiClient.getMe();
-      store.showToast(res.ok ? `👤 ${res.data.display_name || res.data.email} (${res.data.email})` : `❌ ${res.error}`);
+      store.showToast(res.ok ? `${res.data.display_name || res.data.email} (${res.data.email})` : `${res.error}`);
     } else if (act === "testProtectedRoute") {
       const guardBlocked = !store.navigate("folders", { viewportMode: "mobile" });
       const res = await apiClient.probeProtectedRoute();
       if (guardBlocked || res.status === 401) {
-        store.showToast(`🛡️ Protected Route ป้องกันสำเร็จ (HTTP ${res.status} / Guard Redirect)`);
+        store.showToast(`Protected Route ป้องกันสำเร็จ (HTTP ${res.status} / Guard Redirect)`);
       } else {
-        store.showToast(`✅ Protected Route อนุญาต (HTTP ${res.status})`);
+        store.showToast(`Protected Route อนุญาต (HTTP ${res.status})`);
       }
     } else if (act === "refreshToken") {
       const res = await apiClient.refreshSession();
-      store.showToast(res.ok ? "🔄 Refresh Session JWT สำเร็จ" : `❌ ${res.error}`);
+      store.showToast(res.ok ? "Refresh Session JWT สำเร็จ" : `${res.error}`);
     } else if (act === "googleOauth") {
       const res = await apiClient.signInGoogle();
-      store.showToast(res.ok ? "🌐 ขอ Google OAuth URL สำเร็จ" : `❌ ${res.error}`);
+      store.showToast(res.ok ? "ขอ Google OAuth URL สำเร็จ" : `${res.error}`);
     } else if (act === "createToken") {
       const res = await apiClient.createMcpToken("Claude Desktop Test");
-      store.showToast(res.ok ? `🎟️ MCP Token: ${res.data.token_prefix}` : `❌ ${res.error}`);
+      store.showToast(res.ok ? `MCP Token: ${res.data.token_prefix}` : `${res.error}`);
     } else if (act === "logout") {
       await apiClient.signOut();
-      store.showToast("🚪 ออกจากระบบและล็อก Protected Routes แล้ว");
+      store.showToast("ออกจากระบบและล็อก Protected Routes แล้ว");
     }
     return;
   }

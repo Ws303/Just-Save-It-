@@ -192,8 +192,8 @@ export function renderLinkCard(item, { folderContextId = null, selected = false,
       <div class="link-body" data-open-link="${safeId}">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
           <p class="link-platform" style="margin:0;">${escHtml(item.platform)}</p>
-          ${isPinned ? `<span style="font-size:10px;font-weight:700;background:#111;color:#fff;padding:1px 6px;border-radius:4px;">📌 ปักหมุด</span>` : ""}
-          ${isRecentlyShared ? `<span class="new-incoming-pill">✨ เพิ่งแชร์เข้ามา</span>` : ""}
+          ${isPinned ? `<span style="font-size:10px;font-weight:700;background:#111;color:#fff;padding:1px 6px;border-radius:4px;display:inline-flex;align-items:center;gap:3px;">${icons.pin(11)} ปักหมุด</span>` : ""}
+          ${isRecentlyShared ? `<span class="new-incoming-pill" style="display:inline-flex;align-items:center;gap:3px;">${icons.sparkles(11)} เพิ่งแชร์เข้ามา</span>` : ""}
         </div>
         <p class="link-title">${escHtml(cardTitle)}</p>
         <p class="link-sub">

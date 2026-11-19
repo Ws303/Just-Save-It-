@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
 import {
@@ -76,7 +77,7 @@ export default function FolderDetailScreen() {
 
   const [folder, setFolder] = useState<MobileFolderItem | null>(() => {
     if (!initialCache) return null;
-    if (isVirtualInbox) return { id: "virtual-inbox", name: "รวมไว้ดูทีหลัง", icon: "🔖" };
+    if (isVirtualInbox) return { id: "virtual-inbox", name: "รวมไว้ดูทีหลัง" };
     return initialCache.folders.find((f) => f.id === id) || null;
   });
   const [items, setItems] = useState<MobileLinkItem[]>(() => {
@@ -107,7 +108,7 @@ export default function FolderDetailScreen() {
     }
     if (cached.items.length > 0 || cached.folders.length > 0) {
       if (isVirtualInbox) {
-        setFolder({ id: "virtual-inbox", name: "รวมไว้ดูทีหลัง", icon: "🔖" });
+        setFolder({ id: "virtual-inbox", name: "รวมไว้ดูทีหลัง" });
         setItems(cached.items.filter((it) => !it.folder_id));
       } else {
         const found = cached.folders.find((f) => f.id === id);
@@ -123,10 +124,10 @@ export default function FolderDetailScreen() {
       return;
     }
     if (isVirtualInbox) {
-      setFolder({ id: "virtual-inbox", name: "รวมไว้ดูทีหลัง", icon: "🔖" });
+      setFolder({ id: "virtual-inbox", name: "รวมไว้ดูทีหลัง" });
       setItems(ws.items.filter((it) => !it.folder_id));
     } else {
-      const found = ws.folders.find((f) => f.id === id) || { id: String(id), name: "โฟลเดอร์", icon: "📁" };
+      const found = ws.folders.find((f) => f.id === id) || { id: String(id), name: "โฟลเดอร์" };
       setFolder(found);
       setItems(ws.items.filter((it) => it.folder_id === id));
     }
@@ -223,16 +224,26 @@ export default function FolderDetailScreen() {
     <View style={styles.root}>
       <View style={styles.header}>
         <View style={styles.titleRow}>
-          <Text style={styles.title}>
-            {folder?.emoji || folder?.icon || "📁"} {folder?.name || "โฟลเดอร์"}
-          </Text>
+          <View style={styles.titleLeft}>
+            <Ionicons
+              name={isVirtualInbox ? "bookmark-outline" : "folder-outline"}
+              size={20}
+              color="#1C1917"
+            />
+            <Text style={styles.title} numberOfLines={1}>
+              {folder?.name || "โฟลเดอร์"}
+            </Text>
+          </View>
           {!isVirtualInbox ? (
             <Pressable
               style={[styles.inviteBtn, inviting && { opacity: 0.7 }]}
               disabled={inviting}
               onPress={openInviteModal}
             >
-              <Text style={styles.inviteBtnText}>🤝 เชิญเพื่อนร่วมโฟลเดอร์</Text>
+              <View style={styles.btnInnerRow}>
+                <Ionicons name="people-outline" size={14} color="#FDFBF7" />
+                <Text style={styles.inviteBtnText}>เชิญเพื่อนร่วมโฟลเดอร์</Text>
+              </View>
             </Pressable>
           ) : null}
         </View>
@@ -288,9 +299,12 @@ export default function FolderDetailScreen() {
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <View style={styles.modalHead}>
-              <Text style={styles.modalTitle}>🤝 ตั้งค่าลิงก์เชิญโฟลเดอร์</Text>
-              <Pressable onPress={() => setInviteModalOpen(false)}>
-                <Text style={styles.modalClose}>✕</Text>
+              <View style={styles.btnInnerRow}>
+                <Ionicons name="link-outline" size={18} color="#1C1917" />
+                <Text style={styles.modalTitle}>ตั้งค่าลิงก์เชิญโฟลเดอร์</Text>
+              </View>
+              <Pressable hitSlop={8} onPress={() => setInviteModalOpen(false)}>
+                <Ionicons name="close" size={20} color="#78716C" />
               </Pressable>
             </View>
             <ScrollView showsVerticalScrollIndicator={false}>
@@ -478,6 +492,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 12,
   },
+  titleLeft: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 },
+  btnInnerRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   modalTitle: { fontSize: 17, fontWeight: "800", color: "#1C1917" },
   modalClose: { fontSize: 18, color: "#78716C", padding: 4 },
   modalLabel: { fontSize: 13, fontWeight: "700", color: "#44403C", marginTop: 10, marginBottom: 6 },

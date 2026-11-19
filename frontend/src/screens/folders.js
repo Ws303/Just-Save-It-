@@ -34,7 +34,7 @@ function renderMobileFolderCover(folder, links = [], isWatchLater = false) {
   if (cover) {
     return `<img src="${escHtml(cover)}" alt="${escHtml(folder?.name || "")}" />`;
   }
-  return `<div class="pc-folder-cover-empty">${escHtml(folder?.emoji || "📁")}</div>`;
+  return `<div class="pc-folder-cover-empty">${icons.folder(26)}</div>`;
 }
 
 export function renderFoldersGridInner(state) {
@@ -380,7 +380,7 @@ export function renderFolderSheets(state) {
             ${
               folderCoverThumb
                 ? `<img class="figma-share-thumb" src="${escHtml(folderCoverThumb)}" alt="${escHtml(folder.name)}" />`
-                : `<div class="figma-share-thumb" style="display:flex;align-items:center;justify-content:center;font-size:22px;">${escHtml(folder.emoji || "📁")}</div>`
+                : `<div class="figma-share-thumb" style="display:flex;align-items:center;justify-content:center;color:var(--ink-secondary);">${icons.folder(24)}</div>`
             }
             <div class="figma-share-folder-meta">
               <strong>${escHtml(folder.name)}</strong>

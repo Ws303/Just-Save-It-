@@ -1114,14 +1114,15 @@ export async function uploadFolderCover(
 
 export async function createFolder(
   name: string,
-  emoji = "📁",
+  emoji = "",
   coverUrl?: string | null,
 ): Promise<ApiResult<MobileFolderItem>> {
+  const cleanEmoji = String(emoji || "").trim();
   return apiFetch<MobileFolderItem>("/api/folders", {
     method: "POST",
     body: {
       name: name.trim(),
-      emoji,
+      ...(cleanEmoji ? { emoji: cleanEmoji } : {}),
       ...(coverUrl !== undefined ? { cover_url: coverUrl } : {}),
     },
   });

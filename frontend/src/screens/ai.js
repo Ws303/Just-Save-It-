@@ -144,8 +144,8 @@ export function renderAiPanelBody(state) {
           cfg.lastTestedAt
             ? `
           <div class="settings-card" style="padding:10px 12px;border-color:${cfg.connected ? "#bbf7d0" : "#fecaca"};background:${cfg.connected ? "#f0fdf4" : "#fef2f2"};">
-            <strong style="font-size:12.5px;color:${cfg.connected ? "#166534" : "#991b1b"};display:block;">
-              ${cfg.connected ? "✓ เชื่อมต่อ AI พร้อมใช้งาน" : `⚠️ ${escHtml(cfg.lastTestError || "ทดสอบการเชื่อมต่อไม่สำเร็จ")}`}
+            <strong style="font-size:12.5px;color:${cfg.connected ? "#166534" : "#991b1b"};display:flex;align-items:center;gap:6px;">
+              ${cfg.connected ? `${icons.check(15)}<span>เชื่อมต่อ AI พร้อมใช้งาน</span>` : `${icons.alertTriangle(15)}<span>${escHtml(cfg.lastTestError || "ทดสอบการเชื่อมต่อไม่สำเร็จ")}</span>`}
             </strong>
           </div>`
             : ""

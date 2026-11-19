@@ -1257,10 +1257,10 @@ export const apiClient = {
     });
   },
 
-  async saveFolder({ folderId = null, name, emoji = "📁", cover, resetCover = false }) {
+  async saveFolder({ folderId = null, name, emoji = "", cover, resetCover = false }) {
     const startKey = getAuthContextKey();
     const cleanName = String(name || "").trim() || "โฟลเดอร์ใหม่";
-    const cleanEmoji = emoji || "📁";
+    const cleanEmoji = emoji || "";
     const hasCoverPatch = resetCover || cover !== undefined;
     const nextCoverValue = resetCover || cover === null ? null : cover || undefined;
     if (folderId) {

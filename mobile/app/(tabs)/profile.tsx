@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
   isPostClearSafeToNavigate,
@@ -247,11 +248,17 @@ export default function ProfileScreen() {
           {busyAction === "push" ? (
             <ActivityIndicator color="#9B2C2C" />
           ) : (
-            <Text style={styles.rowBtnText}>🔔 เปิดใช้ / ซิงก์การแจ้งเตือนอุปกรณ์นี้</Text>
+            <View style={styles.rowBtnInner}>
+              <Ionicons name="notifications-outline" size={16} color="#1C1917" />
+              <Text style={styles.rowBtnText}>เปิดใช้ / ซิงก์การแจ้งเตือนอุปกรณ์นี้</Text>
+            </View>
           )}
         </Pressable>
         <Pressable style={styles.rowBtn} onPress={() => void handleFlushQueue()}>
-          <Text style={styles.rowBtnText}>🔄 ซิงก์ Offline Queue ตอนนี้ ({queueCount})</Text>
+          <View style={styles.rowBtnInner}>
+            <Ionicons name="sync-outline" size={16} color="#1C1917" />
+            <Text style={styles.rowBtnText}>ซิงก์ Offline Queue ตอนนี้ ({queueCount})</Text>
+          </View>
         </Pressable>
       </View>
 
@@ -261,9 +268,12 @@ export default function ProfileScreen() {
           style={styles.rowBtn}
           onPress={() => setDebugBannerEnabled(!debugBannerOn)}
         >
-          <Text style={styles.rowBtnText}>
-            🔍 {debugBannerOn ? "ปิด Deep Link / Auth Debug Banner" : "เปิด Deep Link / Auth Debug Banner"}
-          </Text>
+          <View style={styles.rowBtnInner}>
+            <Ionicons name="bug-outline" size={16} color="#1C1917" />
+            <Text style={styles.rowBtnText}>
+              {debugBannerOn ? "ปิด Deep Link / Auth Debug Banner" : "เปิด Deep Link / Auth Debug Banner"}
+            </Text>
+          </View>
         </Pressable>
         <Pressable
           style={[styles.rowBtn, styles.dangerRowBtn]}
@@ -272,7 +282,10 @@ export default function ProfileScreen() {
             setDeleteOpen(true);
           }}
         >
-          <Text style={styles.dangerRowText}>⚠️ ลบบัญชีผู้ใช้อย่างถาวร</Text>
+          <View style={styles.rowBtnInner}>
+            <Ionicons name="trash-outline" size={16} color="#B91C1C" />
+            <Text style={styles.dangerRowText}>ลบบัญชีผู้ใช้อย่างถาวร</Text>
+          </View>
         </Pressable>
       </View>
 
@@ -364,6 +377,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
+  },
+  rowBtnInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   rowBtnText: { fontSize: 14, fontWeight: "600", color: "#1C1917" },
   dangerRowBtn: { backgroundColor: "#FEF2F2" },

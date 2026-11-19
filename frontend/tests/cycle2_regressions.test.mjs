@@ -152,7 +152,9 @@ test("Extension C4: cross-account cache & offline queue isolation + narrow CSS +
   assert.equal(signedOutFlush.failed, 0);
 
   const popupCss = fs.readFileSync(path.join(repoRoot, "extension", "popup.css"), "utf8");
-  assert.match(popupCss, /width:\s*min\(460px,\s*100vw\)/);
+  assert.match(popupCss, /width:\s*420px/);
+  assert.match(popupCss, /max-width:\s*100%/);
+  assert.doesNotMatch(popupCss, /100vw/);
   const popupJs = fs.readFileSync(path.join(repoRoot, "extension", "popup.js"), "utf8");
   assert.match(popupJs, /resetSaverMemoryAndInputs/);
   assert.doesNotMatch(popupJs, /els\.folderChipWrap\.innerHTML\s*=\s*""/);
@@ -1466,6 +1468,7 @@ test("Cycle 7 [C-1, H-1, M-1, M-2, M-3, L-2]: real VM runtime tests for extensio
       document: {
         getElementById: getEl,
         createElement: (tag) => makeEl(tag),
+        createElementNS: (_ns, tag) => makeEl(tag),
         createDocumentFragment: () => makeEl("#frag"),
         querySelectorAll: () => [],
         querySelector: () => null,
@@ -2847,6 +2850,7 @@ test("Cycle 18 [LOW-1, LOW-2, LOW-4]: GoTrue signup redirect_to, stale login/reg
       document: {
         getElementById: getEl,
         createElement: (tag) => makeEl(tag),
+        createElementNS: (_ns, tag) => makeEl(tag),
         createDocumentFragment: () => makeEl("#frag"),
         querySelectorAll: (sel) => (sel === "[data-rem-preset]" ? [todayPresetBtn] : []),
         querySelector: () => null,

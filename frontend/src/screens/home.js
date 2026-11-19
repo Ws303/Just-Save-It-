@@ -276,7 +276,7 @@ export function renderHomeScreen(state) {
                       } else if (folderThumbs[0]) {
                         coverHtml = `<img src="${escHtml(folderThumbs[0])}" alt="" class="figma-folder-cover-img" />`;
                       } else {
-                        coverHtml = `<div class="pc-folder-cover-empty">${escHtml(f.emoji || "📁")}</div>`;
+                        coverHtml = `<div class="pc-folder-cover-empty">${icons.folder(26)}</div>`;
                       }
                       return `
               <button type="button" class="figma-folder-card" data-open-folder="${escHtml(f.id)}">

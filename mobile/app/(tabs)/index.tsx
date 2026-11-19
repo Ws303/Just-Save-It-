@@ -15,6 +15,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
@@ -48,8 +49,6 @@ import {
   type MobileLinkItem,
   type WorkflowStatus,
 } from "../../src/storage";
-
-const QUICK_FOLDER_ICONS = ["📁", "🍜", "☕", "🎬", "💻", "✈️", "🛍️", "💡"];
 
 function isReadStatus(raw?: string): boolean {
   const s = String(raw || "inbox").toLowerCase();
@@ -92,7 +91,6 @@ export default function HomeFeedScreen() {
   const [saving, setSaving] = useState(false);
   const [inlineFolderOpen, setInlineFolderOpen] = useState(false);
   const [inlineFolderName, setInlineFolderName] = useState("");
-  const [inlineFolderIcon, setInlineFolderIcon] = useState("📁");
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [previewData, setPreviewData] = useState<PreviewUrlResponsePayload | null>(null);
@@ -214,7 +212,6 @@ export default function HomeFeedScreen() {
     setModalOpen(false);
     setInlineFolderOpen(false);
     setInlineFolderName("");
-    setInlineFolderIcon("📁");
   }
 
   async function handleInlineCreateFolder() {
@@ -226,7 +223,7 @@ export default function HomeFeedScreen() {
     const startGen = getAuthGeneration();
     setCreatingFolder(true);
     try {
-      const res = await createFolder(name, inlineFolderIcon || "📁");
+      const res = await createFolder(name, "");
       if (getAuthGeneration() !== startGen) return;
       if (!res.ok || !res.data) {
         Alert.alert("สร้างโฟลเดอร์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
@@ -236,7 +233,6 @@ export default function HomeFeedScreen() {
       setFolders((prev) => [...prev.filter((f) => f.id !== created.id), created]);
       setSaveFolderId(created.id);
       setInlineFolderName("");
-      setInlineFolderIcon("📁");
       setInlineFolderOpen(false);
     } finally {
       setCreatingFolder(false);
@@ -314,7 +310,7 @@ export default function HomeFeedScreen() {
       <View style={styles.topHeader}>
         <View style={styles.greetingRow}>
           <View>
-            <Text style={styles.greetingTitle}>สวัสดี, {displayName} 👋</Text>
+            <Text style={styles.greetingTitle}>สวัสดี, {displayName}</Text>
             <Text style={styles.greetingSub}>
               ทั้งหมด {items.length} ลิงก์ {offline ? "• โหมดออฟไลน์" : "• Cloud ซิงก์แล้ว"}
               {queueCount > 0 ? ` • ค้างซิงก์ ${queueCount}` : ""}
@@ -395,7 +391,7 @@ export default function HomeFeedScreen() {
                           {thumb ? (
                             <Image source={{ uri: thumb }} style={styles.homeFolderThumbImg} resizeMode="cover" />
                           ) : (
-                            <Text style={{ fontSize: 22 }}>{f.emoji || f.icon || "📁"}</Text>
+                            <Ionicons name="folder-outline" size={24} color="#78716C" />
                           )}
                         </View>
                         <Text style={styles.homeFolderName} numberOfLines={1}>{f.name}</Text>
@@ -443,7 +439,11 @@ export default function HomeFeedScreen() {
                       <Text style={styles.statusPillText}>{seen ? "ดูแล้ว" : "ยังไม่ดู"}</Text>
                     </View>
                     <Pressable style={styles.starBtnWrap} hitSlop={8} onPress={() => void toggleFavorite(item)}>
-                      <Text style={styles.starBtn}>{item.is_favorite ? "⭐" : "☆"}</Text>
+                      <Ionicons
+                        name={item.is_favorite ? "heart" : "heart-outline"}
+                        size={18}
+                        color={item.is_favorite ? "#E24C4B" : "#78716C"}
+                      />
                     </Pressable>
                   </View>
                   <Text style={styles.cardTitle} numberOfLines={2}>
@@ -472,8 +472,8 @@ export default function HomeFeedScreen() {
           <View style={[styles.modalCard, { paddingBottom: Math.max(20, insets.bottom + 12) }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>+ เก็บลิงก์ด่วน</Text>
-              <Pressable onPress={closeQuickSaveModal}>
-                <Text style={styles.modalClose}>✕</Text>
+              <Pressable hitSlop={8} onPress={closeQuickSaveModal}>
+                <Ionicons name="close" size={20} color="#78716C" />
               </Pressable>
             </View>
             <ScrollView keyboardShouldPersistTaps="handled">
@@ -484,9 +484,12 @@ export default function HomeFeedScreen() {
                   disabled={previewing || !saveUrl.trim()}
                   onPress={() => void handleFetchPreview(saveUrl)}
                 >
-                  <Text style={styles.previewBtnText}>
-                    {previewing ? "กำลังดึง..." : "🔍 ดึงพรีวิว"}
-                  </Text>
+                  <View style={styles.chipInner}>
+                    <Ionicons name="search-outline" size={13} color="#9B2C2C" />
+                    <Text style={styles.previewBtnText}>
+                      {previewing ? "กำลังดึง..." : "ดึงพรีวิว"}
+                    </Text>
+                  </View>
                 </Pressable>
               </View>
               <TextInput
@@ -504,7 +507,10 @@ export default function HomeFeedScreen() {
               />
               {socialWarning ? (
                 <View style={styles.warningBox}>
-                  <Text style={styles.warningTitle}>⚠️ ลิงก์หน้าฟีด {socialWarning.platform}</Text>
+                  <View style={styles.warningHeadRow}>
+                    <Ionicons name="warning-outline" size={15} color="#92400E" />
+                    <Text style={styles.warningTitle}>ลิงก์หน้าฟีด {socialWarning.platform}</Text>
+                  </View>
                   <Text style={styles.warningText}>{socialWarning.message}</Text>
                   <Text style={styles.warningHint}>ตัวอย่าง: {socialWarning.example}</Text>
                 </View>
@@ -581,9 +587,16 @@ export default function HomeFeedScreen() {
                     style={[styles.smallChip, saveFolderId === f.id && styles.chipActive]}
                     onPress={() => setSaveFolderId(f.id)}
                   >
-                    <Text style={[styles.chipText, saveFolderId === f.id && styles.chipTextActive]}>
-                      {f.emoji || f.icon || "📁"} {f.name}
-                    </Text>
+                    <View style={styles.chipInner}>
+                      <Ionicons
+                        name="folder-outline"
+                        size={13}
+                        color={saveFolderId === f.id ? "#FDFBF7" : "#57534E"}
+                      />
+                      <Text style={[styles.chipText, saveFolderId === f.id && styles.chipTextActive]}>
+                        {f.name}
+                      </Text>
+                    </View>
                   </Pressable>
                 ))}
                 <Pressable
@@ -597,17 +610,6 @@ export default function HomeFeedScreen() {
               </ScrollView>
               {inlineFolderOpen ? (
                 <View style={styles.inlineFolderBox}>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.emojiStrip}>
-                    {QUICK_FOLDER_ICONS.map((ic) => (
-                      <Pressable
-                        key={ic}
-                        style={[styles.emojiChip, inlineFolderIcon === ic && styles.emojiChipActive]}
-                        onPress={() => setInlineFolderIcon(ic)}
-                      >
-                        <Text style={styles.emojiChipText}>{ic}</Text>
-                      </Pressable>
-                    ))}
-                  </ScrollView>
                   <View style={styles.inlineFolderRow}>
                     <TextInput
                       style={[styles.input, { flex: 1 }]}
@@ -766,6 +768,8 @@ const styles = StyleSheet.create({
     borderColor: "#D6CFC4",
   },
   previewBtnText: { fontSize: 12, fontWeight: "700", color: "#9B2C2C" },
+  chipInner: { flexDirection: "row", alignItems: "center", gap: 5 },
+  warningHeadRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   warningBox: {
     backgroundColor: "#FFFBEB",
     borderWidth: 1,

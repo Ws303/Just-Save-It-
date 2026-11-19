@@ -49,7 +49,7 @@ function renderDesktopFolderThumb(folder, allLinks = [], isWatchLater = false) {
   if (linkThumbs[0]) {
     return `<img src="${escHtml(linkThumbs[0])}" alt="${escHtml(folder?.name || "")}" />`;
   }
-  return `<div class="pc-folder-cover-empty">${escHtml(folder?.emoji || "📁")}</div>`;
+  return `<div class="pc-folder-cover-empty">${icons.folder(26)}</div>`;
 }
 
 function renderDesktopFolderCard(folder, allLinks, activeFolderId, options = {}) {
@@ -238,7 +238,7 @@ function renderDesktopLinkDetail(state) {
               >
                 ${
                   isSeen
-                    ? `<span class="seen-check">✓</span><span>ดูแล้ว</span><span class="swap-arrows">⇄</span>`
+                    ? `<span class="seen-check">${icons.check(12)}</span><span>ดูแล้ว</span><span class="swap-arrows">⇄</span>`
                     : `<span>ยังไม่ดู</span><span class="swap-arrows">⇄</span>`
                 }
               </button>

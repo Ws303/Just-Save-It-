@@ -1742,7 +1742,8 @@ test("Cycle 13: FIFO auth storage serialization, simulated IPC jitter, cache/que
       const appRootMob = pathMob.resolve(pathMob.dirname(f2p(import.meta.url)), "../../app");
       for (const rel of ["(tabs)/folders.tsx", "(tabs)/index.tsx", "folder/[id].tsx"]) {
         const src = fsMob.readFileSync(pathMob.join(appRootMob, rel), "utf8");
-        assert.match(src, /\.emoji \|\| [^.\n]+\.icon \|\| "📁"/, `Expected emoji fallback in mobile/app/${rel}`);
+        assert.match(src, /Ionicons/, `Expected vector Ionicons in mobile/app/${rel}`);
+        assert.doesNotMatch(src, /📁/, `Expected zero folder emoji icons in mobile/app/${rel}`);
       }
     } finally {
       unsubExp();

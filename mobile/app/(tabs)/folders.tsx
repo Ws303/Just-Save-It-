@@ -15,6 +15,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
@@ -29,12 +30,9 @@ import {
   type MobileLinkItem,
 } from "../../src/storage";
 
-const ICON_CHOICES = ["📁", "☕", "🍜", "🎬", "✈️", "📚", "💡", "🛒"];
-
 interface FolderCardRow {
   id: string;
   name: string;
-  icon: string;
   count: number;
   cover: string;
   customCoverUrl: string | null;
@@ -52,7 +50,6 @@ export default function FoldersScreen() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
-  const [newIcon, setNewIcon] = useState("📁");
   const [coverDraft, setCoverDraft] = useState<string | null>(null);
   const [hasExistingCustomCover, setHasExistingCustomCover] = useState(false);
   const [resetCover, setResetCover] = useState(false);
@@ -100,7 +97,6 @@ export default function FoldersScreen() {
   function openCreateModal() {
     setEditingFolderId(null);
     setNewName("");
-    setNewIcon("📁");
     setCoverDraft(null);
     setHasExistingCustomCover(false);
     setResetCover(false);
@@ -111,7 +107,6 @@ export default function FoldersScreen() {
     if (card.isVirtual) return;
     setEditingFolderId(card.id);
     setNewName(card.name);
-    setNewIcon(card.icon || "📁");
     setCoverDraft(resolveFolderCoverUrl(card.customCoverUrl) || null);
     setHasExistingCustomCover(Boolean(card.customCoverUrl));
     setResetCover(false);
@@ -176,17 +171,15 @@ export default function FoldersScreen() {
       const res = targetEditId
         ? await updateFolder(targetEditId, {
             name: newName,
-            emoji: newIcon,
             ...(coverDraft ? { cover_url: coverDraft } : resetCover ? { cover_url: null } : {}),
           })
-        : await createFolder(newName, newIcon, coverDraft ? coverDraft : undefined);
+        : await createFolder(newName, "", coverDraft ? coverDraft : undefined);
       if (isStale()) return;
       if (!res.ok) {
         Alert.alert(targetEditId ? "แก้ไขโฟลเดอร์ไม่สำเร็จ" : "สร้างโฟลเดอร์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
         return;
       }
       setNewName("");
-      setNewIcon("📁");
       setCoverDraft(null);
       setHasExistingCustomCover(false);
       setResetCover(false);
@@ -203,7 +196,6 @@ export default function FoldersScreen() {
     {
       id: "virtual-inbox",
       name: "รวมไว้ดูทีหลัง",
-      icon: "🔖",
       count: unfolderedItems.length,
       cover: unfolderedCover,
       customCoverUrl: null,
@@ -216,7 +208,6 @@ export default function FoldersScreen() {
       return {
         id: f.id,
         name: f.name,
-        icon: f.emoji || f.icon || "📁",
         count: typeof f.item_count === "number" ? f.item_count : folderItems.length,
         cover: explicitCover || firstThumb,
         customCoverUrl: f.cover_url ?? null,
@@ -269,13 +260,12 @@ export default function FoldersScreen() {
                 {item.cover ? (
                   <Image source={{ uri: item.cover }} style={styles.folderCoverImg} resizeMode="cover" />
                 ) : (
-                  <Text style={styles.folderIcon}>{item.icon}</Text>
+                  <Ionicons
+                    name={item.isVirtual ? "bookmark-outline" : "folder-outline"}
+                    size={28}
+                    color="#78716C"
+                  />
                 )}
-                {item.cover ? (
-                  <View style={styles.coverEmojiBadge}>
-                    <Text style={styles.coverEmojiBadgeText}>{item.icon}</Text>
-                  </View>
-                ) : null}
                 {!item.isVirtual ? (
                   <Pressable
                     style={styles.cardEditBtn}
@@ -285,7 +275,7 @@ export default function FoldersScreen() {
                       openEditModal(item);
                     }}
                   >
-                    <Text style={styles.cardEditBtnText}>✎</Text>
+                    <Ionicons name="pencil-outline" size={14} color="#44403C" />
                   </Pressable>
                 ) : null}
               </View>
@@ -314,7 +304,7 @@ export default function FoldersScreen() {
                   {coverDraft && !resetCover ? (
                     <Image source={{ uri: coverDraft }} style={styles.folderCoverImg} resizeMode="cover" />
                   ) : (
-                    <Text style={styles.modalCoverPlaceholder}>{newIcon}</Text>
+                    <Ionicons name="folder-outline" size={24} color="#78716C" />
                   )}
                 </View>
                 <View style={styles.modalCoverActions}>
@@ -323,9 +313,12 @@ export default function FoldersScreen() {
                     disabled={coverUploading}
                     onPress={() => void handlePickCover()}
                   >
-                    <Text style={styles.coverPickBtnText}>
-                      {coverUploading ? "กำลังอัปโหลด..." : "🖼️ เลือกรูปจากเครื่อง"}
-                    </Text>
+                    <View style={styles.coverPickInner}>
+                      <Ionicons name="image-outline" size={14} color="#4C1D95" />
+                      <Text style={styles.coverPickBtnText}>
+                        {coverUploading ? "กำลังอัปโหลด..." : "เลือกรูปจากเครื่อง"}
+                      </Text>
+                    </View>
                   </Pressable>
                   {coverDraft || (hasExistingCustomCover && !resetCover) ? (
                     <Pressable style={styles.coverResetBtn} onPress={handleResetCover}>
@@ -335,18 +328,6 @@ export default function FoldersScreen() {
                 </View>
               </View>
 
-              <Text style={styles.label}>เลือกไอคอน</Text>
-              <View style={styles.iconRow}>
-                {ICON_CHOICES.map((ic) => (
-                  <Pressable
-                    key={ic}
-                    style={[styles.iconChip, newIcon === ic && styles.iconChipActive]}
-                    onPress={() => setNewIcon(ic)}
-                  >
-                    <Text style={styles.iconText}>{ic}</Text>
-                  </Pressable>
-                ))}
-              </View>
               <Text style={styles.label}>ชื่อโฟลเดอร์</Text>
               <TextInput
                 style={styles.input}
@@ -471,6 +452,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     alignItems: "center",
   },
+  coverPickInner: { flexDirection: "row", alignItems: "center", gap: 6 },
   coverPickBtnText: { fontSize: 12, fontWeight: "700", color: "#4C1D95" },
   coverResetBtn: {
     backgroundColor: "#F3EFE6",

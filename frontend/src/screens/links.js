@@ -1299,7 +1299,7 @@ export function renderLinkDetailScreen(state) {
             >
               ${
                 isSeen
-                  ? `<span class="seen-check">✓</span><span>ดูแล้ว</span><span class="swap-arrows">⇄</span>`
+                  ? `<span class="seen-check">${icons.check(12)}</span><span>ดูแล้ว</span><span class="swap-arrows">⇄</span>`
                   : `<span>ยังไม่ดู</span><span class="swap-arrows">⇄</span>`
               }
             </button>
@@ -1613,23 +1613,6 @@ export function renderSaveAndReminderSheets(state) {
               placeholder="ตั้งชื่อโฟลเดอร์ของคุณ"
               data-bind-inline-folder-name="1"
             />
-          </div>
-
-          <div class="figma-sheet-field">
-            <label class="figma-sheet-label">ไอคอน / ปก (ไม่บังคับ)</label>
-            <div class="figma-emoji-row">
-              ${["☕", "✈️", "🍜", "💡", "📚", "🎵"]
-                .map(
-                  (em) => `
-                <button
-                  type="button"
-                  class="figma-emoji-pill ${state.ui.inlineFolderEmoji === em ? "selected" : ""}"
-                  data-action="select-inline-emoji"
-                  data-emoji="${em}"
-                >${em}</button>`
-                )
-                .join("")}
-            </div>
           </div>
 
           <div class="figma-privacy-info-card">

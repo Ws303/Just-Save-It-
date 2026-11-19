@@ -14,6 +14,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import * as WebBrowser from "expo-web-browser";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
@@ -550,9 +551,16 @@ export default function ItemDetailScreen() {
                 style={[styles.secondaryBtn, isSeen && styles.seenBtnActive]}
                 onPress={() => void handleToggleSeen()}
               >
-                <Text style={[styles.secondaryBtnText, isSeen && styles.seenBtnTextActive]}>
-                  {isSeen ? "✓ ดูแล้ว" : "○ ยังไม่ดู"}
-                </Text>
+                <View style={styles.inlineIconRow}>
+                  <Ionicons
+                    name={isSeen ? "checkmark-circle" : "ellipse-outline"}
+                    size={16}
+                    color={isSeen ? "#065F46" : "#44403C"}
+                  />
+                  <Text style={[styles.secondaryBtnText, isSeen && styles.seenBtnTextActive]}>
+                    {isSeen ? "ดูแล้ว" : "ยังไม่ดู"}
+                  </Text>
+                </View>
               </Pressable>
             </View>
           </View>
@@ -580,7 +588,10 @@ export default function ItemDetailScreen() {
 
         <View style={[styles.sectionCard, styles.aiSectionCard]}>
           <View style={styles.rowBetween}>
-            <Text style={[styles.sectionTitle, styles.aiSectionTitle]}>✨ สรุปจากต้นฉบับ</Text>
+            <View style={styles.inlineIconRow}>
+              <Ionicons name="sparkles-outline" size={16} color="#4C1D95" />
+              <Text style={[styles.sectionTitle, styles.aiSectionTitle]}>สรุปจากต้นฉบับ</Text>
+            </View>
             <Pressable style={styles.smallPrimaryBtn} onPress={() => void handleAiSummarize()}>
               <Text style={styles.smallPrimaryBtnText}>
                 {busy === "ai" ? "กำลังสรุป..." : aiSummary ? "สรุปใหม่" : "สรุปเนื้อหา"}
@@ -617,7 +628,10 @@ export default function ItemDetailScreen() {
         </View>
 
         <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>🔔 เตือนความจำ</Text>
+          <View style={styles.inlineIconRow}>
+            <Ionicons name="notifications-outline" size={16} color="#1C1917" />
+            <Text style={styles.sectionTitle}>เตือนความจำ</Text>
+          </View>
           <View style={styles.chipRow}>
             <Pressable style={styles.chip} onPress={() => void handleQuickReminder(2, null)}>
               <Text style={styles.chipText}>อีก 2 ชม.</Text>
@@ -651,7 +665,10 @@ export default function ItemDetailScreen() {
               {totalSlides > 1 ? `${activeSlideIndex + 1} / ${totalSlides}` : "1 / 1"}
             </Text>
             <Pressable style={styles.lightboxCloseBtn} onPress={() => setLightboxOpen(false)}>
-              <Text style={styles.lightboxCloseText}>✕ ปิด</Text>
+              <View style={styles.inlineIconRow}>
+                <Ionicons name="close" size={15} color="#FFFFFF" />
+                <Text style={styles.lightboxCloseText}>ปิด</Text>
+              </View>
             </Pressable>
           </View>
 
@@ -858,6 +875,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  inlineIconRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   sectionTitle: { fontSize: 15, fontWeight: "800", color: "#1C1917" },
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   chip: { backgroundColor: "#F3EFE6", paddingHorizontal: 13, paddingVertical: 8, borderRadius: 999 },

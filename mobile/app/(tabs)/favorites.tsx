@@ -8,6 +8,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
   fetchLocalSyncReminders,
@@ -109,17 +110,31 @@ export default function FavoritesScreen() {
           style={[styles.segBtn, tab === "fav" && styles.segBtnActive]}
           onPress={() => setTab("fav")}
         >
-          <Text style={[styles.segText, tab === "fav" && styles.segTextActive]}>
-            ⭐ ชื่นชอบ ({favorites.length})
-          </Text>
+          <View style={styles.inlineRow}>
+            <Ionicons
+              name={tab === "fav" ? "heart" : "heart-outline"}
+              size={14}
+              color={tab === "fav" ? "#FDFBF7" : "#E24C4B"}
+            />
+            <Text style={[styles.segText, tab === "fav" && styles.segTextActive]}>
+              ชื่นชอบ ({favorites.length})
+            </Text>
+          </View>
         </Pressable>
         <Pressable
           style={[styles.segBtn, tab === "rem" && styles.segBtnActive]}
           onPress={() => setTab("rem")}
         >
-          <Text style={[styles.segText, tab === "rem" && styles.segTextActive]}>
-            🔔 เตือนความจำ ({plannedNotifications.length}/64)
-          </Text>
+          <View style={styles.inlineRow}>
+            <Ionicons
+              name="notifications-outline"
+              size={14}
+              color={tab === "rem" ? "#FDFBF7" : "#57534E"}
+            />
+            <Text style={[styles.segText, tab === "rem" && styles.segTextActive]}>
+              เตือนความจำ ({plannedNotifications.length}/64)
+            </Text>
+          </View>
         </Pressable>
       </View>
 
@@ -156,7 +171,7 @@ export default function FavoritesScreen() {
               <View style={styles.cardTop}>
                 <Text style={styles.platform}>{inferMobilePlatform(item) || "web"}</Text>
                 <Pressable onPress={() => void removeFavorite(item)}>
-                  <Text style={styles.star}>⭐</Text>
+                  <Ionicons name="heart" size={18} color="#E24C4B" />
                 </Pressable>
               </View>
               <Text style={styles.cardTitle} numberOfLines={2}>
@@ -196,7 +211,12 @@ export default function FavoritesScreen() {
                 if (item.itemId) router.push(`/item/${encodeURIComponent(item.itemId)}`);
               }}
             >
-              <Text style={styles.remTime}>⏰ {new Date(item.triggerAtMs).toLocaleString("th-TH")}</Text>
+              <View style={[styles.inlineRow, { marginBottom: 4 }]}>
+                <Ionicons name="time-outline" size={13} color="#9B2C2C" />
+                <Text style={[styles.remTime, { marginBottom: 0 }]}>
+                  {new Date(item.triggerAtMs).toLocaleString("th-TH")}
+                </Text>
+              </View>
               <Text style={styles.cardTitle} numberOfLines={2}>
                 {item.title}
               </Text>
@@ -250,6 +270,7 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   star: { fontSize: 18 },
+  inlineRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5 },
   remTime: { fontSize: 12, fontWeight: "700", color: "#9B2C2C", marginBottom: 4 },
   cardTitle: { fontSize: 15, fontWeight: "700", color: "#1C1917" },
   cardUrl: { fontSize: 12, color: "#78716C", marginTop: 4 },
