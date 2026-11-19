@@ -64,7 +64,7 @@ services:
         *.*) RESOLVED_HOST="$BACKEND_HOST" ;;
         *) RESOLVED_HOST="${BACKEND_HOST}.onrender.com" ;;
       esac
-      printf 'window.SHARELY_CONFIG = { apiBaseUrl: "https://%s" };\n' "$RESOLVED_HOST" > config.js
+      printf 'window.SHERLINK_CONFIG = { apiBaseUrl: "https://%s" };\nwindow.SHARELY_CONFIG = window.SHERLINK_CONFIG;\n' "$RESOLVED_HOST" > config.js
     routes:
       - type: rewrite
         source: /*
