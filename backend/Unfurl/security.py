@@ -290,6 +290,7 @@ async def stream_fetch_limited(
     check_content_type: Optional[Callable[[str], None]] = None,
     timeout_sec: float = DEFAULT_TIMEOUT_SEC,
     max_redirects: int = 5,
+    force_meta_crawler_ua: bool = False,
 ) -> Tuple[int, str, bytes, str]:
     """Stream HTTP GET with per-hop SSRF validation and bounded memory accumulation."""
     if not sanitize_external_url(url):
@@ -300,7 +301,10 @@ async def stream_fetch_limited(
         for _ in range(max_redirects + 1):
             cur_host = (urllib.parse.urlparse(current_url).hostname or "").lower()
             cur_path = urllib.parse.urlparse(current_url).path or ""
-            use_meta_ua = _should_use_meta_crawler_ua(current_url, cur_host)
+            use_meta_ua = (
+                (force_meta_crawler_ua and is_meta_crawler_ua_enabled() and _host_matches(cur_host, _META_CRAWLER_DOMAINS))
+                or _should_use_meta_crawler_ua(current_url, cur_host)
+            )
             custom_meta_ua = os.getenv("META_CRAWLER_USER_AGENT", "").strip() or META_CRAWLER_USER_AGENT
             req_headers = {
                 "User-Agent": custom_meta_ua if use_meta_ua else USER_AGENT,

@@ -39,6 +39,7 @@ from Database.text_hygiene import (
 )
 from .security import (
     extract_safe_iframe_src,
+    is_meta_crawler_ua_enabled,
     redact_secrets_in_text,
     sanitize_external_url,
     stream_fetch_limited,
@@ -794,15 +795,25 @@ def _is_short_or_share_url(url: str) -> bool:
         return True
     if _host_matches(host, ("facebook.com", "instagram.com")) and path.startswith("/share/"):
         return True
+    if _host_matches(host, ("tiktok.com",)) and path.startswith("/t/"):
+        return True
     return False
 
 
-async def _resolve_short_share_url(canon_url: str) -> str:
+async def _resolve_short_share_url(
+    canon_url: str,
+    *,
+    force_meta_crawler_ua: bool = False,
+) -> str:
     """Resolve short/share redirects (e.g., vt.tiktok.com, fb.watch, facebook.com/share/*) safely."""
     if not _is_short_or_share_url(canon_url):
         return canon_url
     try:
-        _, _, _, final_url = await _fetch_limited_response(canon_url, max_bytes=32768)
+        _, _, _, final_url = await _fetch_limited_response(
+            canon_url,
+            max_bytes=32768,
+            force_meta_crawler_ua=force_meta_crawler_ua,
+        )
         if final_url and _is_safe_http_literal(final_url):
             resolved_canon = canonicalize_url(final_url)
             parsed_res = urllib.parse.urlparse(resolved_canon)
@@ -1090,6 +1101,8 @@ def filter_and_cap_images(
 async def _fetch_limited_response(
     url: str,
     max_bytes: int = MAX_HTML_BYTES,
+    *,
+    force_meta_crawler_ua: bool = False,
 ) -> Tuple[int, str, bytes, str]:
     """Stream-fetch URL with SSRF redirect guard, 8s timeout, and <=3MB body cap."""
     return await stream_fetch_limited(
@@ -1097,6 +1110,7 @@ async def _fetch_limited_response(
         max_bytes=max_bytes,
         reject_on_oversize=False,
         timeout_sec=DEFAULT_TIMEOUT_SEC,
+        force_meta_crawler_ua=force_meta_crawler_ua,
     )
 
 
@@ -1575,8 +1589,12 @@ async def _fetch_generic_html_meta(
     url: str,
     *,
     allow_profile_avatars: bool = False,
+    force_meta_crawler_ua: bool = False,
 ) -> Dict[str, Any]:
-    status_code, content_type, raw_bytes, final_url = await _fetch_limited_response(url)
+    status_code, content_type, raw_bytes, final_url = await _fetch_limited_response(
+        url,
+        force_meta_crawler_ua=force_meta_crawler_ua,
+    )
     if status_code >= 300:
         raise ValueError(f"HTTP {status_code} fetching '{url}'.")
 
@@ -1778,7 +1796,10 @@ async def _extract_tiktok(
                 images.append(oembed["thumbnail_url"])
             embed_url = extract_safe_iframe_src(oembed.get("html"), "tiktok")
             if not video_id and isinstance(oembed.get("html"), str):
-                vid_m = re.search(r'data-video-id="(\d+)"', oembed["html"])
+                vid_m = re.search(
+                    r'(?:data-video-id="|/(?:player/v1|embed/v2|video)/)(\d+)',
+                    oembed["html"],
+                )
                 if vid_m:
                     video_id = vid_m.group(1)
 
@@ -2588,6 +2609,83 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
                 title = fb_author
             if fb_images:
                 images.extend(fb_images)
+
+    if (
+        platform == "facebook"
+        and not is_profile_or_page
+        and is_meta_crawler_ua_enabled()
+        and (not images or preview_status == "private_or_restricted")
+    ):
+        try:
+            crawler_target = fetch_meta_url
+            if is_unresolved_share:
+                resolved_crawler_url = await _resolve_short_share_url(
+                    fetch_meta_url,
+                    force_meta_crawler_ua=True,
+                )
+                if resolved_crawler_url and resolved_crawler_url != fetch_meta_url:
+                    crawler_target = resolved_crawler_url
+                    canon_url = resolved_crawler_url
+                    is_unresolved_share = (
+                        urllib.parse.urlparse(canon_url).path or ""
+                    ).lower().startswith("/share/")
+            crawler_meta = await _fetch_generic_html_meta(
+                crawler_target,
+                allow_profile_avatars=is_profile_or_page,
+                force_meta_crawler_ua=True,
+            )
+            c_title = crawler_meta.get("title")
+            c_desc = crawler_meta.get("description")
+            c_images = crawler_meta.get("media_items") or []
+            c_final = str(crawler_meta.get("final_url") or "")
+            c_og_url = crawler_meta.get("og_url")
+            c_private = _has_marker(c_title, _PRIVATE_UNAVAILABLE_MARKERS) or _has_marker(
+                c_desc, _PRIVATE_UNAVAILABLE_MARKERS
+            )
+            c_login = (
+                "/login" in (urllib.parse.urlparse(c_final).path or "").lower()
+                or _has_marker(c_title, _LOGIN_WALL_MARKERS)
+                or _has_marker(c_desc, _LOGIN_WALL_MARKERS)
+            )
+            if not c_private and not c_login and (c_images or c_desc or c_title):
+                preview_status = "ok"
+                if c_title and (not title or is_generic_or_noisy_title(title, platform, canon_url)):
+                    title = c_title
+                if c_desc and (
+                    not description
+                    or description.rstrip().endswith(("...", "…"))
+                    and len(c_desc) > len(description)
+                ):
+                    description = c_desc
+                if c_images:
+                    images.extend(c_images)
+                if not embed_url:
+                    embed_candidate = c_og_url or (
+                        crawler_target
+                        if not (urllib.parse.urlparse(crawler_target).path or "").lower().startswith("/share/")
+                        else None
+                    )
+                    if embed_candidate:
+                        ec_parsed = urllib.parse.urlparse(embed_candidate)
+                        ec_host = (ec_parsed.hostname or "").lower()
+                        ec_path = (ec_parsed.path or "").lower()
+                        if _host_matches(ec_host, ("facebook.com",)) and "/login" not in ec_path and not ec_path.startswith("/share/"):
+                            resolved_is_video = is_fb_video or _is_facebook_video_url(embed_candidate)
+                            if resolved_is_video:
+                                content_type = "video"
+                            ec_encoded = urllib.parse.quote(embed_candidate, safe="")
+                            plugin_ep = "video.php?href=" if resolved_is_video else "post.php?href="
+                            suffix = "&show_text=false" if resolved_is_video else ""
+                            embed_url = validate_embed_url(
+                                "facebook",
+                                f"https://www.facebook.com/plugins/{plugin_ep}{ec_encoded}{suffix}",
+                            )
+        except Exception as exc:
+            logger.debug(
+                "Facebook crawler UA fallback skipped for %s: %s",
+                redact_secrets_in_text(canon_url),
+                redact_secrets_in_text(exc),
+            )
 
     return UnfurlResult(
         url=canon_url,

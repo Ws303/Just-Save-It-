@@ -3280,3 +3280,87 @@ async def test_cover_preserve_original_keeps_full_resolution_bytes(hermetic_isol
     assert captured[0]["data"] == raw_jpeg
     with Image.open(BytesIO(captured[0]["data"])) as img:
         assert img.size == (1600, 1200)
+
+
+@pytest.mark.asyncio
+async def test_facebook_share_crawler_fallback_and_tiktok_player_v1_extraction(hermetic_isolation, monkeypatch):
+    """Facebook /share/p/ falls back to facebookexternalhit/1.1 when browser UA lacks images; TikTok player/v1 oEmbed resolves embed_url."""
+    monkeypatch.setenv("ALLOW_META_CRAWLER_UA", "true")
+    from Unfurl.extractors import _is_short_or_share_url
+
+    assert _is_short_or_share_url("https://www.tiktok.com/t/ZTNabc123/") is True
+
+    fb_share = "https://www.facebook.com/share/p/1FCTT8VFWu/?mibextid=wwXIfr"
+    fb_resolved = "https://www.facebook.com/droidsans/posts/pfbid0BpjuxTest"
+    fb_lookaside = "https://lookaside.fbsbx.com/lookaside/crawler/media/?media_id=1467294488863132"
+    tt_short = "https://vt.tiktok.com/ZSmabcd99/"
+    tt_resolved = "https://www.tiktok.com/@creator/video/7481234567890123456"
+    seen_fb_uas: List[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        u = str(request.url)
+        ua = request.headers.get("user-agent", "")
+        if u.startswith("https://www.facebook.com/share/p/1FCTT8VFWu"):
+            return httpx.Response(302, headers={"Location": fb_resolved}, request=request)
+        if u.startswith(fb_resolved):
+            seen_fb_uas.append(ua)
+            if "facebookexternalhit" in ua.lower():
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/html; charset=utf-8"},
+                    text=(
+                        "<html><head>"
+                        '<meta property="og:title" content="Chrome น่าจะทำแบบนี้บ้างนะครับ.Stanislav Vishnevskiy...">'
+                        '<meta property="og:description" content="Chrome น่าจะทำแบบนี้บ้างนะครับ.Stanislav Vishnevskiy เผยโฉมแอป Discord Phoenix">'
+                        f'<meta property="og:image" content="{fb_lookaside}">'
+                        "</head><body></body></html>"
+                    ),
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    "<html><head>"
+                    '<meta property="og:title" content="Chrome น่าจะทำแบบนี้บ้างนะครับ.Stanislav Vishnevskiy...">'
+                    '<meta property="og:description" content="Chrome น่าจะทำแบบนี้บ้างนะครับ...ด้วยภา...">'
+                    "</head><body></body></html>"
+                ),
+                request=request,
+            )
+        if u.startswith("https://www.facebook.com/plugins/post.php"):
+            return httpx.Response(200, headers={"content-type": "text/html"}, text="<html></html>", request=request)
+        if u.startswith("https://vt.tiktok.com/ZSmabcd99"):
+            return httpx.Response(302, headers={"Location": tt_resolved}, request=request)
+        if u.startswith("https://www.tiktok.com/oembed"):
+            return httpx.Response(
+                200,
+                json={
+                    "title": "Cool TikTok clip",
+                    "author_name": "creator",
+                    "thumbnail_url": "https://p16-sign.tiktokcdn.com/tos-alisg/tt-cover.jpeg",
+                    "html": '<blockquote class="tiktok-embed"><iframe src="https://www.tiktok.com/player/v1/7481234567890123456?embed_from=oembed"></iframe></blockquote>',
+                },
+                request=request,
+            )
+        if u == tt_resolved:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text='<html><head><meta property="og:title" content="Cool TikTok clip"></head><body></body></html>',
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+
+    fb_res = await extract_unfurl_metadata(fb_share)
+    assert any("facebookexternalhit" in ua.lower() for ua in seen_fb_uas)
+    assert fb_res.media_items == [fb_lookaside]
+    assert fb_res.preview_status == "ok"
+    assert "Discord Phoenix" in (fb_res.description or "")
+
+    tt_res = await extract_unfurl_metadata(tt_short)
+    assert tt_res.canonical_url == tt_resolved
+    assert tt_res.embed_url is not None
+    assert tt_res.embed_url.startswith("https://www.tiktok.com/player/v1/7481234567890123456")
