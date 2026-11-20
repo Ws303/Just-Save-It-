@@ -222,6 +222,9 @@ def upload_webp_to_supabase_storage(
     return None
 
 
+MAX_BUCKET_ORIGINAL_BYTES = 2_000_000
+
+
 async def process_and_upload_cover(
     external_image_url: Optional[str],
     url_hash: str,
@@ -235,30 +238,40 @@ async def process_and_upload_cover(
     if not external_image_url:
         return None, False
 
+    def _upload_bytes(upload_bytes: bytes, upload_ct: str) -> Optional[str]:
+        storage_path = build_cover_storage_path(url_hash)
+        if storage_uploader is not None:
+            return storage_uploader(storage_path, upload_bytes, upload_ct)
+        return upload_webp_to_supabase_storage(
+            db,
+            storage_path,
+            upload_bytes,
+            content_type=upload_ct,
+        )
+
     try:
         raw_bytes, raw_ct = await download_image_safely(external_image_url)
         if _is_truthy_env("COVER_PRESERVE_ORIGINAL"):
-            upload_bytes, upload_ct = prepare_original_cover_bytes(raw_bytes, raw_ct)
-        else:
-            max_w = _positive_int_env("COVER_MAX_WIDTH_PX", MAX_COVER_WIDTH_PX)
-            max_b = _positive_int_env("COVER_MAX_WEBP_BYTES", MAX_WEBP_BYTES)
-            upload_bytes = compress_image_to_webp(raw_bytes, max_width=max_w, max_bytes=max_b)
-            upload_ct = "image/webp"
-        storage_path = build_cover_storage_path(url_hash)
+            orig_bytes, orig_ct = prepare_original_cover_bytes(raw_bytes, raw_ct)
+            if len(orig_bytes) <= MAX_BUCKET_ORIGINAL_BYTES:
+                try:
+                    uploaded_orig = _upload_bytes(orig_bytes, orig_ct)
+                    if uploaded_orig:
+                        return uploaded_orig, True
+                except Exception as orig_exc:
+                    logger.warning(
+                        "Original cover upload failed for hash=%s (%s), falling back to WebP: %s",
+                        url_hash,
+                        orig_ct,
+                        orig_exc,
+                    )
 
-        if storage_uploader is not None:
-            uploaded_url = storage_uploader(storage_path, upload_bytes, upload_ct)
-            if uploaded_url:
-                return uploaded_url, True
-        else:
-            uploaded_url = upload_webp_to_supabase_storage(
-                db,
-                storage_path,
-                upload_bytes,
-                content_type=upload_ct,
-            )
-            if uploaded_url:
-                return uploaded_url, True
+        max_w = _positive_int_env("COVER_MAX_WIDTH_PX", MAX_COVER_WIDTH_PX)
+        max_b = _positive_int_env("COVER_MAX_WEBP_BYTES", MAX_WEBP_BYTES)
+        webp_bytes = compress_image_to_webp(raw_bytes, max_width=max_w, max_bytes=max_b)
+        uploaded_webp = _upload_bytes(webp_bytes, "image/webp")
+        if uploaded_webp:
+            return uploaded_webp, True
     except Exception as exc:
         logger.warning(
             "Cover WebP processing/upload degraded to external URL for hash=%s: %s",

@@ -3364,3 +3364,118 @@ async def test_facebook_share_crawler_fallback_and_tiktok_player_v1_extraction(h
     assert tt_res.canonical_url == tt_resolved
     assert tt_res.embed_url is not None
     assert tt_res.embed_url.startswith("https://www.tiktok.com/player/v1/7481234567890123456")
+
+
+@pytest.mark.asyncio
+async def test_cover_webp_fallback_cache_skip_and_ig_embed_rescue(hermetic_isolation, mock_db, monkeypatch):
+    """Cover upload falls back to WebP on original failure, cache skips 0-image/lookaside Meta rows, and IG 403 rescues via embed/captioned."""
+    monkeypatch.setenv("COVER_PRESERVE_ORIGINAL", "true")
+    monkeypatch.setenv("ALLOW_META_CRAWLER_UA", "true")
+    raw_jpeg = make_gradient_noise_jpeg_bytes(900, 600)
+    ig_url = "https://www.instagram.com/p/Ig403Rescue1/"
+    ig_cover = "https://scontent.cdninstagram.com/v/t51.2885-15/ig_rescue_cover.jpg"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        u = str(request.url)
+        if u == "https://cdn.example.com/fb-raw.jpg":
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "image/jpeg", "Content-Length": str(len(raw_jpeg))},
+                content=raw_jpeg,
+                request=request,
+            )
+        if u.startswith("https://www.instagram.com/p/Ig403Rescue1/embed/captioned/"):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=(
+                    "<html><body>"
+                    '<div class="Header"><span class="UsernameText">foodie_th</span></div>'
+                    f'<img class="EmbeddedMediaImage" src="{ig_cover}" />'
+                    '<div class="Caption">Rescued IG caption text</div>'
+                    "</body></html>"
+                ),
+                request=request,
+            )
+        if u.startswith("https://www.instagram.com/p/Ig403Rescue1"):
+            return httpx.Response(403, text="Forbidden", request=request)
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+
+    attempts: List[str] = []
+
+    def uploader_rejects_jpeg(path: str, data: bytes, content_type: str) -> str:
+        attempts.append(content_type)
+        if content_type != "image/webp":
+            raise RuntimeError("Bucket MIME rejected")
+        return f"https://cdn.supabase.test/storage/v1/object/public/{path}"
+
+    fb_hash = compute_url_hash("https://lookaside.fbsbx.com/lookaside/crawler/media/?media_id=1")
+    final_url, stored = await process_and_upload_cover(
+        "https://cdn.example.com/fb-raw.jpg",
+        url_hash=fb_hash,
+        storage_uploader=uploader_rejects_jpeg,
+    )
+    assert stored is True
+    assert attempts == ["image/jpeg", "image/webp"]
+    assert final_url == f"https://cdn.supabase.test/storage/v1/object/public/thumbnails/{fb_hash}.webp"
+
+    from Unfurl.service import find_recent_unfurl_cache
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    stale_hash = compute_url_hash("https://www.facebook.com/share/p/StaleZero1")
+    mock_db.tables["items"].extend(
+        [
+            {
+                "id": "fb-lookaside-img",
+                "owner_id": "usr-cache",
+                "url": "https://www.facebook.com/share/p/StaleZero1",
+                "canonical_url": "https://www.facebook.com/share/p/StaleZero1",
+                "url_hash": stale_hash,
+                "platform": "facebook",
+                "title": "Valid Post Title",
+                "image_url": "https://lookaside.fbsbx.com/lookaside/crawler/media/?media_id=99",
+                "media_items": ["https://lookaside.fbsbx.com/lookaside/crawler/media/?media_id=99"],
+                "enrich_status": "unfurled",
+                "enrich_error": None,
+                "unfurled_at": now_iso,
+            },
+            {
+                "id": "fb-zero-img",
+                "owner_id": "usr-cache",
+                "url": "https://www.facebook.com/share/p/StaleZero1",
+                "canonical_url": "https://www.facebook.com/share/p/StaleZero1",
+                "url_hash": stale_hash,
+                "platform": "facebook",
+                "title": "Valid Post Title",
+                "image_url": None,
+                "media_items": [],
+                "enrich_status": "unfurled",
+                "enrich_error": None,
+                "unfurled_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
+            },
+            {
+                "id": "fb-target-empty",
+                "owner_id": "usr-cache",
+                "url": "https://www.facebook.com/share/p/StaleZero1",
+                "canonical_url": "https://www.facebook.com/share/p/StaleZero1",
+                "url_hash": stale_hash,
+                "platform": "facebook",
+                "title": "Valid Post Title",
+                "image_url": None,
+                "media_items": [],
+                "enrich_status": "pending",
+            },
+        ]
+    )
+    donor_hit = find_recent_unfurl_cache(mock_db, stale_hash, user_id="usr-cache")
+    assert donor_hit is not None
+    assert donor_hit["id"] == "fb-zero-img"
+    res_empty_target = await enrich_item(mock_db, "fb-target-empty", force_refresh=False)
+    assert res_empty_target["cached"] is False
+
+    ig_res = await extract_unfurl_metadata(ig_url)
+    assert ig_res.preview_status == "ok"
+    assert ig_res.media_items == [ig_cover]
+    assert ig_res.embed_url == "https://www.instagram.com/p/Ig403Rescue1/embed"

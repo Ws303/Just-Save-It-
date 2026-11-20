@@ -98,6 +98,9 @@ def find_recent_unfurl_cache(
         if is_generic_or_noisy_title(row.get("title"), row_plat, row_url):
             continue
         row_media = row.get("media_items") or []
+        row_img_str = str(row.get("image_url") or "").strip()
+        if is_meta_social and "lookaside.fbsbx.com" in row_img_str.lower():
+            continue
         if is_meta_social and any(isinstance(u, str) and _is_cropped_meta_image_url(u) for u in row_media[1:]):
             continue
         unfurled_dt = _parse_iso(row.get("unfurled_at"))
@@ -254,7 +257,12 @@ async def preview_url_readonly(
             is_youtube_url = "youtube.com" in canon_lower or "youtu.be" in canon_lower
             cached_desc = str(cached_data.get("description") or "").strip()
             stale_yt_donor = is_youtube_url and (not cached_desc or cached_desc.startswith(("By ", "วิดีโอ YouTube")))
-            if not stale_yt_donor:
+            cached_plat = str(cached_data.get("platform") or "").lower()
+            is_meta_donor = cached_plat in ("facebook", "instagram") or any(
+                h in canon_lower for h in ("facebook.com", "fb.watch", "instagram.com")
+            )
+            stale_meta_donor = is_meta_donor and not cached_data["image_url"] and not cached_data["media_items"]
+            if not stale_yt_donor and not stale_meta_donor:
                 return {
                     "url": raw_url.strip(),
                     "canonical_url": canon_url,
@@ -406,6 +414,18 @@ async def enrich_item(
             cached_plat = str(cached_data.get("platform") or old_plat or "").lower()
             cached_desc = str(cached_data.get("description") or "").strip()
             if needs_yt_full_desc and (not cached_desc or cached_desc.startswith(("By ", "วิดีโอ YouTube"))):
+                donor = None
+            is_meta_donor = cached_plat in ("facebook", "instagram") or any(
+                h in canon_lower for h in ("facebook.com", "fb.watch", "instagram.com")
+            )
+            if (
+                donor is not None
+                and is_meta_donor
+                and not existing_cover
+                and not existing_media
+                and not cached_data["image_url"]
+                and not cached_data["media_items"]
+            ):
                 donor = None
         if donor is not None:
             cached_cover, cached_media, _ = _resolve_media_with_existing(

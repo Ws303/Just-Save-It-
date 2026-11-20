@@ -2467,6 +2467,7 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
                 if oembed.get("thumbnail_url"):
                     images.append(oembed["thumbnail_url"])
 
+    is_strict_private_meta = False
     if not title or not images or not description:
         try:
             html_meta = await _fetch_generic_html_meta(
@@ -2497,6 +2498,8 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
                 and (urllib.parse.urlparse(canon_url).path or "/") not in ("", "/")
             )
             if is_strict_private or is_empty_fb_shell:
+                if is_strict_private:
+                    is_strict_private_meta = True
                 if not oembed_succeeded:
                     preview_status = "private_or_restricted"
                     embed_url = None
@@ -2543,7 +2546,7 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
         platform == "instagram"
         and ig_kind
         and ig_code
-        and preview_status != "private_or_restricted"
+        and not is_strict_private_meta
         and (ig_title_missing or not images or not description or has_cropped_ig_cover or (ig_kind == "p" and len(images) < 2))
     ):
         embed_meta = await _fetch_instagram_embed_captioned(ig_kind, ig_code)
@@ -2554,6 +2557,10 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
             eb_author = embed_meta.get("author")
             eb_caption = embed_meta.get("caption")
             eb_images = embed_meta.get("media_items") or []
+            if not embed_meta.get("is_private") and (eb_images or eb_caption):
+                preview_status = "ok"
+                if not embed_url:
+                    embed_url = validate_embed_url("instagram", f"https://www.instagram.com/{ig_kind}/{ig_code}/embed")
             if ig_title_missing or not title:
                 if eb_author and eb_caption:
                     title = f"@{eb_author}: {eb_caption[:90]}"
@@ -2680,6 +2687,30 @@ async def _extract_meta_social(canon_url: str, url_hash: str, platform: str) -> 
                                 "facebook",
                                 f"https://www.facebook.com/plugins/{plugin_ep}{ec_encoded}{suffix}",
                             )
+            if (
+                crawler_target != fetch_meta_url
+                and not (urllib.parse.urlparse(crawler_target).path or "").lower().startswith("/share/")
+                and (
+                    not images
+                    or not description
+                    or description.rstrip().endswith(("...", "…"))
+                )
+            ):
+                fb_plugin_res = await _fetch_facebook_plugin_post(crawler_target)
+                fb_p_caption = fb_plugin_res.get("caption")
+                fb_p_author = fb_plugin_res.get("author")
+                fb_p_images = fb_plugin_res.get("media_items") or []
+                if fb_p_caption and (
+                    not description
+                    or description.rstrip().endswith(("...", "…"))
+                    or len(fb_p_caption) > len(description)
+                ):
+                    description = fb_p_caption
+                if fb_p_author and (not title or is_generic_or_noisy_title(title, platform, canon_url)):
+                    title = fb_p_author
+                if fb_p_images:
+                    images.extend(fb_p_images)
+                    preview_status = "ok"
         except Exception as exc:
             logger.debug(
                 "Facebook crawler UA fallback skipped for %s: %s",
