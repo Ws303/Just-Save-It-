@@ -70,6 +70,32 @@ import { renderTestbedPanel } from "./screens/testbed.js";
 
 const appEl = document.getElementById("app");
 
+function captureAuthSnapshot() {
+  return {
+    gen: store.state.api?.authGeneration || 0,
+    uid: String(store.state.data.user?.id || ""),
+  };
+}
+
+function isSameAuthSnapshot(snap) {
+  return (
+    Boolean(snap) &&
+    (store.state.api?.authGeneration || 0) === snap.gen &&
+    String(store.state.data.user?.id || "") === snap.uid
+  );
+}
+
+function isFolderOwnerRole(folder, memberBundle = null) {
+  if (!folder) return false;
+  const role = String(memberBundle?.caller_role || folder.role || "")
+    .trim()
+    .toLowerCase();
+  return !role || role === "owner";
+}
+
+let _folderCoverUploadSeq = 0;
+let _aiTestSeq = 0;
+
 function renderActiveMobileScreen(state) {
   switch (state.ui.screen) {
     case "login":
@@ -171,7 +197,7 @@ function renderViewportContent(state) {
 
   return `
     <div class="phone-bezel ${isQaModeEnabled() ? "qa-bezel" : "responsive-mobile"}">
-      <main class="phone-frame" aria-label="Just Save It">
+      <main class="phone-frame" aria-label="Sherlink">
         ${hostAppBackdrop}
         ${renderActiveMobileScreen(state)}
         ${sheetsHtml}
@@ -571,6 +597,9 @@ appEl.addEventListener("input", (e) => {
   } else if (el.dataset.bindAiEndpoint) {
     data.aiConfig.endpointUrl = el.value;
     store.save();
+  } else if (el.dataset.bindAiModel) {
+    data.aiConfig.model = el.value;
+    store.save();
   } else if (el.dataset.bindAiKey) {
     data.aiConfig.apiKey = el.value;
     store.save();
@@ -605,29 +634,39 @@ appEl.addEventListener("change", async (e) => {
     store.emit();
   } else if (el.dataset.folderCoverInput) {
     const file = el.files?.[0];
-    if (!file || !ui.activeSheet) return;
+    const targetSheet = ui.activeSheet;
+    if (!file || !targetSheet) return;
     if (file.size > 5 * 1024 * 1024) {
       ui.folderCoverError = "ไฟล์รูปต้องมีขนาดไม่เกิน 5 MB";
       store.emit();
       return;
     }
+    const startAuth = captureAuthSnapshot();
+    const uploadSeq = (_folderCoverUploadSeq += 1);
     ui.folderCoverUploading = true;
     ui.folderCoverError = "";
     store.emit();
     try {
       const res = await apiClient.uploadFolderCover(file);
-      if (res?.ok && res.data?.cover_url && ui.activeSheet) {
-        ui.activeSheet.coverDraft = res.data.cover_url;
-        ui.activeSheet.resetCover = false;
+      if (ui.activeSheet !== targetSheet || !isSameAuthSnapshot(startAuth)) {
+        return;
+      }
+      if (res?.ok && res.data?.cover_url) {
+        targetSheet.coverDraft = res.data.cover_url;
+        targetSheet.resetCover = false;
         store.showToast("อัปโหลดรูปปกเรียบร้อย");
       } else {
         ui.folderCoverError = res?.error || "อัปโหลดรูปปกไม่สำเร็จ";
       }
     } catch (err) {
-      ui.folderCoverError = err?.message || "อัปโหลดรูปปกไม่สำเร็จ";
+      if (ui.activeSheet === targetSheet && isSameAuthSnapshot(startAuth)) {
+        ui.folderCoverError = err?.message || "อัปโหลดรูปปกไม่สำเร็จ";
+      }
     } finally {
-      ui.folderCoverUploading = false;
-      store.emit();
+      if (uploadSeq === _folderCoverUploadSeq && isSameAuthSnapshot(startAuth)) {
+        ui.folderCoverUploading = false;
+        store.emit();
+      }
     }
   } else if (el.dataset.inviteExpiry) {
     ui.inviteExpiry = el.value || "7d";
@@ -1242,6 +1281,8 @@ appEl.addEventListener("click", async (e) => {
     }
     if (act === "generate-share-link" && ui.activeSheet?.type === "invite") {
       const folderId = ui.activeSheet.folderId;
+      if (!isFolderOwnerRole(getFolderById(folderId), ui.folderMembers?.[folderId])) return;
+      const startAuth = captureAuthSnapshot();
       ui.shareSheetState = "loading";
       store.emit();
       const role = ui.sharePermission === "editor" ? "editor" : "viewer";
@@ -1250,16 +1291,20 @@ appEl.addEventListener("click", async (e) => {
         expiry: ui.inviteExpiry || "7d",
         maxUses: ui.inviteMaxUses,
       });
+      if (!isSameAuthSnapshot(startAuth)) return;
       if (res.ok) {
         const m = await apiClient.listFolderMembers(folderId).catch(() => null);
+        if (!isSameAuthSnapshot(startAuth)) return;
         if (m?.ok && m.data) {
           ui.folderMembers = ui.folderMembers || {};
           ui.folderMembers[folderId] = m.data;
         }
         store.showToast("สร้างลิงก์คำเชิญใหม่แล้ว");
       }
-      ui.shareSheetState = res.ok ? "idle" : "error";
-      store.emit();
+      if (ui.activeSheet?.type === "invite" && ui.activeSheet?.folderId === folderId) {
+        ui.shareSheetState = res.ok ? "idle" : "error";
+        store.emit();
+      }
       return;
     }
   }
@@ -1295,8 +1340,10 @@ appEl.addEventListener("click", async (e) => {
     }
     if (d.quickJump === "inviteSheet") {
       if (store.navigate("folderDetail", { viewportMode: ui.viewportMode === "web" ? "web" : "mobile" })) {
+        const targetFolderId = ui.activeFolderId;
+        if (!isFolderOwnerRole(getFolderById(targetFolderId), ui.folderMembers?.[targetFolderId])) return;
         ui.shareSheetState = "idle";
-        store.openSheet({ type: "invite", folderId: ui.activeFolderId });
+        store.openSheet({ type: "invite", folderId: targetFolderId });
       }
       return;
     }
@@ -1320,9 +1367,6 @@ appEl.addEventListener("click", async (e) => {
     if (allowed) {
       ui.pcSection = d.pcSection;
       ui.notificationScreenOpen = d.pcSection === "notifications";
-      if (d.pcSection === "security") {
-        apiClient.listMcpTokens().catch(() => {});
-      }
       store.emit();
     }
     return;
@@ -1330,18 +1374,15 @@ appEl.addEventListener("click", async (e) => {
   if (d.goScreen) {
     if (d.authCtx) ui.authContext = d.authCtx;
     else ui.authContext = "app";
-    const ok = store.navigate(d.goScreen, {
+    store.navigate(d.goScreen, {
       viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
       allowGuestSwitch: ui.authContext === "invite" || ["login", "emailLogin", "checkEmail"].includes(d.goScreen),
     });
-    if (ok && d.goScreen === "security") {
-      apiClient.listMcpTokens().catch(() => {});
-    }
     return;
   }
   if (d.openEditFolder) {
     const folder = getFolderById(d.openEditFolder);
-    if (folder) {
+    if (isFolderOwnerRole(folder, ui.folderMembers?.[d.openEditFolder])) {
       ui.folderCoverError = "";
       store.openSheet({
         type: "editFolder",
@@ -1354,15 +1395,18 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.openFolder) {
+    const targetFolderId = d.openFolder;
+    const startAuth = captureAuthSnapshot();
     store.navigate("folderDetail", {
-      activeFolderId: d.openFolder,
+      activeFolderId: targetFolderId,
       viewportMode: ui.viewportMode === "web" ? "web" : "mobile",
     });
-    apiClient.listFolderMembers(d.openFolder).then((membersRes) => {
+    apiClient.listFolderMembers(targetFolderId).then((membersRes) => {
+      if (!isSameAuthSnapshot(startAuth)) return;
       if (membersRes.ok && membersRes.data) {
         ui.folderMembers = ui.folderMembers || {};
-        ui.folderMembers[d.openFolder] = membersRes.data;
-        if (ui.activeFolderId === d.openFolder) store.emit();
+        ui.folderMembers[targetFolderId] = membersRes.data;
+        if (ui.activeFolderId === targetFolderId) store.emit();
       }
     }).catch(() => {});
     return;
@@ -1772,7 +1816,6 @@ appEl.addEventListener("click", async (e) => {
     const created = await apiClient.createLink(draft);
     if (!created) return;
     ui.activeLinkId = created.id;
-    window.__lastSharedHighlightId = created.id;
     ui.simulatedSourceApp = null;
     ui.addLinkExpanded = false;
     store.closeSheet();
@@ -1884,6 +1927,10 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.openPickCover && ui.activeSheet) {
+    if (ui.folderCoverUploading) {
+      store.showToast("กำลังอัปโหลดรูปปก กรุณารอสักครู่");
+      return;
+    }
     store.openSheet({
       type: "pickCover",
       folderId: ui.activeSheet.folderId || null,
@@ -1902,6 +1949,10 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.saveFolderSheet && ui.activeSheet) {
+    if (ui.folderCoverUploading) {
+      store.showToast("กำลังอัปโหลดรูปปก กรุณารอสักครู่");
+      return;
+    }
     const cleanName = (ui.activeSheet.nameDraft || "").trim() || "โฟลเดอร์ใหม่";
     const saved = await apiClient.saveFolder({
       folderId: ui.activeSheet.folderId || null,
@@ -1916,6 +1967,8 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.confirmDeleteFolder) {
+    const folder = getFolderById(d.confirmDeleteFolder);
+    if (!isFolderOwnerRole(folder, ui.folderMembers?.[d.confirmDeleteFolder])) return;
     store.openSheet({
       type: "deleteFolderDialog",
       folderId: d.confirmDeleteFolder,
@@ -1923,7 +1976,11 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.executeDeleteFolder) {
+    const folder = getFolderById(d.executeDeleteFolder);
+    if (!isFolderOwnerRole(folder, ui.folderMembers?.[d.executeDeleteFolder])) return;
+    const startAuth = captureAuthSnapshot();
     const res = await apiClient.deleteFolder(d.executeDeleteFolder);
+    if (!isSameAuthSnapshot(startAuth)) return;
     if (!res?.ok && store.state.api.mode === "live") return;
     store.closeSheet();
     store.navigate("folders", { viewportMode: ui.viewportMode === "web" ? "web" : "mobile" });
@@ -1933,9 +1990,12 @@ appEl.addEventListener("click", async (e) => {
   if (d.openInviteSheet) {
     const folderId = d.openInviteSheet;
     const folder = getFolderById(folderId);
+    if (!isFolderOwnerRole(folder, ui.folderMembers?.[folderId])) return;
+    const startAuth = captureAuthSnapshot();
     ui.shareSheetState = "loading";
     store.openSheet({ type: "invite", folderId });
     const membersRes = await apiClient.listFolderMembers(folderId).catch(() => ({ ok: false }));
+    if (!isSameAuthSnapshot(startAuth)) return;
     if (membersRes?.ok && membersRes.data) {
       ui.folderMembers = ui.folderMembers || {};
       ui.folderMembers[folderId] = membersRes.data;
@@ -1952,9 +2012,11 @@ appEl.addEventListener("click", async (e) => {
         expiry: ui.inviteExpiry || "7d",
         maxUses: ui.inviteMaxUses,
       }).catch(() => ({ ok: false }));
+      if (!isSameAuthSnapshot(startAuth)) return;
       inviteOk = Boolean(created?.ok);
       if (inviteOk) {
         const refreshed = await apiClient.listFolderMembers(folderId).catch(() => null);
+        if (!isSameAuthSnapshot(startAuth)) return;
         if (refreshed?.ok && refreshed.data) {
           ui.folderMembers = ui.folderMembers || {};
           ui.folderMembers[folderId] = refreshed.data;
@@ -1968,12 +2030,17 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.changeMemberRole && ui.activeSheet?.folderId) {
-    const res = await apiClient.updateFolderMemberRole(ui.activeSheet.folderId, d.changeMemberRole, d.role || "editor");
+    const folderId = ui.activeSheet.folderId;
+    if (!isFolderOwnerRole(getFolderById(folderId), ui.folderMembers?.[folderId])) return;
+    const startAuth = captureAuthSnapshot();
+    const res = await apiClient.updateFolderMemberRole(folderId, d.changeMemberRole, d.role || "editor");
+    if (!isSameAuthSnapshot(startAuth)) return;
     if (res.ok) {
-      const m = await apiClient.listFolderMembers(ui.activeSheet.folderId).catch(() => null);
+      const m = await apiClient.listFolderMembers(folderId).catch(() => null);
+      if (!isSameAuthSnapshot(startAuth)) return;
       if (m?.ok && m.data) {
         ui.folderMembers = ui.folderMembers || {};
-        ui.folderMembers[ui.activeSheet.folderId] = m.data;
+        ui.folderMembers[folderId] = m.data;
       }
       store.showToast("อัปเดตสิทธิ์สมาชิกแล้ว");
     } else {
@@ -1983,12 +2050,17 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.removeMember && ui.activeSheet?.folderId) {
-    const res = await apiClient.removeFolderMember(ui.activeSheet.folderId, d.removeMember);
+    const folderId = ui.activeSheet.folderId;
+    if (!isFolderOwnerRole(getFolderById(folderId), ui.folderMembers?.[folderId])) return;
+    const startAuth = captureAuthSnapshot();
+    const res = await apiClient.removeFolderMember(folderId, d.removeMember);
+    if (!isSameAuthSnapshot(startAuth)) return;
     if (res.ok) {
-      const m = await apiClient.listFolderMembers(ui.activeSheet.folderId).catch(() => null);
+      const m = await apiClient.listFolderMembers(folderId).catch(() => null);
+      if (!isSameAuthSnapshot(startAuth)) return;
       if (m?.ok && m.data) {
         ui.folderMembers = ui.folderMembers || {};
-        ui.folderMembers[ui.activeSheet.folderId] = m.data;
+        ui.folderMembers[folderId] = m.data;
       }
       store.showToast("นำสมาชิกออกจากโฟลเดอร์แล้ว");
     } else {
@@ -1998,12 +2070,17 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.revokeInvite && ui.activeSheet?.folderId) {
-    const res = await apiClient.revokeFolderInvite(ui.activeSheet.folderId, d.revokeInvite);
+    const folderId = ui.activeSheet.folderId;
+    if (!isFolderOwnerRole(getFolderById(folderId), ui.folderMembers?.[folderId])) return;
+    const startAuth = captureAuthSnapshot();
+    const res = await apiClient.revokeFolderInvite(folderId, d.revokeInvite);
+    if (!isSameAuthSnapshot(startAuth)) return;
     if (res.ok) {
-      const m = await apiClient.listFolderMembers(ui.activeSheet.folderId).catch(() => null);
+      const m = await apiClient.listFolderMembers(folderId).catch(() => null);
+      if (!isSameAuthSnapshot(startAuth)) return;
       if (m?.ok && m.data) {
         ui.folderMembers = ui.folderMembers || {};
-        ui.folderMembers[ui.activeSheet.folderId] = m.data;
+        ui.folderMembers[folderId] = m.data;
       }
       store.showToast("เพิกถอนลิงก์คำเชิญแล้ว");
     } else {
@@ -2056,20 +2133,36 @@ appEl.addEventListener("click", async (e) => {
     return;
   }
   if (d.saveAiConfig) {
+    const startAuth = captureAuthSnapshot();
+    const testSeq = (_aiTestSeq += 1);
+    const testedProvider = data.aiConfig.provider;
     ui.aiTesting = true;
     store.emit();
-    const res = await apiClient.testAiConnection();
-    ui.aiTesting = false;
-    data.aiConfig.connected = Boolean(res.ok);
-    data.aiConfig.lastTestedAt = new Date().toISOString();
-    data.aiConfig.lastTestError = res.ok ? "" : res.error || "เชื่อมต่อไม่สำเร็จ";
-    store.save();
-    store.emit();
-    store.showToast(
-      res.ok
-        ? `ทดสอบและเชื่อมต่อ ${data.aiConfig.provider} สำเร็จ`
-        : `ทดสอบการเชื่อมต่อไม่สำเร็จ: ${res.error || "ตรวจสอบ API Key / Endpoint"}`
-    );
+    try {
+      const res = await apiClient.testAiConnection();
+      if (!isSameAuthSnapshot(startAuth) || testSeq !== _aiTestSeq) return;
+      if (data.aiConfig.provider !== testedProvider) {
+        ui.aiTesting = false;
+        store.emit();
+        return;
+      }
+      ui.aiTesting = false;
+      data.aiConfig.connected = Boolean(res.ok);
+      data.aiConfig.lastTestedAt = new Date().toISOString();
+      data.aiConfig.lastTestError = res.ok ? "" : res.error || "เชื่อมต่อไม่สำเร็จ";
+      store.save();
+      store.emit();
+      store.showToast(
+        res.ok
+          ? `ทดสอบและเชื่อมต่อ ${data.aiConfig.provider} สำเร็จ`
+          : `ทดสอบการเชื่อมต่อไม่สำเร็จ: ${res.error || "ตรวจสอบ API Key / Endpoint"}`
+      );
+    } finally {
+      if (isSameAuthSnapshot(startAuth) && testSeq === _aiTestSeq && ui.aiTesting) {
+        ui.aiTesting = false;
+        store.emit();
+      }
+    }
     return;
   }
 
@@ -2209,7 +2302,11 @@ appEl.addEventListener("click", async (e) => {
         item.reminder || "",
         item.aiSummary || "",
       ]
-        .map((v) => `"${String(v).replaceAll('"', '""')}"`)
+        .map((v) => {
+          const s = String(v ?? "");
+          const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+          return `"${safe.replaceAll('"', '""')}"`;
+        })
         .join(",");
     });
     const csv = "\uFEFF" + [headers.join(","), ...rows].join("\n");

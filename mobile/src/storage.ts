@@ -833,6 +833,53 @@ export async function updateCachedReminders(reminders: MobileReminderItem[]): Pr
   }));
 }
 
+export async function upsertCachedReminder(reminder: MobileReminderItem): Promise<void> {
+  const targetId = String(reminder?.item_id || "").trim();
+  if (!targetId) return;
+  return mutateCachedWorkspace((ws) => {
+    const existing = Array.isArray(ws.reminders) ? ws.reminders : [];
+    const idx = existing.findIndex((r) => r.item_id === targetId);
+    const normalized: MobileReminderItem = { ...reminder, item_id: targetId };
+    const nextReminders =
+      idx >= 0
+        ? existing.map((r, i) => (i === idx ? { ...r, ...normalized } : r))
+        : [normalized, ...existing];
+    return { ...ws, reminders: nextReminders };
+  });
+}
+
+export async function removeCachedReminderByItemId(itemId: string): Promise<void> {
+  const targetId = String(itemId || "").trim();
+  if (!targetId) return;
+  return mutateCachedWorkspace((ws) => {
+    if (!Array.isArray(ws.reminders)) return null;
+    return {
+      ...ws,
+      reminders: ws.reminders.filter((r) => r.item_id !== targetId),
+    };
+  });
+}
+
+export async function mergeCachedReminders(updates: MobileReminderItem[]): Promise<void> {
+  const list = Array.isArray(updates) ? updates : [];
+  if (!list.length) return;
+  return mutateCachedWorkspace((ws) => {
+    const existing = Array.isArray(ws.reminders) ? ws.reminders : [];
+    const byItem = new Map<string, MobileReminderItem>();
+    for (const rem of existing) {
+      const id = String(rem?.item_id || "").trim();
+      if (id) byItem.set(id, rem);
+    }
+    for (const rem of list) {
+      const id = String(rem?.item_id || "").trim();
+      if (!id) continue;
+      const prev = byItem.get(id);
+      byItem.set(id, prev ? { ...prev, ...rem, item_id: id } : { ...rem, item_id: id });
+    }
+    return { ...ws, reminders: Array.from(byItem.values()) };
+  });
+}
+
 export async function saveRegisteredPushDevice(
   device: Omit<RegisteredPushDevice, "user_id">,
 ): Promise<void> {

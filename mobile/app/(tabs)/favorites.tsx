@@ -72,7 +72,7 @@ export default function FavoritesScreen() {
     }
     setFavorites(ws.items.filter((it) => Boolean(it.is_favorite)));
     setReminders(ws.reminders);
-    if (syncRes.ok && syncRes.data && Array.isArray(syncRes.data.notifications)) {
+    if (syncRes.ok && syncRes.data && !syncRes.data.ios_remote_push_active && Array.isArray(syncRes.data.notifications)) {
       setServerOccurrences(syncRes.data.notifications);
     } else {
       setServerOccurrences(null);

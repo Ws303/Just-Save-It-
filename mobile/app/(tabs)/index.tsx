@@ -30,11 +30,14 @@ import {
   previewLinkUrl,
   resolveFolderCoverUrl,
   saveLinkItem,
+  saveReminder,
+  syncRemindersFromServer,
   type PreviewUrlResponsePayload,
 } from "../../src/api";
 import { FIGMA_INK, getFigmaTheme, type FigmaAccentThemeId } from "../../src/figmaTheme";
 import {
   formatCardDisplayTitle,
+  formatRemindTimeAndZone,
   getSocialPostLinkWarning,
   inferMobileDomain,
   inferMobilePlatform,
@@ -59,6 +62,8 @@ import {
 const CHERRY_SELECTED_IMG = require("../../assets/figma/cherry-selected.png");
 const CHERRY_UNSELECTED_IMG = require("../../assets/figma/cherry-unselected.png");
 const HOME_MASCOT_IMG = require("../../assets/figma/home-cherry-mascot.png");
+const QUICK_SAVE_TAGS = ["#คาเฟ่", "#ไอเดีย", "#เที่ยว", "#อาหาร", "#อ่านทีหลัง"];
+type QuickReminderPreset = "none" | "2h" | "tomorrow18" | "3d";
 
 function isReadStatus(raw?: string): boolean {
   const s = String(raw || "inbox").toLowerCase();
@@ -83,7 +88,7 @@ function formatReminderWhen(raw?: string | null): string {
 export default function HomeFeedScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ sharedUrl?: string; sharedTitle?: string }>();
+  const params = useLocalSearchParams<{ sharedUrl?: string; sharedTitle?: string; addToFolderId?: string }>();
   const initialCache = getMemoryCachedWorkspace();
 
   const [themeId, setThemeId] = useState<FigmaAccentThemeId>("sharely");
@@ -113,6 +118,7 @@ export default function HomeFeedScreen() {
   const [saveTags, setSaveTags] = useState("");
   const [saveFolderId, setSaveFolderId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<WorkflowStatus>("inbox");
+  const [saveReminderPreset, setSaveReminderPreset] = useState<QuickReminderPreset>("none");
   const [saving, setSaving] = useState(false);
   const [inlineFolderOpen, setInlineFolderOpen] = useState(false);
   const [inlineFolderName, setInlineFolderName] = useState("");
@@ -123,7 +129,35 @@ export default function HomeFeedScreen() {
   const previewSeqRef = useRef(0);
   const favInFlightRef = useRef<Set<string>>(new Set());
   const seenInFlightRef = useRef<Set<string>>(new Set());
+  const mountedRef = useRef(true);
+  const postModalAlertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const socialWarning = useMemo(() => getSocialPostLinkWarning(saveUrl), [saveUrl]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      saveSeqRef.current += 1;
+      previewSeqRef.current += 1;
+      if (postModalAlertTimerRef.current) {
+        clearTimeout(postModalAlertTimerRef.current);
+        postModalAlertTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  function showPostModalAlert(title: string, message: string) {
+    if (!mountedRef.current) return;
+    if (Platform.OS === "ios") {
+      if (postModalAlertTimerRef.current) clearTimeout(postModalAlertTimerRef.current);
+      postModalAlertTimerRef.current = setTimeout(() => {
+        postModalAlertTimerRef.current = null;
+        if (mountedRef.current) Alert.alert(title, message);
+      }, 320);
+      return;
+    }
+    Alert.alert(title, message);
+  }
 
   useEffect(() => {
     void loadFigmaAccentTheme().then(setThemeId).catch(() => {});
@@ -217,6 +251,14 @@ export default function HomeFeedScreen() {
     }
   }, [params.sharedUrl, params.sharedTitle, handleFetchPreview]);
 
+  useEffect(() => {
+    if (typeof params.addToFolderId === "string" && params.addToFolderId.trim()) {
+      setSaveFolderId(params.addToFolderId.trim());
+      setModalOpen(true);
+      router.setParams({ addToFolderId: undefined });
+    }
+  }, [params.addToFolderId, router]);
+
   const folderNameById = useMemo(() => {
     const map = new Map<string, string>();
     for (const f of folders) {
@@ -261,6 +303,10 @@ export default function HomeFeedScreen() {
   }, [filteredItems, showAllLinks, searchText, statusFilter]);
 
   function closeQuickSaveModal() {
+    saveSeqRef.current += 1;
+    previewSeqRef.current += 1;
+    setSaving(false);
+    setPreviewing(false);
     setModalOpen(false);
     setInlineFolderOpen(false);
     setInlineFolderName("");
@@ -270,7 +316,28 @@ export default function HomeFeedScreen() {
     setSaveTags("");
     setSaveFolderId(null);
     setSaveStatus("inbox");
+    setSaveReminderPreset("none");
     setPreviewData(null);
+  }
+
+  function hasQuickTag(tagWithHash: string): boolean {
+    const needle = tagWithHash.replace(/^#/, "").trim().toLowerCase();
+    return saveTags
+      .split(/[\s,]+/)
+      .some((t) => t.replace(/^#/, "").trim().toLowerCase() === needle);
+  }
+
+  function toggleQuickSaveTag(tagWithHash: string) {
+    const needle = tagWithHash.replace(/^#/, "").trim().toLowerCase();
+    const parts = saveTags
+      .split(/[\s,]+/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const exists = parts.some((t) => t.replace(/^#/, "").toLowerCase() === needle);
+    const next = exists
+      ? parts.filter((t) => t.replace(/^#/, "").toLowerCase() !== needle)
+      : [...parts, tagWithHash];
+    setSaveTags(next.join(" "));
   }
 
   async function handleInlineCreateFolder() {
@@ -305,6 +372,9 @@ export default function HomeFeedScreen() {
       return;
     }
     await runGuardedBusyAction(saveSeqRef, setSaving, async (isStale) => {
+      const startGen = getAuthGeneration();
+      const chosenPreset = saveReminderPreset;
+      const chosenStatus = saveStatus;
       const parsedTags = saveTags
         .split(/[\s,]+/)
         .map((t) => t.replace(/^#/, "").trim())
@@ -333,21 +403,42 @@ export default function HomeFeedScreen() {
         folder_id: saveFolderId,
         status: saveStatus,
       });
-      if (isStale()) return;
+      if (isStale() || getAuthGeneration() !== startGen) return;
       if (!res.ok) {
         Alert.alert("บันทึกไม่สำเร็จ", res.error || "กรุณาลองใหม่อีกครั้ง");
         return;
       }
+      const createdId = typeof res.data?.id === "string" ? res.data.id : "";
+      let reminderWarning = "";
+      if (!res.queued && createdId && chosenPreset !== "none" && chosenStatus !== "done") {
+        const now = new Date();
+        const remDt =
+          chosenPreset === "2h"
+            ? new Date(now.getTime() + 2 * 3600 * 1000)
+            : chosenPreset === "tomorrow18"
+              ? new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 18, 0, 0, 0)
+              : new Date(now.getTime() + 72 * 3600 * 1000);
+        const { remind_time, timezone } = formatRemindTimeAndZone(remDt);
+        const remRes = await saveReminder(createdId, {
+          schedule_type: "once",
+          remind_at: remDt.toISOString(),
+          remind_time,
+          timezone,
+          repeat_every_days: null,
+        });
+        if (isStale() || getAuthGeneration() !== startGen) return;
+        if (!remRes.ok) {
+          reminderWarning = remRes.error || "สามารถเข้าไปตั้งเตือนภายหลังได้ที่หน้ารายละเอียดลิงก์";
+        } else {
+          await syncRemindersFromServer().catch(() => {});
+          if (isStale() || getAuthGeneration() !== startGen) return;
+        }
+      }
       closeQuickSaveModal();
-      setSaveUrl("");
-      setSaveTitle("");
-      setSaveNote("");
-      setSaveTags("");
-      setSaveFolderId(null);
-      setSaveStatus("inbox");
-      setPreviewData(null);
-      if (res.queued) {
-        Alert.alert("บันทึกเข้า Offline Queue แล้ว", "ระบบจะอัปโหลดขึ้น Cloud อัตโนมัติเมื่อออนไลน์");
+      if (reminderWarning) {
+        showPostModalAlert("บันทึกลิงก์แล้ว แต่ตั้งเตือนไม่สำเร็จ", reminderWarning);
+      } else if (res.queued) {
+        showPostModalAlert("บันทึกเข้า Offline Queue แล้ว", "ระบบจะอัปโหลดขึ้น Cloud อัตโนมัติเมื่อออนไลน์");
       }
       void loadAll();
     });
@@ -1034,6 +1125,31 @@ export default function HomeFeedScreen() {
               </View>
 
               <Text style={styles.label}>แท็ก</Text>
+              <View style={[styles.inlinePills, { flexWrap: "wrap", marginBottom: 8 }]}>
+                {QUICK_SAVE_TAGS.map((qt) => {
+                  const active = hasQuickTag(qt);
+                  return (
+                    <Pressable
+                      key={qt}
+                      style={[
+                        styles.smallChip,
+                        { marginRight: 0 },
+                        active && { backgroundColor: theme.soft, borderColor: theme.accent },
+                      ]}
+                      onPress={() => toggleQuickSaveTag(qt)}
+                    >
+                      <Text
+                        style={[
+                          styles.chipText,
+                          active && { color: theme.accentText, fontWeight: "700" },
+                        ]}
+                      >
+                        {qt}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
               <TextInput
                 style={styles.input}
                 placeholder="#คาเฟ่ #ไอเดีย"
@@ -1041,6 +1157,46 @@ export default function HomeFeedScreen() {
                 value={saveTags}
                 onChangeText={setSaveTags}
               />
+
+              <Text style={styles.label}>ตั้งเตือนด่วน</Text>
+              <View style={[styles.inlinePills, { flexWrap: "wrap" }]}>
+                {(
+                  [
+                    { id: "none", label: "ไม่เตือน" },
+                    { id: "2h", label: "อีก 2 ชม." },
+                    { id: "tomorrow18", label: "พรุ่งนี้ 18:00" },
+                    { id: "3d", label: "อีก 3 วัน" },
+                  ] as const
+                ).map((opt) => {
+                  const disabledByDone = saveStatus === "done" && opt.id !== "none";
+                  const active = saveReminderPreset === opt.id && !disabledByDone;
+                  return (
+                    <Pressable
+                      key={opt.id}
+                      style={[
+                        styles.smallChip,
+                        { marginRight: 0 },
+                        active && { backgroundColor: theme.soft, borderColor: theme.accent },
+                        disabledByDone && { opacity: 0.45 },
+                      ]}
+                      disabled={disabledByDone}
+                      onPress={() => setSaveReminderPreset(opt.id)}
+                    >
+                      <Text
+                        style={[
+                          styles.chipText,
+                          active && { color: theme.accentText, fontWeight: "700" },
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {saveStatus === "done" ? (
+                <Text style={styles.syncHint}>สถานะ &quot;ดูแล้ว&quot; จะไม่ตั้งเตือน</Text>
+              ) : null}
 
               <Text style={styles.label}>โน้ตสั้น</Text>
               <TextInput

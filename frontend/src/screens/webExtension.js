@@ -8,6 +8,7 @@ import { renderWebAuthView } from "./auth.js";
 import { renderNotificationsFullScreen } from "./home.js";
 import { renderLinkCard } from "./common.js";
 import { renderAiPanelBody } from "./ai.js";
+import { computeWebFolderShareState } from "./folders.js";
 import { renderProfileBody, renderDisplayBody, renderSecurityBody, renderHelpBody } from "./profile.js";
 import {
   formatPostDetailTitleAndDesc,
@@ -56,11 +57,15 @@ function renderDesktopFolderCard(folder, allLinks, activeFolderId, options = {})
   const isWatchLater = Boolean(options.isWatchLater);
   const selected = !isWatchLater && folder.id === activeFolderId;
   const count = isWatchLater ? Number(options.watchLaterCount || 0) : getFolderCount(folder);
+  const isSharedNonOwner =
+    !isWatchLater && Boolean(folder?.role && String(folder.role).trim().toLowerCase() !== "owner");
   const shareLabel = isWatchLater
     ? "ยังไม่จัดหมวด"
     : folder.sharedCount > 0
       ? `แชร์ ${folder.sharedCount} คน`
-      : "ส่วนตัว";
+      : isSharedNonOwner
+        ? "โฟลเดอร์ที่แชร์"
+        : "ส่วนตัว";
   const clickAttr = isWatchLater
     ? `data-filter-chip="unread" data-filter-scope="home"`
     : `data-open-folder="${escHtml(folder.id)}"`;
@@ -74,7 +79,7 @@ function renderDesktopFolderCard(folder, allLinks, activeFolderId, options = {})
           <span class="pc-folder-share-tag">${escHtml(shareLabel)}</span>
         </div>
         ${
-          isWatchLater
+          isWatchLater || isSharedNonOwner
             ? ""
             : `<div class="pc-folder-card-actions">
                  <button type="button" class="icon-btn" style="width:26px;height:26px;" data-open-edit-folder="${escHtml(folder.id)}" title="แก้ไขโฟลเดอร์">
@@ -539,8 +544,10 @@ export function renderWebView(state) {
       `;
     } else {
       const count = getFolderCount(activeFolder);
-      const cachedMembers = state.ui.folderMembers?.[activeFolder.id]?.members || [];
-      const shareCount = Math.max(activeFolder.sharedCount || 0, Math.max(0, cachedMembers.length - 1));
+      const { isOwner, shareCount, cached: cachedMembers } = computeWebFolderShareState(
+        activeFolder,
+        state.ui.folderMembers?.[activeFolder.id] || null,
+      );
       const initials = cachedMembers.length
         ? cachedMembers.slice(0, 3).map((m) => (m.display_name || m.email || m.user_id || "U").trim().charAt(0).toUpperCase())
         : activeFolder.sharedUsers?.length
@@ -553,11 +560,15 @@ export function renderWebView(state) {
             ${icons.back(22)}
             <span>${escHtml(activeFolder.name)}</span>
           </button>
-          <div class="pc-main-actions">
-            <button type="button" class="pc-invite-btn" data-open-invite-sheet="${escHtml(activeFolder.id)}">
-              <span>เชิญเพื่อน</span>
-            </button>
-          </div>
+          ${
+            isOwner
+              ? `<div class="pc-main-actions">
+                   <button type="button" class="pc-invite-btn" data-open-invite-sheet="${escHtml(activeFolder.id)}">
+                     <span>เชิญเพื่อน</span>
+                   </button>
+                 </div>`
+              : ""
+          }
         </header>
 
         <div class="shared-bar" style="padding:0;background:transparent;">
@@ -565,7 +576,13 @@ export function renderWebView(state) {
             ${initials.map((ch) => `<div class="avatar-circle">${escHtml(ch)}</div>`).join("")}
           </div>
           <span style="font-size:13.5px;color:var(--ink-secondary);">
-            ${shareCount > 0 ? `แชร์กับ ${shareCount} คน` : "โฟลเดอร์ส่วนตัว · กดเชิญเพื่อนเพื่อแชร์"}
+            ${
+              shareCount > 0
+                ? `แชร์กับ ${shareCount} คน`
+                : isOwner
+                  ? "โฟลเดอร์ส่วนตัว · กดเชิญเพื่อนเพื่อแชร์"
+                  : "โฟลเดอร์ที่แชร์"
+            }
           </span>
         </div>
 

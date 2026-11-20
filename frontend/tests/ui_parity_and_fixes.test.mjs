@@ -862,3 +862,279 @@ test("Sherlink Batch 2: branding, iOS PWA shell, simultaneous Description + AI s
   assert.match(desktopGrid, /https:\/\/cdn\.example\.com\/custom-cover\.webp/);
   assert.doesNotMatch(desktopGrid, /pc-folder-collage/);
 });
+
+test("Sherlink Web cleanup: off-Figma folder card badges removed, description moved above-the-fold, sw.js network-first v2, non-owner folder parity", async () => {
+  const { renderLinkCard } = await import("../src/screens/common.js");
+  const { renderLinkDetailScreen, renderSavedPreviewScreen } = await import("../src/screens/links.js");
+  const { renderFoldersGridInner, renderFolderDetailScreen } = await import("../src/screens/folders.js");
+
+  // 1) Folder link card emits zero off-Figma badges/glows and no platform stamp over images
+  const cardHtml = renderLinkCard(
+    {
+      id: "l-clean-1",
+      folderId: store.state.data.folders[0]?.id || "f1",
+      platform: "Facebook",
+      title: "AI Offline Thai Reader",
+      status: "unread",
+      favorite: true,
+      pinned: true,
+      savedAgo: "เมื่อสักครู่",
+      coverUrl: "https://images.example.com/thumb.jpg",
+      aiSummary: "สรุป AI",
+    },
+    { variant: "folder", folderContextId: "f1" },
+  );
+  assert.doesNotMatch(cardHtml, /recently-shared/);
+  assert.doesNotMatch(cardHtml, /new-incoming-pill/);
+  assert.doesNotMatch(cardHtml, /เพิ่งแชร์เข้ามา/);
+  assert.doesNotMatch(cardHtml, /ปักหมุด/);
+  assert.doesNotMatch(cardHtml, /ai-badge-pill/);
+  const thumbBlock = cardHtml.slice(cardHtml.indexOf('class="link-thumb"'), cardHtml.indexOf('class="link-body"'));
+  assert.doesNotMatch(thumbBlock, />Facebook</);
+
+  // 2) Mobile Detail places Original Description BEFORE Note and Saved Preview uses renderOriginalDescriptionBlock
+  store.resetSeed();
+  const detailItem = {
+    id: "itm-above-fold",
+    folderId: store.state.data.folders[0].id,
+    url: "https://www.youtube.com/watch?v=abc123def45",
+    title: "Test Post",
+    description: "คำอธิบายจากต้นฉบับแบบเต็มสำหรับทดสอบตำแหน่งบนหน้าจอ",
+    note: "โน้ตสั้น",
+    aiSummary: "สรุปทดสอบ",
+    platform: "YouTube",
+    tags: [],
+  };
+  store.state.data.links.unshift(detailItem);
+  store.state.ui.activeLinkId = detailItem.id;
+  store.state.ui.previewIndex = 0;
+  store.state.ui.screen = "linkDetail";
+  const detailHtml = renderLinkDetailScreen(store.state);
+  const descIdx = detailHtml.indexOf("figma-detail-desc-block");
+  const noteIdx = detailHtml.indexOf("figma-detail-note-block");
+  assert.ok(descIdx > 0 && noteIdx > 0 && descIdx < noteIdx, "Description block must appear above Note block on Mobile Web");
+
+  const previewHtml = renderSavedPreviewScreen(store.state);
+  assert.match(previewHtml, /คำอธิบายจากโพสต์ต้นฉบับ/);
+  assert.match(previewHtml, /figma-detail-desc-block/);
+
+  // 3) sw.js v2 & Network-First app-shell
+  const swSrc = fs.readFileSync(path.join(frontendRoot, "sw.js"), "utf8");
+  assert.match(swSrc, /sherlink-shell-v2/);
+  assert.match(swSrc, /isAppShellAsset/);
+
+  // 4) Non-owner folder hides pencil + invite button and counts collaborator accurately
+  store.state.data.folders = [
+    { id: "fld-shared", name: "Shared Club", role: "editor", ownerId: "alice", sharedCount: 0 },
+  ];
+  store.state.ui.activeFolderId = "fld-shared";
+  store.state.ui.folderMembers = {
+    "fld-shared": {
+      owner_id: "alice",
+      caller_role: "editor",
+      members: [{ user_id: "bob", role: "editor", display_name: "Bob" }],
+    },
+  };
+  const foldersGridHtml = renderFoldersGridInner(store.state);
+  assert.doesNotMatch(foldersGridHtml, /data-open-edit-folder="fld-shared"/);
+  const folderDetailHtml = renderFolderDetailScreen(store.state);
+  assert.doesNotMatch(folderDetailHtml, /data-open-invite-sheet="fld-shared"/);
+  assert.match(folderDetailHtml, /แชร์กับ 1 คน/);
+
+  // 5) AI custom model text input present in Custom Endpoint mode
+  const prevAiProvider = store.state.data.aiConfig.provider;
+  try {
+    store.state.data.aiConfig.provider = "Custom Endpoint";
+    const aiCustomHtml = renderAiPanelBody(store.state);
+    assert.match(aiCustomHtml, /data-bind-ai-model="1"/);
+  } finally {
+    store.state.data.aiConfig.provider = prevAiProvider;
+  }
+});
+
+test("Sherlink Round 6 fixes: Desktop non-owner folder gates, CWE-1236 CSV neutralization, and social description cleanup", async () => {
+  const { computeWebFolderShareState } = await import("../src/screens/folders.js");
+  const { renderOriginalDescriptionBlock } = await import("../src/screens/links.js");
+
+  // 1) computeWebFolderShareState + Desktop renderWebView non-owner folder gates
+  store.resetSeed();
+  const prevScreen = store.state.ui.screen;
+  const prevViewport = store.state.ui.viewportMode;
+  const prevPcSection = store.state.ui.pcSection;
+  try {
+    store.state.ui.screen = "home";
+    const shareState = computeWebFolderShareState(
+      { id: "fld-peer", role: "viewer", ownerId: "owner-1", sharedCount: 0 },
+      {
+        owner_id: "owner-1",
+        caller_role: "viewer",
+        members: [
+          { user_id: "owner-1", role: "owner", display_name: "Alice" },
+          { user_id: "viewer-2", role: "viewer", display_name: "Bob" },
+        ],
+      },
+    );
+    assert.deepEqual(
+      { isOwner: shareState.isOwner, shareCount: shareState.shareCount, hasExplicitOwnerRow: shareState.hasExplicitOwnerRow },
+      { isOwner: false, shareCount: 1, hasExplicitOwnerRow: true },
+    );
+
+    store.state.data.folders = [
+      { id: "fld-own", name: "My Own Folder", role: "owner", ownerId: "u-self", sharedCount: 0 },
+      { id: "fld-shared-ro", name: "Team Read Only", role: "viewer", ownerId: "alice", sharedCount: 0 },
+    ];
+    store.state.ui.viewportMode = "web";
+    store.state.ui.pcSection = "folders";
+    store.state.ui.activeFolderId = "fld-shared-ro";
+    store.state.ui.folderMembers = {
+      "fld-shared-ro": {
+        owner_id: "alice",
+        caller_role: "viewer",
+        members: [{ user_id: "bob", role: "viewer", display_name: "Bob" }],
+      },
+    };
+    const desktopFoldersHtml = renderWebView(store.state);
+    assert.match(desktopFoldersHtml, /data-open-edit-folder="fld-own"/);
+    assert.doesNotMatch(desktopFoldersHtml, /data-open-edit-folder="fld-shared-ro"/);
+    assert.doesNotMatch(desktopFoldersHtml, /data-open-invite-sheet="fld-shared-ro"/);
+    assert.match(desktopFoldersHtml, /โฟลเดอร์ที่แชร์/);
+
+    store.state.ui.pcSection = "folderDetail";
+    const desktopDetailHtml = renderWebView(store.state);
+    assert.doesNotMatch(desktopDetailHtml, /data-open-invite-sheet="fld-shared-ro"/);
+    assert.match(desktopDetailHtml, /แชร์กับ 1 คน/);
+  } finally {
+    store.state.ui.screen = prevScreen;
+    store.state.ui.viewportMode = prevViewport;
+    store.state.ui.pcSection = prevPcSection;
+  }
+
+  // 2) Social stats noise stripped for IG while YouTube keeps fuller description
+  const igDescHtml = renderOriginalDescriptionBlock({
+    url: "https://www.instagram.com/p/C9xyz123/",
+    platform: "Instagram",
+    title: "Quiet Cafe",
+    description: "120 likes, 4 comments - cafe_bkk on October 12, 2026: \"Drip coffee corner in Ari\".",
+  });
+  assert.doesNotMatch(igDescHtml, /120 likes, 4 comments/);
+  assert.match(igDescHtml, /Drip coffee corner in Ari/);
+
+  const ytDescHtml = renderOriginalDescriptionBlock({
+    url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    platform: "YouTube",
+    title: "Pour Over 101",
+    description: "00:00 Intro 01:30 Bloom 03:00 Final pour full walkthrough",
+  });
+  assert.match(ytDescHtml, /00:00 Intro 01:30 Bloom 03:00 Final pour full walkthrough/);
+
+  // 3) main.js source guards: CWE-1236 formula prefix neutralization, isFolderOwnerRole + isSameAuthSnapshot fences, no listMcpTokens on nav
+  const mainSrc = fs.readFileSync(path.join(frontendRoot, "src", "main.js"), "utf8");
+  assert.ok(mainSrc.includes("/^[=+\\-@\\t\\r]/"), "downloadCsv must neutralize CWE-1236 formula prefixes");
+  assert.doesNotMatch(mainSrc, /data\.session\?\.accessToken/);
+  assert.match(mainSrc, /if \(d\.openEditFolder\)[\s\S]{0,180}isFolderOwnerRole/);
+  assert.match(mainSrc, /if \(d\.openInviteSheet\)[\s\S]{0,200}isFolderOwnerRole/);
+  assert.match(mainSrc, /el\.dataset\.folderCoverInput[\s\S]{0,650}isSameAuthSnapshot/);
+  assert.match(mainSrc, /if \(d\.openFolder\)[\s\S]{0,360}isSameAuthSnapshot/);
+  assert.match(mainSrc, /if \(d\.changeMemberRole[\s\S]{0,260}isFolderOwnerRole/);
+  const pcSectionMatch = mainSrc.match(/if \(d\.pcSection\)[\s\S]{0,450}return;/);
+  assert.ok(pcSectionMatch && !/listMcpTokens/.test(pcSectionMatch[0]), "d.pcSection must not call dead listMcpTokens");
+
+  // 4) Round 7 & 8 fixes: iOS 16px !important, closeSheet + account switch + clearSession reset activeSheet/folderMembers/folderCoverUploading
+  const appCss = fs.readFileSync(path.join(frontendRoot, "styles", "app.css"), "utf8");
+  const mobileMediaIdx = appCss.indexOf("@media (max-width: 767px)");
+  assert.ok(mobileMediaIdx > 0);
+  const mobileMediaBlock = appCss.slice(mobileMediaIdx, mobileMediaIdx + 200);
+  assert.match(mobileMediaBlock, /font-size:\s*16px\s*!important/);
+
+  store.state.ui.folderCoverUploading = true;
+  store.openSheet({ type: "editFolder", folderId: "f-tmp", nameDraft: "Tmp" });
+  store.closeSheet();
+  assert.equal(store.state.ui.folderCoverUploading, false, "closeSheet must reset folderCoverUploading");
+
+  const { renderFolderSheets } = await import("../src/screens/folders.js");
+  assert.equal(computeWebFolderShareState({ id: "fld-ro", role: "editor" }, null).isOwner, false);
+  store.state.data.folders = [{ id: "fld-ro", name: "Collab", role: "editor", ownerId: "alice" }];
+  store.state.ui.folderMembers = { "fld-ro": { members: [{ user_id: "bob", role: "viewer" }] } };
+  store.state.ui.activeSheet = { type: "invite", folderId: "fld-ro" };
+  const sheetHtml = renderFolderSheets(store.state);
+  assert.doesNotMatch(sheetHtml, /data-remove-member="bob"/);
+
+  // Account switch closes activeSheet & clears folderMembers/folderCoverUploading even in headless DOM
+  store.state.data.user.id = "user-alpha";
+  store.state.ui.folderCoverUploading = true;
+  store.applyAuthenticatedSession({ user: { id: "user-beta", email: "b@test.local" } });
+  assert.equal(store.state.ui.activeSheet, null);
+  assert.equal(store.state.ui.folderCoverUploading, false);
+  assert.deepEqual(store.state.ui.folderMembers, {});
+
+  // clearSession with redirectToLogin: false also clears activeSheet, folderCoverUploading, folderMembers, aiTesting
+  store.state.ui.activeSheet = { type: "editFolder", folderId: "fld-ro" };
+  store.state.ui.folderCoverUploading = true;
+  store.state.ui.aiTesting = true;
+  store.state.ui.folderMembers = { "fld-ro": { caller_role: "owner", members: [] } };
+  store.clearSession({ redirectToLogin: false, clearWorkspace: true });
+  assert.equal(store.state.ui.activeSheet, null);
+  assert.equal(store.state.ui.folderCoverUploading, false);
+  assert.equal(store.state.ui.aiTesting, false);
+  assert.deepEqual(store.state.ui.folderMembers, {});
+
+  // 5) Round 9 fixes: createFolderInvite auth fence + no folders[0] bleed, non-owner generate-share-link hidden, pickCover lock, aiTesting reset
+  store.state.data.folders = [{ id: "fld-ro", name: "Collab", role: "editor", ownerId: "alice" }];
+  store.state.ui.activeSheet = { type: "invite", folderId: "fld-ro" };
+  const nonOwnerInviteHtml = renderFolderSheets(store.state);
+  assert.doesNotMatch(nonOwnerInviteHtml, /data-action="generate-share-link"/);
+
+  store.state.ui.folderCoverUploading = true;
+  store.state.ui.activeSheet = { type: "createFolder", nameDraft: "Busy", coverDraft: null };
+  const busyCoverSheetHtml = renderFolderSheets(store.state);
+  assert.match(busyCoverSheetHtml, /data-open-pick-cover="1"[\s\S]{0,40}disabled/);
+
+  store.openSheet({ type: "editFolder", folderId: "fld-ro", nameDraft: "Next" });
+  assert.equal(store.state.ui.folderCoverUploading, false, "openSheet must clear stale folderCoverUploading");
+
+  store.state.ui.aiTesting = true;
+  store.selectAiProvider("OpenAI");
+  assert.equal(store.state.ui.aiTesting, false, "selectAiProvider must reset aiTesting");
+
+  assert.match(mainSrc, /if \(act === "generate-share-link"[\s\S]{0,220}isFolderOwnerRole[\s\S]{0,450}isSameAuthSnapshot/);
+  assert.match(mainSrc, /if \(d\.saveAiConfig\)[\s\S]{0,360}isSameAuthSnapshot[\s\S]{0,120}_aiTestSeq/);
+  assert.match(mainSrc, /if \(d\.openPickCover[\s\S]{0,120}ui\.folderCoverUploading/);
+  assert.match(mainSrc, /_folderCoverUploadSeq/);
+
+  // createFolderInvite mid-flight account switch returns stale and never touches User B's folders[0]
+  const origFetch = globalThis.fetch;
+  const prevApiMode = store.state.api.mode;
+  const prevBearer = store.state.api.bearerToken;
+  try {
+    store.state.api.mode = "live";
+    store.state.api.bearerToken = "tok-user-a";
+    store.state.data.user.id = "user-a-inv";
+    store.state.data.folders = [{ id: "fld-user-a", name: "A Folder", role: "owner", inviteUrl: "" }];
+
+    let releaseInviteFetch = null;
+    globalThis.fetch = async () =>
+      new Promise((resolve) => {
+        releaseInviteFetch = () =>
+          resolve({
+            ok: true,
+            status: 201,
+            headers: { get: () => "application/json" },
+            json: async () => ({ token: "inv-from-a", invite_url: "https://sherlink.app/invite/from-a" }),
+          });
+      });
+
+    const pendingInvite = apiClient.createFolderInvite("fld-user-a", { role: "viewer" });
+    await new Promise((r) => setTimeout(r, 15));
+    store.applyAuthenticatedSession({ user: { id: "user-b-inv", email: "b@inv.test" }, accessToken: "tok-user-b" });
+    store.state.data.folders = [{ id: "fld-user-b", name: "B Folder", role: "owner", inviteUrl: "" }];
+    releaseInviteFetch();
+    const invRes = await pendingInvite;
+    assert.equal(invRes.ok, false);
+    assert.equal(invRes.stale, true);
+    assert.equal(store.state.data.folders[0].inviteUrl, "", "Stale createFolderInvite must never leak onto User B folders[0]");
+  } finally {
+    globalThis.fetch = origFetch;
+    store.state.api.mode = prevApiMode;
+    store.state.api.bearerToken = prevBearer;
+  }
+});

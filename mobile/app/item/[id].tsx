@@ -32,6 +32,8 @@ import {
 } from "../../src/api";
 import { FIGMA_INK, getFigmaTheme, type FigmaAccentThemeId } from "../../src/figmaTheme";
 import {
+  buildCustomReminderDate,
+  buildMobileMonthCalendar,
   deriveVideoEmbedInfo,
   formatPostDetailTitleAndDesc,
   formatRemindTimeAndZone,
@@ -42,6 +44,8 @@ import {
   isPrivateOrRestrictedItem,
   resolveMobilePlayUrl,
   resolveMobileThumbUrl,
+  resolveOriginalDescription,
+  shiftYearMonth,
 } from "../../src/itemHelpers";
 import {
   getAuthGeneration,
@@ -95,13 +99,31 @@ export default function ItemDetailScreen() {
   const [noteDraft, setNoteDraft] = useState("");
   const [tagModalOpen, setTagModalOpen] = useState(false);
   const [tagDraft, setTagDraft] = useState("");
+  const [aiConfirmOpen, setAiConfirmOpen] = useState(false);
   const [reminderModalOpen, setReminderModalOpen] = useState(false);
   const [reminderLabelOverride, setReminderLabelOverride] = useState<string | null>(null);
+  const nowSeed = new Date();
+  const [remYearMonth, setRemYearMonth] = useState(
+    `${nowSeed.getFullYear()}-${String(nowSeed.getMonth() + 1).padStart(2, "0")}`,
+  );
+  const [remDay, setRemDay] = useState(nowSeed.getDate());
+  const [remHourText, setRemHourText] = useState("18");
+  const [remMinuteText, setRemMinuteText] = useState("00");
+  const [remRepeatDays, setRemRepeatDays] = useState<number | null>(null);
   const [videoLoading, setVideoLoading] = useState(false);
   const [imageRatios, setImageRatios] = useState<Record<string, number>>({});
   const actionSeqRef = useRef(0);
   const activeIdRef = useRef<string | undefined>(id);
+  const mountedRef = useRef(true);
   activeIdRef.current = id;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      actionSeqRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     void loadFigmaAccentTheme().then(setThemeId).catch(() => {});
@@ -110,6 +132,9 @@ export default function ItemDetailScreen() {
   }, []);
 
   useEffect(() => {
+    actionSeqRef.current += 1;
+    setBusy("");
+    setVideoLoading(false);
     const match = getMemoryCachedWorkspace()?.items.find((it) => it.id === id) || null;
     setItem(match);
     setNote(match?.note || match?.user_note || "");
@@ -118,6 +143,11 @@ export default function ItemDetailScreen() {
     setDescExpanded(false);
     setCarouselIdx(0);
     setReminderLabelOverride(null);
+    setAiConfirmOpen(false);
+    setNoteModalOpen(false);
+    setTagModalOpen(false);
+    setReminderModalOpen(false);
+    setLightboxOpen(false);
     setLoading(!match);
   }, [id]);
 
@@ -223,18 +253,24 @@ export default function ItemDetailScreen() {
 
   async function handlePlayVideo() {
     if (!item || !derivedVideo.embedUrl || videoLoading) return;
+    const targetId = item.id;
     const startGen = getAuthGeneration();
+    const playSeq = actionSeqRef.current;
     const isIg =
       String(item.platform || "").toLowerCase() === "instagram" ||
       /instagram\.com/i.test(String(item.url || ""));
 
     let directMp4: string | null = null;
-    if (isIg && item.id) {
+    if (isIg && targetId) {
       setVideoLoading(true);
       try {
-        const res = await resolveItemVideo(item.id);
-        if (getAuthGeneration() !== startGen) {
-          setVideoLoading(false);
+        const res = await resolveItemVideo(targetId);
+        if (
+          !mountedRef.current ||
+          getAuthGeneration() !== startGen ||
+          activeIdRef.current !== targetId ||
+          actionSeqRef.current !== playSeq
+        ) {
           return;
         }
         if (res.ok && res.data?.video_url) {
@@ -243,8 +279,18 @@ export default function ItemDetailScreen() {
       } catch {
         // Fallback below
       } finally {
-        setVideoLoading(false);
+        if (mountedRef.current && activeIdRef.current === targetId) {
+          setVideoLoading(false);
+        }
       }
+    }
+    if (
+      !mountedRef.current ||
+      getAuthGeneration() !== startGen ||
+      activeIdRef.current !== targetId ||
+      actionSeqRef.current !== playSeq
+    ) {
+      return;
     }
 
     const targetPlayUrl = resolveMobilePlayUrl(item, derivedVideo.embedUrl, directMp4);
@@ -256,6 +302,14 @@ export default function ItemDetailScreen() {
         controlsColor: theme.accent,
       });
     } catch {
+      if (
+        !mountedRef.current ||
+        getAuthGeneration() !== startGen ||
+        activeIdRef.current !== targetId ||
+        actionSeqRef.current !== playSeq
+      ) {
+        return;
+      }
       openExternalUrlSafe(targetPlayUrl);
     }
   }
@@ -382,6 +436,99 @@ export default function ItemDetailScreen() {
     );
   }
 
+  function parseClampedTimeInt(raw: string, maxVal: number): number {
+    const digits = raw.replace(/\D+/g, "");
+    const n = digits ? Number.parseInt(digits, 10) : 0;
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.min(maxVal, n);
+  }
+
+  function stepReminderTime(kind: "hour" | "minute", delta: number) {
+    if (kind === "hour") {
+      const cur = parseClampedTimeInt(remHourText, 23);
+      const next = (cur + delta + 24) % 24;
+      setRemHourText(String(next).padStart(2, "0"));
+    } else {
+      const cur = parseClampedTimeInt(remMinuteText, 59);
+      const next = (cur + delta + 60) % 60;
+      setRemMinuteText(String(next).padStart(2, "0"));
+    }
+  }
+
+  function openReminderModal() {
+    const rawWhen =
+      cachedReminder?.remind_at ||
+      cachedReminder?.next_remind_at ||
+      cachedReminder?.next_run_at ||
+      cachedReminder?.scheduled_for;
+    let base = rawWhen ? new Date(rawWhen) : null;
+    if (!base || Number.isNaN(base.getTime()) || base.getTime() <= Date.now()) {
+      const n = new Date();
+      base = new Date(n.getFullYear(), n.getMonth(), n.getDate(), 18, 0, 0, 0);
+      if (base.getTime() <= Date.now()) {
+        base = new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1, 18, 0, 0, 0);
+      }
+    }
+    const ym = `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, "0")}`;
+    setRemYearMonth(ym);
+    setRemDay(base.getDate());
+    setRemHourText(String(base.getHours()).padStart(2, "0"));
+    setRemMinuteText(String(base.getMinutes()).padStart(2, "0"));
+    const rep =
+      cachedReminder?.schedule_type === "every_n_days" &&
+      typeof cachedReminder?.repeat_every_days === "number" &&
+      cachedReminder.repeat_every_days > 0
+        ? cachedReminder.repeat_every_days
+        : null;
+    setRemRepeatDays(rep);
+    setReminderModalOpen(true);
+  }
+
+  async function executeReminderSave(
+    targetId: string,
+    itemStatus: string,
+    dt: Date,
+    repeatDays: number | null,
+    isStale: () => boolean,
+    startGen: number,
+  ) {
+    if (itemStatus === "done" || itemStatus === "read" || itemStatus === "archived") {
+      Alert.alert(
+        "ตั้งเตือนไม่ได้",
+        "ลิงก์นี้อยู่ในสถานะอ่านแล้วหรือเก็บถาวร กรุณาเปลี่ยนสถานะเป็นยังไม่ดูก่อนตั้งเตือน",
+      );
+      return;
+    }
+    const iso = dt.toISOString();
+    const { remind_time, timezone } = formatRemindTimeAndZone(dt);
+    const res = await saveReminder(targetId, {
+      schedule_type: repeatDays ? "every_n_days" : "once",
+      remind_at: iso,
+      remind_time,
+      timezone,
+      repeat_every_days: repeatDays,
+    });
+    if (isStale() || getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
+    if (!res.ok) {
+      if (res.status === 409) {
+        Alert.alert(
+          "ตั้งเตือนไม่ได้",
+          "ไม่สามารถตั้งเตือนให้ลิงก์ที่อ่านแล้วหรือเก็บถาวรได้",
+        );
+      } else {
+        Alert.alert("ตั้งเตือนไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+      }
+      return;
+    }
+    await syncRemindersFromServer();
+    if (isStale() || getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
+    const formatted = dt.toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
+    const fullLabel = repeatDays ? `${formatted} (ทุก ${repeatDays} วัน)` : formatted;
+    setReminderLabelOverride(fullLabel);
+    setReminderModalOpen(false);
+    Alert.alert("ตั้งเวลาเตือนความจำแล้ว", `แจ้งเตือนเมื่อ ${fullLabel}`);
+  }
+
   async function handleQuickReminder(hoursAhead: number, repeatDays: number | null) {
     if (!item) return;
     const targetId = item.id;
@@ -391,41 +538,45 @@ export default function ItemDetailScreen() {
       (isBusy) => setBusy(isBusy ? "rem" : ""),
       async (isStale) => {
         const startGen = getAuthGeneration();
-        if (itemSt === "done" || itemSt === "read" || itemSt === "archived") {
-          Alert.alert(
-            "ตั้งเตือนไม่ได้",
-            "ลิงก์นี้อยู่ในสถานะอ่านแล้วหรือเก็บถาวร กรุณาเปลี่ยนสถานะเป็นยังไม่ดูก่อนตั้งเตือน",
-          );
-          return;
-        }
         const dt = new Date(Date.now() + hoursAhead * 3600 * 1000);
-        const iso = dt.toISOString();
-        const { remind_time, timezone } = formatRemindTimeAndZone(dt);
-        const res = await saveReminder(targetId, {
-          schedule_type: repeatDays ? "every_n_days" : "once",
-          remind_at: iso,
-          remind_time,
-          timezone,
-          repeat_every_days: repeatDays,
-        });
-        if (isStale() || getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
-        if (!res.ok) {
-          if (res.status === 409) {
-            Alert.alert(
-              "ตั้งเตือนไม่ได้",
-              "ไม่สามารถตั้งเตือนให้ลิงก์ที่อ่านแล้วหรือเก็บถาวรได้",
-            );
-          } else {
-            Alert.alert("ตั้งเตือนไม่สำเร็จ", res.error || "กรุณาลองใหม่");
-          }
-          return;
-        }
-        await syncRemindersFromServer();
-        if (isStale() || getAuthGeneration() !== startGen || activeIdRef.current !== targetId) return;
-        const formatted = dt.toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" });
-        setReminderLabelOverride(formatted);
-        setReminderModalOpen(false);
-        Alert.alert("ตั้งเวลาเตือนความจำแล้ว", `แจ้งเตือนเมื่อ ${formatted}`);
+        await executeReminderSave(targetId, itemSt, dt, repeatDays, isStale, startGen);
+      },
+    );
+  }
+
+  function handleShiftReminderMonth(delta: number) {
+    const nextYm = shiftYearMonth(remYearMonth, delta);
+    const nextCal = buildMobileMonthCalendar(nextYm);
+    setRemYearMonth(nextYm);
+    setRemDay((prevDay) => {
+      const clamped = Math.min(prevDay, nextCal.days.length);
+      const clampedCell = nextCal.days.find((c) => c.day === clamped);
+      if (clampedCell && !clampedCell.isPast) return clamped;
+      const firstValid = nextCal.days.find((c) => !c.isPast);
+      return firstValid ? firstValid.day : clamped;
+    });
+  }
+
+  async function handleSaveCustomReminder() {
+    if (!item) return;
+    const targetId = item.id;
+    const itemSt = String(item.status || "inbox").toLowerCase();
+    const hh = parseClampedTimeInt(remHourText, 23);
+    const mm = parseClampedTimeInt(remMinuteText, 59);
+    setRemHourText(String(hh).padStart(2, "0"));
+    setRemMinuteText(String(mm).padStart(2, "0"));
+    const activeDay = Math.min(remDay, buildMobileMonthCalendar(remYearMonth).days.length);
+    const dt = buildCustomReminderDate(remYearMonth, activeDay, hh, mm);
+    if (!dt || dt.getTime() <= Date.now()) {
+      Alert.alert("กรุณาเลือกเวลาในอนาคต", "วันและเวลาที่ตั้งเตือนต้องอยู่หลังจากเวลาปัจจุบัน");
+      return;
+    }
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (isBusy) => setBusy(isBusy ? "rem" : ""),
+      async (isStale) => {
+        const startGen = getAuthGeneration();
+        await executeReminderSave(targetId, itemSt, dt, remRepeatDays, isStale, startGen);
       },
     );
   }
@@ -498,9 +649,11 @@ export default function ItemDetailScreen() {
   const isSeen = currentStatus === "done" || currentStatus === "read";
   const isPrivate = isPrivateOrRestrictedItem(item);
   const platBadge = inferMobilePlatform(item) || inferMobileDomain(item.url) || "Web";
-  const { displayTitle, displayDesc } = formatPostDetailTitleAndDesc(item);
-  const originalDescription = (displayDesc || String(item.description || "").trim()).trim();
-  const showDescToggle = originalDescription.length > 160 || originalDescription.includes("\n");
+  const { displayTitle } = formatPostDetailTitleAndDesc(item);
+  const originalDescription = resolveOriginalDescription(item);
+  const showDescToggle = originalDescription.length > 130 || originalDescription.includes("\n");
+  const remCalendar = buildMobileMonthCalendar(remYearMonth);
+  const activeCalDay = Math.min(remDay, remCalendar.days.length);
 
   const memWs = getMemoryCachedWorkspace();
   const allCachedItems = memWs?.items || [];
@@ -723,8 +876,32 @@ export default function ItemDetailScreen() {
           </Text>
         </View>
 
+        {/* Original Description above-the-fold (hidden when empty, never overwritten by AI) */}
+        {originalDescription ? (
+          <View style={styles.descBlock}>
+            <Text style={styles.secLabel}>คำอธิบายจากโพสต์ต้นฉบับ</Text>
+            <Text style={styles.descText} numberOfLines={descExpanded ? undefined : 3}>
+              {originalDescription}
+            </Text>
+            {showDescToggle ? (
+              <Pressable style={styles.descToggleBtn} onPress={() => setDescExpanded((v) => !v)}>
+                <View style={styles.inlineIconRow}>
+                  <Text style={[styles.descToggleText, { color: theme.accentText }]}>
+                    {descExpanded ? "ย่อข้อความ" : "อ่านเพิ่มเติม"}
+                  </Text>
+                  <Ionicons
+                    name={descExpanded ? "chevron-up" : "chevron-down"}
+                    size={14}
+                    color={theme.accentText}
+                  />
+                </View>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+
         {/* Reminder Pill */}
-        <Pressable style={styles.reminderPill} onPress={() => setReminderModalOpen(true)}>
+        <Pressable style={styles.reminderPill} onPress={openReminderModal}>
           <Ionicons name="time-outline" size={16} color={FIGMA_INK.inkPrimary} />
           <Text style={styles.reminderPillText}>
             {activeReminderLabel || "ยังไม่ได้ตั้งเตือน"}
@@ -809,34 +986,6 @@ export default function ItemDetailScreen() {
           </Pressable>
         </View>
 
-        {/* Original Description (separate & never overwritten by AI) */}
-        <View style={styles.descBlock}>
-          <Text style={styles.secLabel}>คำอธิบายจากโพสต์ต้นฉบับ</Text>
-          {originalDescription ? (
-            <>
-              <Text style={styles.descText} numberOfLines={descExpanded ? undefined : 4}>
-                {originalDescription}
-              </Text>
-              {showDescToggle ? (
-                <Pressable style={styles.descToggleBtn} onPress={() => setDescExpanded((v) => !v)}>
-                  <View style={styles.inlineIconRow}>
-                    <Text style={[styles.descToggleText, { color: theme.accentText }]}>
-                      {descExpanded ? "ย่อข้อความ" : "อ่านเพิ่มเติม"}
-                    </Text>
-                    <Ionicons
-                      name={descExpanded ? "chevron-up" : "chevron-down"}
-                      size={14}
-                      color={theme.accentText}
-                    />
-                  </View>
-                </Pressable>
-              ) : null}
-            </>
-          ) : (
-            <Text style={styles.emptyDescText}>ไม่มีคำอธิบายจากโพสต์ต้นฉบับ</Text>
-          )}
-        </View>
-
         {/* Lavender AI Summary Card (372:873) */}
         {aiSummary ? (
           <View style={styles.aiCard}>
@@ -848,7 +997,7 @@ export default function ItemDetailScreen() {
               <Pressable
                 style={styles.aiRerunPill}
                 disabled={busy === "ai"}
-                onPress={() => void handleAiSummarize()}
+                onPress={() => setAiConfirmOpen(true)}
               >
                 <Text style={styles.aiRerunPillText}>
                   {busy === "ai" ? "กำลังสรุป..." : "สรุปใหม่"}
@@ -861,7 +1010,7 @@ export default function ItemDetailScreen() {
           <Pressable
             style={[styles.aiTriggerBtn, busy === "ai" && { opacity: 0.7 }]}
             disabled={busy === "ai"}
-            onPress={() => void handleAiSummarize()}
+            onPress={() => setAiConfirmOpen(true)}
           >
             <MaterialCommunityIcons name="robot-outline" size={18} color={FIGMA_INK.aiInk} />
             <Text style={styles.aiTriggerText}>
@@ -996,47 +1145,280 @@ export default function ItemDetailScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Reminder Quick Sheet */}
+      {/* AI Confirm Dialog (319:5253) */}
+      <Modal
+        visible={aiConfirmOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setAiConfirmOpen(false)}
+      >
+        <View style={styles.dialogBackdrop}>
+          <View style={styles.dialogCard}>
+            <Text style={styles.dialogTitle}>ยืนยันการสรุปด้วย AI</Text>
+            <View style={styles.aiNoticeBox}>
+              <Text style={styles.aiNoticeText}>
+                ผู้ให้บริการ AI ที่คุณเชื่อมต่อจะประมวลผลเนื้อหาต้นฉบับ โดยใช้โควตาหรือ Token ของคุณ (คำอธิบายต้นฉบับจะยังคงแสดงครบเหมือนเดิม)
+              </Text>
+            </View>
+            <View style={styles.dialogActions}>
+              <Pressable style={styles.dialogOutlineBtn} onPress={() => setAiConfirmOpen(false)}>
+                <Text style={styles.dialogOutlineBtnText}>ยกเลิก</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.dialogRedBtn, { backgroundColor: theme.accent }]}
+                disabled={busy === "ai"}
+                onPress={() => {
+                  setAiConfirmOpen(false);
+                  void handleAiSummarize();
+                }}
+              >
+                <Text style={styles.dialogRedBtnText}>ยืนยัน</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Hybrid Calendar + Custom Time + Quick Preset Reminder Sheet (Figma 319:5142) */}
       <Modal
         visible={reminderModalOpen}
         animationType="slide"
         transparent
         onRequestClose={() => setReminderModalOpen(false)}
       >
-        <Pressable style={styles.sheetBackdrop} onPress={() => setReminderModalOpen(false)}>
-          <Pressable
-            style={[styles.sheetCard, { paddingBottom: Math.max(20, insets.bottom + 12) }]}
-            onPress={() => {}}
-          >
+        <KeyboardAvoidingView
+          style={styles.sheetBackdrop}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          <Pressable style={styles.sheetBackdropTap} onPress={() => setReminderModalOpen(false)} />
+          <View style={[styles.sheetCard, styles.remSheetMax, { paddingBottom: Math.max(20, insets.bottom + 12) }]}>
             <View style={styles.sheetDragBar} />
             <View style={styles.rowBetween}>
               <View style={styles.inlineIconRow}>
                 <Ionicons name="time-outline" size={18} color={FIGMA_INK.inkPrimary} />
-                <Text style={styles.dialogTitle}>ตั้งเวลาเตือนความจำ</Text>
+                <Text style={styles.dialogTitle}>ตั้งเตือน</Text>
               </View>
               <Pressable hitSlop={8} onPress={() => setReminderModalOpen(false)}>
                 <Ionicons name="close" size={20} color="#666666" />
               </Pressable>
             </View>
-            <View style={styles.reminderGrid}>
-              <Pressable style={styles.remOptionChip} onPress={() => void handleQuickReminder(2, null)}>
-                <Text style={styles.remOptionText}>อีก 2 ชม.</Text>
-              </Pressable>
-              <Pressable style={styles.remOptionChip} onPress={() => void handleQuickReminder(24, null)}>
-                <Text style={styles.remOptionText}>พรุ่งนี้เวลานี้</Text>
-              </Pressable>
-              <Pressable style={styles.remOptionChip} onPress={() => void handleQuickReminder(72, null)}>
-                <Text style={styles.remOptionText}>อีก 3 วัน</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.remOptionChip, { backgroundColor: "#FEF2F2", borderColor: "#FECACA" }]}
-                onPress={() => void handleClearReminder()}
-              >
-                <Text style={[styles.remOptionText, { color: "#B91C1C" }]}>ปิดการเตือน</Text>
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
+
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              {/* 1-Tap Quick Presets */}
+              <Text style={styles.remSectionMiniLabel}>ทางลัดด่วน</Text>
+              <View style={styles.reminderGrid}>
+                <Pressable
+                  style={styles.remOptionChip}
+                  disabled={busy === "rem"}
+                  onPress={() => void handleQuickReminder(2, null)}
+                >
+                  <Text style={styles.remOptionText}>อีก 2 ชม.</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.remOptionChip}
+                  disabled={busy === "rem"}
+                  onPress={() => void handleQuickReminder(24, null)}
+                >
+                  <Text style={styles.remOptionText}>พรุ่งนี้เวลานี้</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.remOptionChip}
+                  disabled={busy === "rem"}
+                  onPress={() => void handleQuickReminder(72, null)}
+                >
+                  <Text style={styles.remOptionText}>อีก 3 วัน</Text>
+                </Pressable>
+              </View>
+
+              {/* Calendar Month Nav */}
+              <View style={styles.calMonthRow}>
+                <Pressable
+                  style={styles.calNavBtn}
+                  onPress={() => handleShiftReminderMonth(-1)}
+                >
+                  <Ionicons name="chevron-back" size={18} color={FIGMA_INK.inkPrimary} />
+                </Pressable>
+                <Text style={styles.calMonthLabel}>{remCalendar.monthLabel}</Text>
+                <Pressable
+                  style={styles.calNavBtn}
+                  onPress={() => handleShiftReminderMonth(1)}
+                >
+                  <Ionicons name="chevron-forward" size={18} color={FIGMA_INK.inkPrimary} />
+                </Pressable>
+              </View>
+
+              {/* Day-of-Week Header + Day Cells */}
+              <View style={styles.calGrid}>
+                {["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"].map((dow) => (
+                  <View key={dow} style={styles.calDowCell}>
+                    <Text style={styles.calDowText}>{dow}</Text>
+                  </View>
+                ))}
+                {Array.from({ length: remCalendar.leadingEmpty }, (_, i) => (
+                  <View key={`empty-${i}`} style={styles.calDayCell} />
+                ))}
+                {remCalendar.days.map((cell) => {
+                  const selected = cell.day === activeCalDay && !cell.isPast;
+                  return (
+                    <Pressable
+                      key={`day-${cell.day}`}
+                      style={[
+                        styles.calDayCell,
+                        cell.isToday && !selected && { borderColor: theme.softBorder, borderWidth: 1 },
+                        selected && { backgroundColor: theme.accent },
+                        cell.isPast && { opacity: 0.35 },
+                      ]}
+                      disabled={cell.isPast}
+                      onPress={() => setRemDay(cell.day)}
+                    >
+                      <Text
+                        style={[
+                          styles.calDayText,
+                          selected && { color: "#FFFFFF", fontWeight: "700" },
+                        ]}
+                      >
+                        {cell.day}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              {/* Time HH:MM Selector */}
+              <Text style={styles.remSectionMiniLabel}>เลือกเวลา (HH:MM)</Text>
+              <View style={styles.timePresetRow}>
+                {[
+                  { h: "09", m: "00" },
+                  { h: "12", m: "00" },
+                  { h: "18", m: "00" },
+                  { h: "21", m: "00" },
+                ].map((tp) => {
+                  const isMatch =
+                    remHourText.padStart(2, "0") === tp.h &&
+                    remMinuteText.padStart(2, "0") === tp.m;
+                  return (
+                    <Pressable
+                      key={`${tp.h}:${tp.m}`}
+                      style={[
+                        styles.remOptionChip,
+                        isMatch && { backgroundColor: theme.soft, borderColor: theme.accent },
+                      ]}
+                      onPress={() => {
+                        setRemHourText(tp.h);
+                        setRemMinuteText(tp.m);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.remOptionText,
+                          isMatch && { color: theme.accentText, fontWeight: "700" },
+                        ]}
+                      >
+                        {tp.h}:{tp.m}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <View style={styles.timeStepperRow}>
+                <View style={styles.timeBoxGroup}>
+                  <Pressable style={styles.timeStepBtn} onPress={() => stepReminderTime("hour", -1)}>
+                    <Ionicons name="remove" size={15} color={FIGMA_INK.inkPrimary} />
+                  </Pressable>
+                  <TextInput
+                    style={styles.timeNumInput}
+                    value={remHourText}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                    onChangeText={(txt) => setRemHourText(txt.replace(/\D+/g, ""))}
+                    onBlur={() =>
+                      setRemHourText(String(parseClampedTimeInt(remHourText, 23)).padStart(2, "0"))
+                    }
+                  />
+                  <Pressable style={styles.timeStepBtn} onPress={() => stepReminderTime("hour", 1)}>
+                    <Ionicons name="add" size={15} color={FIGMA_INK.inkPrimary} />
+                  </Pressable>
+                </View>
+
+                <Text style={styles.timeColon}>:</Text>
+
+                <View style={styles.timeBoxGroup}>
+                  <Pressable style={styles.timeStepBtn} onPress={() => stepReminderTime("minute", -5)}>
+                    <Ionicons name="remove" size={15} color={FIGMA_INK.inkPrimary} />
+                  </Pressable>
+                  <TextInput
+                    style={styles.timeNumInput}
+                    value={remMinuteText}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                    onChangeText={(txt) => setRemMinuteText(txt.replace(/\D+/g, ""))}
+                    onBlur={() =>
+                      setRemMinuteText(String(parseClampedTimeInt(remMinuteText, 59)).padStart(2, "0"))
+                    }
+                  />
+                  <Pressable style={styles.timeStepBtn} onPress={() => stepReminderTime("minute", 5)}>
+                    <Ionicons name="add" size={15} color={FIGMA_INK.inkPrimary} />
+                  </Pressable>
+                </View>
+              </View>
+
+              {/* Repeat Interval */}
+              <Text style={styles.remSectionMiniLabel}>ทำซ้ำ</Text>
+              <View style={styles.reminderGrid}>
+                {(
+                  [
+                    { label: "ครั้งเดียว", days: null },
+                    { label: "ทุกวัน", days: 1 },
+                    { label: "ทุก 3 วัน", days: 3 },
+                    { label: "ทุก 7 วัน", days: 7 },
+                  ] as const
+                ).map((opt) => {
+                  const active = remRepeatDays === opt.days;
+                  return (
+                    <Pressable
+                      key={opt.label}
+                      style={[
+                        styles.remOptionChip,
+                        active && { backgroundColor: theme.soft, borderColor: theme.accent },
+                      ]}
+                      onPress={() => setRemRepeatDays(opt.days)}
+                    >
+                      <Text
+                        style={[
+                          styles.remOptionText,
+                          active && { color: theme.accentText, fontWeight: "700" },
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              {/* Action Row: Delete + Save Custom */}
+              <View style={styles.remActionsRow}>
+                <Pressable
+                  style={styles.remDeleteBtn}
+                  disabled={busy === "rem"}
+                  onPress={() => void handleClearReminder()}
+                >
+                  <Text style={styles.remDeleteBtnText}>ลบเตือน</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.remSaveBtn, { backgroundColor: theme.accent }, busy === "rem" && { opacity: 0.7 }]}
+                  disabled={busy === "rem"}
+                  onPress={() => void handleSaveCustomReminder()}
+                >
+                  <Text style={styles.remSaveBtnText}>
+                    {busy === "rem" ? "กำลังบันทึก..." : "ตั้งเตือน"}
+                  </Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Fullscreen Media Lightbox */}
@@ -1443,10 +1825,6 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     fontWeight: "700",
   },
-  emptyDescText: {
-    fontSize: 13,
-    color: FIGMA_INK.inkSecondary,
-  },
   aiCard: {
     backgroundColor: FIGMA_INK.lavenderBg,
     borderRadius: 16,
@@ -1599,10 +1977,25 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontWeight: "700",
   },
+  aiNoticeBox: {
+    backgroundColor: FIGMA_INK.lavenderBg,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.lavenderBorder,
+    borderRadius: 12,
+    padding: 12,
+  },
+  aiNoticeText: {
+    fontSize: 13.5,
+    color: "#312E81",
+    lineHeight: 20,
+  },
   sheetBackdrop: {
     flex: 1,
     backgroundColor: "rgba(23, 23, 33, 0.43)",
     justifyContent: "flex-end",
+  },
+  sheetBackdropTap: {
+    flex: 1,
   },
   sheetCard: {
     backgroundColor: "#FFFFFF",
@@ -1612,6 +2005,9 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     gap: 12,
   },
+  remSheetMax: {
+    maxHeight: "88%",
+  },
   sheetDragBar: {
     alignSelf: "center",
     width: 40,
@@ -1620,24 +2016,156 @@ const styles = StyleSheet.create({
     backgroundColor: "#D1D5DB",
     marginBottom: 4,
   },
+  remSectionMiniLabel: {
+    fontSize: 12.5,
+    fontWeight: "700",
+    color: FIGMA_INK.inkSecondary,
+    marginTop: 8,
+    marginBottom: 6,
+  },
   reminderGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
-    paddingBottom: 6,
+    paddingBottom: 4,
   },
   remOptionChip: {
     backgroundColor: FIGMA_INK.bgMuted,
     borderWidth: 1,
     borderColor: FIGMA_INK.borderCard,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
+    paddingHorizontal: 13,
+    paddingVertical: 8,
     borderRadius: 999,
   },
   remOptionText: {
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: "600",
     color: FIGMA_INK.inkPrimary,
+  },
+  calMonthRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  calNavBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: FIGMA_INK.bgMuted,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  calMonthLabel: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+  },
+  calGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginBottom: 6,
+  },
+  calDowCell: {
+    width: "14.285%",
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  calDowText: {
+    fontSize: 11.5,
+    fontWeight: "700",
+    color: FIGMA_INK.inkSecondary,
+  },
+  calDayCell: {
+    width: "14.285%",
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    marginVertical: 1,
+  },
+  calDayText: {
+    fontSize: 13.5,
+    fontWeight: "500",
+    color: FIGMA_INK.inkPrimary,
+  },
+  timePresetRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 8,
+  },
+  timeStepperRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 4,
+  },
+  timeBoxGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: FIGMA_INK.bgMuted,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderCard,
+    borderRadius: 12,
+    padding: 4,
+    gap: 6,
+  },
+  timeStepBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  timeNumInput: {
+    width: 38,
+    height: 32,
+    textAlign: "center",
+    fontSize: 16,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+    paddingVertical: 0,
+  },
+  timeColon: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: FIGMA_INK.inkPrimary,
+  },
+  remActionsRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 14,
+  },
+  remDeleteBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: 23,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    backgroundColor: "#FEF2F2",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  remDeleteBtnText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#B91C1C",
+  },
+  remSaveBtn: {
+    flex: 1.4,
+    height: 46,
+    borderRadius: 23,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  remSaveBtnText: {
+    fontSize: 14.5,
+    fontWeight: "700",
+    color: "#FFFFFF",
   },
   lightboxBackdrop: {
     flex: 1,

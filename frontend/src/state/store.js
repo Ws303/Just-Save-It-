@@ -646,6 +646,8 @@ export const store = {
       ...(nextPcSection ? { pcSection: nextPcSection } : {}),
       activeSheet: null,
       activeDialog: null,
+      folderCoverUploading: false,
+      aiTesting: false,
       aiDropdown: null,
       showNotifications: false,
       notificationScreenOpen: false,
@@ -690,7 +692,14 @@ export const store = {
       this.state.api.isSummarizing = false;
       this.state.ui.aiConfirmModalOpen = false;
       this.state.ui.aiSummaryStatus = "idle";
+      this.state.ui.aiTesting = false;
       this.state.ui.aiRequestId = (this.state.ui.aiRequestId || 0) + 1;
+    }
+    if (isAccountSwitch) {
+      this.state.ui.activeSheet = null;
+      this.state.ui.activeDialog = null;
+      this.state.ui.folderCoverUploading = false;
+      this.state.ui.folderMembers = {};
     }
     if (isAccountSwitch && typeof window !== "undefined") {
       this.state.data.folders = [];
@@ -737,6 +746,11 @@ export const store = {
     this.state.ui.aiConfirmModalOpen = false;
     this.state.ui.aiSummaryStatus = "idle";
     this.state.ui.aiRequestId = (this.state.ui.aiRequestId || 0) + 1;
+    this.state.ui.activeSheet = null;
+    this.state.ui.activeDialog = null;
+    this.state.ui.folderCoverUploading = false;
+    this.state.ui.folderMembers = {};
+    this.state.ui.aiTesting = false;
     this.state.api.bearerToken = "";
     this.state.api.refreshToken = "";
     this.state.api.jwtClaims = null;
@@ -785,12 +799,15 @@ export const store = {
 
   openSheet(sheet) {
     this.state.ui.activeSheet = sheet;
+    this.state.ui.folderCoverUploading = false;
     this.state.ui.aiDropdown = null;
+    this.state.ui.aiTesting = false;
     this.emit();
   },
 
   closeSheet() {
     this.state.ui.activeSheet = null;
+    this.state.ui.folderCoverUploading = false;
     this.emit();
   },
 
@@ -929,6 +946,9 @@ export const store = {
     this.state.ui.authError = null;
     this.state.ui.activeSheet = null;
     this.state.ui.activeDialog = null;
+    this.state.ui.folderCoverUploading = false;
+    this.state.ui.folderMembers = {};
+    this.state.ui.aiTesting = false;
     this.state.ui.notificationScreenOpen = false;
     this.state.ui.showNotifications = false;
     this.showToast("รีเซ็ตข้อมูลทดสอบทั้งหมดกลับเป็นค่าเริ่มต้นแล้ว");
@@ -948,6 +968,7 @@ export const store = {
       lastTestError: null,
     });
     this.state.ui.aiDropdown = null;
+    this.state.ui.aiTesting = false;
     this.emit();
   },
 

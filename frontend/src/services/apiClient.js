@@ -1595,7 +1595,8 @@ export const apiClient = {
   },
 
   async createFolderInvite(folderId, optionsOrRole = "viewer") {
-    const folder = getFolderById(folderId) || store.state.data.folders[0];
+    const startKey = getAuthContextKey();
+    const folder = getFolderById(folderId);
     const slug = (folder?.inviteSlug && !folder?.inviteUrl ? folder.inviteSlug : null) || `inv-${Math.random().toString(36).slice(2, 10)}`;
     const payload = buildInviteCreatePayload(optionsOrRole);
     const res = await dispatchRequest({
@@ -1624,10 +1625,14 @@ export const apiClient = {
         };
       },
     });
-    if (res.ok && res.data?.invite_url && folder) {
-      folder.inviteUrl = res.data.invite_url;
-      folder.inviteSlug = res.data.token || slug;
-      folder.sharedCount = Math.max(folder.sharedCount || 0, 1);
+    if (!isAuthContextCurrent(startKey)) {
+      return staleAuthResult();
+    }
+    const latestFolder = getFolderById(folderId);
+    if (res.ok && res.data?.invite_url && latestFolder) {
+      latestFolder.inviteUrl = res.data.invite_url;
+      latestFolder.inviteSlug = res.data.token || slug;
+      latestFolder.sharedCount = Math.max(latestFolder.sharedCount || 0, 1);
       store.emit();
     }
     return res;

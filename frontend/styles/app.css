@@ -2296,38 +2296,6 @@ a {
   justify-content: center;
 }
 
-/* Highlight badge for newly shared item */
-.link-card.recently-shared {
-  border-color: #000000;
-  box-shadow: 0 0 0 2px #fed053, 0 4px 14px rgba(254, 208, 83, 0.4);
-  animation: nbPulse 1.8s infinite;
-}
-
-@keyframes nbPulse {
-  0% {
-    box-shadow: 0 0 0 2px #fed053, 0 4px 14px rgba(254, 208, 83, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 0 4px #fed053, 0 6px 20px rgba(254, 208, 83, 0.7);
-  }
-  100% {
-    box-shadow: 0 0 0 2px #fed053, 0 4px 14px rgba(254, 208, 83, 0.4);
-  }
-}
-
-.new-incoming-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: #fed053;
-  color: #000000;
-  font-size: 11px;
-  font-weight: 800;
-  padding: 2px 7px;
-  border-radius: 6px;
-  border: 1px solid #000000;
-}
-
 /* =========================================================
    CLEAN TESTBED STAGE, QA FLOATING TOGGLE & PC MODAL PORTAL
 ========================================================= */
@@ -6490,7 +6458,7 @@ button.figma-detail-edge-hint:disabled {
   textarea,
   select,
   .invite-select {
-    font-size: 16px;
+    font-size: 16px !important;
   }
 }
 

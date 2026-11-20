@@ -445,7 +445,7 @@ export default function FoldersScreen() {
               <View style={styles.modalCoverRow}>
                 <View style={styles.modalCoverPreview}>
                   {coverDraft && !resetCover ? (
-                    <Image source={{ uri: coverDraft }} style={styles.folderCoverImg} resizeMode="cover" />
+                    <Image source={{ uri: resolveFolderCoverUrl(coverDraft) || coverDraft }} style={styles.folderCoverImg} resizeMode="cover" />
                   ) : (
                     <Ionicons name="folder-outline" size={24} color="#78716C" />
                   )}

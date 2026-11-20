@@ -74,6 +74,18 @@ export function renderAiPanelBody(state) {
             </div>`
               : ""
           }
+          ${
+            isCustom
+              ? `<input
+                   class="field-input"
+                   type="text"
+                   style="margin-top:8px;"
+                   value="${escHtml(cfg.model || "")}"
+                   placeholder="ระบุชื่อโมเดล เช่น llama3.2"
+                   data-bind-ai-model="1"
+                 />`
+              : ""
+          }
         </div>
 
         ${

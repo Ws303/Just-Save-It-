@@ -1,7 +1,7 @@
 /**
  * Sherlink Service Worker for PWA shell caching & RFC 8291 Web Push notifications.
  */
-const CACHE_NAME = "sherlink-shell-v1";
+const CACHE_NAME = "sherlink-shell-v2";
 const PRECACHE_URLS = [
   "/",
   "/index.html",
@@ -39,7 +39,14 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/local-media/")) return;
 
-  if (req.mode === "navigate" || url.pathname === "/" || url.pathname === "/index.html") {
+  const isAppShellAsset =
+    req.mode === "navigate" ||
+    url.pathname === "/" ||
+    url.pathname === "/index.html" ||
+    url.pathname === "/manifest.webmanifest" ||
+    /\.(?:js|css|html)$/i.test(url.pathname);
+
+  if (isAppShellAsset) {
     event.respondWith(
       fetch(req)
         .then((res) => {
@@ -49,7 +56,9 @@ self.addEventListener("fetch", (event) => {
           }
           return res;
         })
-        .catch(() => caches.match(req).then((r) => r || caches.match("/index.html")))
+        .catch(() =>
+          caches.match(req).then((r) => r || (req.mode === "navigate" ? caches.match("/index.html") : undefined))
+        )
     );
     return;
   }

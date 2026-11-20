@@ -171,34 +171,24 @@ export function renderLinkCard(item, { folderContextId = null, selected = false,
   }
 
   const folderLabel = folder ? folder.name : "ทั่วไป";
-  const isRecentlyShared =
-    (typeof window !== "undefined" && window.__lastSharedHighlightId === item.id) || item.savedAgo === "เมื่อสักครู่";
-  const isPinned = Boolean(item.pinned);
+  const thumbCode = (item.platform || "WEB").slice(0, 3).toUpperCase();
 
   return `
-    <div class="link-card ${selected ? "selected" : ""} ${isRecentlyShared ? "recently-shared" : ""}" data-link-card="${safeId}">
+    <div class="link-card${selected ? " selected" : ""}" data-link-card="${safeId}">
       <div class="link-thumb" data-open-link="${safeId}">
         ${
           thumbImg
             ? `<img src="${escHtml(thumbImg)}" alt="" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover;" />`
             : folder?.cover
-            ? `<img src="${escHtml(safeImgUrl(folder.cover))}" alt="" style="opacity:0.38; position:absolute; inset:0;" />`
-            : ""
+            ? `<img src="${escHtml(safeImgUrl(folder.cover))}" alt="" style="opacity:0.38; position:absolute; inset:0; width:100%; height:100%; object-fit:cover;" />`
+            : `<span style="font-size:11px; font-weight:700; color:#667085;">${escHtml(thumbCode)}</span>`
         }
-        <span style="position:relative; z-index:1; font-size:10.5px; color:#233642; background:rgba(255,255,255,0.86); padding:2px 6px; border-radius:6px;">
-          ${escHtml(item.platform)}
-        </span>
       </div>
       <div class="link-body" data-open-link="${safeId}">
-        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-          <p class="link-platform" style="margin:0;">${escHtml(item.platform)}</p>
-          ${isPinned ? `<span style="font-size:10px;font-weight:700;background:#111;color:#fff;padding:1px 6px;border-radius:4px;display:inline-flex;align-items:center;gap:3px;">${icons.pin(11)} ปักหมุด</span>` : ""}
-          ${isRecentlyShared ? `<span class="new-incoming-pill" style="display:inline-flex;align-items:center;gap:3px;">${icons.sparkles(11)} เพิ่งแชร์เข้ามา</span>` : ""}
-        </div>
+        <p class="link-platform" style="margin:0;">${escHtml(item.platform)}</p>
         <p class="link-title">${escHtml(cardTitle)}</p>
         <p class="link-sub">
           <span>${escHtml(folderLabel)} · ${statusLabel}</span>
-          ${item.aiSummary ? `<span class="ai-badge-pill">AI</span>` : ""}
         </p>
       </div>
       ${renderCardActions({

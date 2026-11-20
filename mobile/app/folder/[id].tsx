@@ -4,6 +4,7 @@ import {
   Alert,
   FlatList,
   Image,
+  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -20,10 +21,13 @@ import { runGuardedBusyAction } from "../../src/actionGuards";
 import {
   computeFolderShareState,
   createFolderInvite,
+  deleteLinkItem,
   fetchWorkspace,
   listFolderMembers,
   patchLinkItem,
+  removeFolderMember,
   revokeFolderInvite,
+  updateFolderMemberRole,
   type DiscordInviteCreateOptions,
 } from "../../src/api";
 import { FIGMA_INK, getFigmaTheme, type FigmaAccentThemeId } from "../../src/figmaTheme";
@@ -145,16 +149,21 @@ export default function FolderDetailScreen() {
   const [activeInvites, setActiveInvites] = useState<ActiveInviteRow[]>([]);
   const [loadingInvites, setLoadingInvites] = useState(false);
   const [revokingToken, setRevokingToken] = useState<string | null>(null);
+  const [memberBusyId, setMemberBusyId] = useState<string | null>(null);
+  const [menuItem, setMenuItem] = useState<MobileLinkItem | null>(null);
   const actionSeqRef = useRef(0);
   const activeFolderIdRef = useRef(id);
   activeFolderIdRef.current = id;
   const favInFlightRef = useRef<Set<string>>(new Set());
+  const seenInFlightRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     setFolderOwnerId("");
     setCallerRole("");
     setMembers([]);
     setActiveInvites([]);
+    setMemberBusyId(null);
+    setMenuItem(null);
   }, [id]);
 
   useEffect(() => {
@@ -348,6 +357,143 @@ export default function FolderDetailScreen() {
     }
   }
 
+  async function handleChangeMemberRole(memberUserId: string, nextRole: "viewer" | "editor") {
+    if (!id || !memberUserId || memberBusyId) return;
+    const targetFolderId = id;
+    const startGen = getAuthGeneration();
+    setMemberBusyId(memberUserId);
+    try {
+      const res = await updateFolderMemberRole(targetFolderId, memberUserId, nextRole);
+      if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) return;
+      if (!res.ok) {
+        Alert.alert("เปลี่ยนสิทธิ์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+        return;
+      }
+      setMembers((prev) =>
+        prev.map((m) => (m.user_id === memberUserId ? { ...m, role: nextRole } : m)),
+      );
+    } finally {
+      setMemberBusyId((cur) => (cur === memberUserId ? null : cur));
+    }
+  }
+
+  function handleRemoveMember(memberUserId: string, label: string) {
+    if (!id || !memberUserId || memberBusyId) return;
+    const targetFolderId = id;
+    const startGen = getAuthGeneration();
+    Alert.alert(`นำ ${label} ออกจากโฟลเดอร์?`, "สมาชิกคนนี้จะไม่สามารถเข้าถึงโฟลเดอร์นี้ได้อีก", [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "นำออก",
+        style: "destructive",
+        onPress: () => {
+          if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) return;
+          setMemberBusyId(memberUserId);
+          void removeFolderMember(targetFolderId, memberUserId)
+            .then((res) => {
+              if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) return;
+              if (!res.ok) {
+                Alert.alert("นำสมาชิกออกไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+                return;
+              }
+              setMembers((prev) => prev.filter((m) => m.user_id !== memberUserId));
+            })
+            .finally(() => {
+              setMemberBusyId((cur) => (cur === memberUserId ? null : cur));
+            });
+        },
+      },
+    ]);
+  }
+
+  function openExternalUrlFromMenu(target: MobileLinkItem) {
+    setMenuItem(null);
+    const cleanUrl = String(target.url || "").trim();
+    if (!/^https?:\/\/[^\s"'<>]+$/i.test(cleanUrl)) {
+      Alert.alert("ลิงก์ไม่ปลอดภัย", "อนุญาตเปิดเฉพาะลิงก์ http หรือ https เท่านั้น");
+      return;
+    }
+    void Linking.openURL(cleanUrl).catch(() => {
+      Alert.alert("ไม่สามารถเปิดลิงก์ได้", "กรุณาตรวจสอบแอปเบราว์เซอร์ในเครื่อง");
+    });
+  }
+
+  async function handleToggleSeenFromMenu(target: MobileLinkItem) {
+    setMenuItem(null);
+    if (!target.id || seenInFlightRef.current.has(target.id)) return;
+    const targetFolderId = id;
+    const startGen = getAuthGeneration();
+    seenInFlightRef.current.add(target.id);
+    const nextStatus = isReadStatus(target.status) ? "inbox" : "done";
+    const prevStatus = target.status;
+    setItems((prev) => prev.map((it) => (it.id === target.id ? { ...it, status: nextStatus } : it)));
+    try {
+      const res = await patchLinkItem(target.id, { status: nextStatus });
+      if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) return;
+      if (!res.ok) {
+        setItems((prev) => prev.map((it) => (it.id === target.id ? { ...it, status: prevStatus } : it)));
+      }
+    } finally {
+      seenInFlightRef.current.delete(target.id);
+    }
+  }
+
+  function handleRemoveFromFolderMenu(target: MobileLinkItem) {
+    setMenuItem(null);
+    if (!target.id || isVirtualInbox) return;
+    const targetFolderId = id;
+    const startGen = getAuthGeneration();
+    const itemId = target.id;
+    Alert.alert(
+      "นำออกจากโฟลเดอร์?",
+      "ลิงก์นี้จะถูกนำออกจากโฟลเดอร์ปัจจุบัน แต่ยังคงอยู่ในคลังของคุณ",
+      [
+        { text: "ยกเลิก", style: "cancel" },
+        {
+          text: "นำออก",
+          style: "destructive",
+          onPress: () => {
+            if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) return;
+            void patchLinkItem(itemId, { folder_id: null }).then((res) => {
+              if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) return;
+              if (res.ok) {
+                setItems((prev) => prev.filter((it) => it.id !== itemId));
+              } else {
+                Alert.alert("นำออกไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+              }
+            });
+          },
+        },
+      ],
+    );
+  }
+
+  function handleDeleteFromMenu(target: MobileLinkItem) {
+    setMenuItem(null);
+    if (!target.id) return;
+    const targetFolderId = id;
+    const startGen = getAuthGeneration();
+    const itemId = target.id;
+    Alert.alert("ลบลิงก์นี้?", "ลิงก์จะถูกลบออกจากรายการของคุณถาวร", [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "ลบ",
+        style: "destructive",
+        onPress: () => {
+          if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) return;
+          void deleteLinkItem(itemId).then((res) => {
+            if (getAuthGeneration() !== startGen || activeFolderIdRef.current !== targetFolderId) return;
+            if (res.ok) {
+              setItems((prev) => prev.filter((it) => it.id !== itemId));
+            } else {
+              Alert.alert("ลบไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+            }
+          });
+        },
+      },
+    ]);
+  }
+
   const avatarInitials = useMemo(() => {
     if (members.length > 0) {
       return members
@@ -369,6 +515,9 @@ export default function FolderDetailScreen() {
       }),
     [isVirtualInbox, folder, members, folderOwnerId, callerRole, selfUserId],
   );
+  const effectiveOwnerId = String(folderOwnerId || folder?.owner_id || "").trim();
+  const effectiveRole = String(callerRole || folder?.role || "").trim().toLowerCase();
+  const canEditFolderItems = !isVirtualInbox && Boolean(folder && (isOwner || effectiveRole === "editor"));
 
   return (
     <View style={[styles.root, { paddingTop: Math.max(10, insets.top) }]}>
@@ -481,7 +630,20 @@ export default function FolderDetailScreen() {
           })}
         </ScrollView>
 
-        <Text style={styles.sectionHeading}>ลิงก์ในโฟลเดอร์ ({visibleItems.length})</Text>
+        <View style={styles.sectionHeadRow}>
+          <Text style={styles.sectionHeading}>ลิงก์ในโฟลเดอร์ ({visibleItems.length})</Text>
+          {canEditFolderItems ? (
+            <Pressable
+              style={[styles.addLinkSmallBtn, { backgroundColor: theme.accent }]}
+              onPress={() =>
+                router.push(`/(tabs)?addToFolderId=${encodeURIComponent(String(id || ""))}` as never)
+              }
+            >
+              <Ionicons name="add" size={14} color="#FFFFFF" />
+              <Text style={styles.addLinkSmallBtnText}>เพิ่มลิงก์</Text>
+            </Pressable>
+          ) : null}
+        </View>
       </View>
 
       {loading ? (
@@ -536,20 +698,32 @@ export default function FolderDetailScreen() {
                   </Text>
                 </View>
 
-                <Pressable
-                  style={styles.cardActionIconBtn}
-                  hitSlop={8}
-                  onPress={(e) => {
-                    e.stopPropagation?.();
-                    void toggleFavorite(item);
-                  }}
-                >
-                  <Image
-                    source={item.is_favorite ? CHERRY_SELECTED_IMG : CHERRY_UNSELECTED_IMG}
-                    style={styles.cherryActionImg}
-                    resizeMode="contain"
-                  />
-                </Pressable>
+                <View style={styles.cardActionsRow}>
+                  <Pressable
+                    style={styles.cardActionIconBtn}
+                    hitSlop={8}
+                    onPress={(e) => {
+                      e.stopPropagation?.();
+                      void toggleFavorite(item);
+                    }}
+                  >
+                    <Image
+                      source={item.is_favorite ? CHERRY_SELECTED_IMG : CHERRY_UNSELECTED_IMG}
+                      style={styles.cherryActionImg}
+                      resizeMode="contain"
+                    />
+                  </Pressable>
+                  <Pressable
+                    style={styles.cardActionIconBtn}
+                    hitSlop={8}
+                    onPress={(e) => {
+                      e.stopPropagation?.();
+                      setMenuItem(item);
+                    }}
+                  >
+                    <Ionicons name="ellipsis-vertical" size={16} color="#5C6269" />
+                  </Pressable>
+                </View>
               </Pressable>
             );
           }}
@@ -681,7 +855,63 @@ export default function FolderDetailScreen() {
                 </View>
               ) : null}
 
-              <Text style={[styles.modalLabel, { marginTop: 16 }]}>ลิงก์คำเชิญที่ใช้งานอยู่</Text>
+              {members.length > 0 ? (
+                <>
+                  <Text style={[styles.modalLabel, { marginTop: 16 }]}>
+                    สมาชิกที่เข้าร่วม ({members.length})
+                  </Text>
+                  <View style={styles.activeInvList}>
+                    {members.map((m, idx) => {
+                      const uid = String(m.user_id || "").trim();
+                      const mRole = String(m.role || "viewer").trim().toLowerCase();
+                      const isMemberOwner =
+                        mRole === "owner" || (Boolean(effectiveOwnerId) && uid === effectiveOwnerId);
+                      const nextRole: "viewer" | "editor" = mRole === "editor" ? "viewer" : "editor";
+                      const label =
+                        m.display_name || m.email || (uid ? `สมาชิก ${uid.slice(0, 6)}` : `สมาชิก ${idx + 1}`);
+                      const isRowBusy = Boolean(uid && memberBusyId === uid);
+                      return (
+                        <View key={uid || `mem-${idx}`} style={styles.activeInvRow}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.activeInvRole} numberOfLines={1}>
+                              {label}
+                            </Text>
+                            <Text style={styles.activeInvExp}>
+                              {isMemberOwner
+                                ? "เจ้าของโฟลเดอร์"
+                                : mRole === "editor"
+                                  ? "ผู้แก้ไข (Editor)"
+                                  : "ผู้ดู (Viewer)"}
+                            </Text>
+                          </View>
+                          {isOwner && !isMemberOwner && uid ? (
+                            <>
+                              <Pressable
+                                style={[styles.shareSmallBtn, isRowBusy && { opacity: 0.6 }]}
+                                disabled={isRowBusy}
+                                onPress={() => void handleChangeMemberRole(uid, nextRole)}
+                              >
+                                <Text style={styles.shareSmallBtnText}>
+                                  {nextRole === "editor" ? "สลับเป็นแก้ไข" : "สลับเป็นดู"}
+                                </Text>
+                              </Pressable>
+                              <Pressable
+                                style={[styles.revokeBtn, isRowBusy && { opacity: 0.6 }]}
+                                disabled={isRowBusy}
+                                onPress={() => handleRemoveMember(uid, label)}
+                              >
+                                <Text style={styles.revokeBtnText}>นำออก</Text>
+                              </Pressable>
+                            </>
+                          ) : null}
+                        </View>
+                      );
+                    })}
+                  </View>
+                </>
+              ) : null}
+
+              <Text style={[styles.modalLabel, { marginTop: 14 }]}>ลิงก์คำเชิญที่ใช้งานอยู่</Text>
               {loadingInvites ? (
                 <ActivityIndicator size="small" color={theme.accent} style={{ marginVertical: 10 }} />
               ) : activeInvites.length === 0 ? (
@@ -719,6 +949,77 @@ export default function FolderDetailScreen() {
             </ScrollView>
           </View>
         </View>
+      </Modal>
+
+      {/* Post Action Sheet Modal */}
+      <Modal
+        visible={Boolean(menuItem)}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setMenuItem(null)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setMenuItem(null)}>
+          <Pressable
+            style={[styles.actionSheetCard, { paddingBottom: Math.max(20, insets.bottom + 12) }]}
+            onPress={() => {}}
+          >
+            <View style={styles.sheetDragBar} />
+            <Text style={styles.actionSheetTitle} numberOfLines={2}>
+              {menuItem ? formatCardDisplayTitle(menuItem) || menuItem.url : ""}
+            </Text>
+            {menuItem ? (
+              <View style={styles.actionSheetList}>
+                <Pressable
+                  style={styles.actionSheetRow}
+                  onPress={() => {
+                    const targetId = menuItem.id;
+                    setMenuItem(null);
+                    router.push(
+                      `/item/${encodeURIComponent(targetId)}?folderId=${encodeURIComponent(String(id || ""))}` as never,
+                    );
+                  }}
+                >
+                  <Ionicons name="document-text-outline" size={18} color={FIGMA_INK.inkPrimary} />
+                  <Text style={styles.actionSheetRowText}>ดูรายละเอียดและสรุป AI</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.actionSheetRow}
+                  onPress={() => openExternalUrlFromMenu(menuItem)}
+                >
+                  <Ionicons name="open-outline" size={18} color={FIGMA_INK.inkPrimary} />
+                  <Text style={styles.actionSheetRowText}>เปิดลิงก์ต้นฉบับ</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.actionSheetRow}
+                  onPress={() => void handleToggleSeenFromMenu(menuItem)}
+                >
+                  <Ionicons name="swap-horizontal-outline" size={18} color={FIGMA_INK.inkPrimary} />
+                  <Text style={styles.actionSheetRowText}>
+                    {isReadStatus(menuItem.status) ? "เปลี่ยนเป็น ยังไม่ได้ดู" : "ทำเครื่องหมายว่า ดูแล้ว"}
+                  </Text>
+                </Pressable>
+                {!isVirtualInbox ? (
+                  <Pressable
+                    style={styles.actionSheetRow}
+                    onPress={() => handleRemoveFromFolderMenu(menuItem)}
+                  >
+                    <Ionicons name="folder-open-outline" size={18} color={theme.accentText} />
+                    <Text style={[styles.actionSheetRowText, { color: theme.accentText }]}>
+                      นำออกจากโฟลเดอร์
+                    </Text>
+                  </Pressable>
+                ) : null}
+                <Pressable
+                  style={[styles.actionSheetRow, styles.actionSheetDanger]}
+                  onPress={() => handleDeleteFromMenu(menuItem)}
+                >
+                  <Ionicons name="trash-outline" size={18} color="#B91C1C" />
+                  <Text style={[styles.actionSheetRowText, { color: "#B91C1C" }]}>ลบลิงก์นี้ออก</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </Pressable>
+        </Pressable>
       </Modal>
     </View>
   );
@@ -847,11 +1148,34 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     color: "#444444",
   },
+  sectionHeadRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 2,
+  },
   sectionHeading: {
     fontSize: 16,
     fontWeight: "700",
     color: FIGMA_INK.inkStrong,
-    marginTop: 2,
+  },
+  addLinkSmallBtn: {
+    height: 32,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  addLinkSmallBtnText: {
+    color: "#FFFFFF",
+    fontSize: 12.5,
+    fontWeight: "700",
+  },
+  cardActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
   },
   centerBox: {
     flex: 1,
@@ -1067,5 +1391,47 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: FIGMA_INK.inkSecondary,
     paddingVertical: 8,
+  },
+  actionSheetCard: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    gap: 10,
+  },
+  sheetDragBar: {
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#D1D5DB",
+    marginBottom: 4,
+  },
+  actionSheetTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: FIGMA_INK.inkPrimary,
+    paddingBottom: 4,
+  },
+  actionSheetList: {
+    gap: 6,
+  },
+  actionSheetRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: FIGMA_INK.bgMuted,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    borderRadius: 14,
+  },
+  actionSheetRowText: {
+    fontSize: 14.5,
+    fontWeight: "600",
+    color: FIGMA_INK.inkPrimary,
+  },
+  actionSheetDanger: {
+    backgroundColor: "#FEF2F2",
   },
 });

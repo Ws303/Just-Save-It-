@@ -2693,3 +2693,396 @@ test("25. Round 4 CHRIS fixes: loadAiConfig/summarize/testAiConnection auth-tran
     { isOwner: true, sharedPeerCount: 0, hasExplicitOwnerRow: false },
   );
 });
+
+test("26. Sherlink Mobile P0+P1 Parity: calendar/time helpers, full description resolver, member/feedback APIs, and UI confirm guards", async () => {
+  const {
+    buildCustomReminderDate,
+    buildMobileMonthCalendar,
+    resolveOriginalDescription,
+    shiftYearMonth,
+  } = await import("../itemHelpers.ts");
+  const { removeFolderMember, submitBetaFeedback, updateFolderMemberRole } = await import("../api.ts");
+
+  // 1. resolveOriginalDescription picks fuller description like Web links.js
+  assert.equal(
+    resolveOriginalDescription({
+      url: "https://example.com/p/1",
+      title: "Short Cafe",
+      description: "Short Cafe",
+    }),
+    "Short Cafe",
+  );
+  assert.equal(
+    resolveOriginalDescription({
+      url: "https://www.youtube.com/watch?v=abc123def45",
+      title: "Coffee V60 Guide",
+      description: "Full chapters 00:00 Intro 02:00 Pouring",
+    }),
+    "Full chapters 00:00 Intro 02:00 Pouring",
+  );
+
+  // 2. shiftYearMonth, buildMobileMonthCalendar & buildCustomReminderDate
+  assert.equal(shiftYearMonth("2026-12", 1), "2027-01");
+  assert.equal(shiftYearMonth("2027-01", -1), "2026-12");
+  const feb2024 = buildMobileMonthCalendar("2024-02", new Date(2024, 1, 15, 10, 0, 0));
+  assert.equal(feb2024.monthLabel, "กุมภาพันธ์ 2567");
+  assert.equal(feb2024.days.length, 29);
+  assert.equal(feb2024.days[13].isPast, true);
+  assert.equal(feb2024.days[14].isToday, true);
+  assert.equal(feb2024.days[14].isPast, false);
+  const validDt = buildCustomReminderDate("2027-03", 15, 20, 30);
+  assert.ok(validDt instanceof Date);
+  assert.equal(validDt.getFullYear(), 2027);
+  assert.equal(validDt.getMonth(), 2);
+  assert.equal(validDt.getDate(), 15);
+  assert.equal(validDt.getHours(), 20);
+  assert.equal(validDt.getMinutes(), 30);
+  assert.equal(buildCustomReminderDate("2026-02", 30, 12, 0), null, "Must reject Feb 30");
+
+  // 3. HTTP contracts for updateFolderMemberRole, removeFolderMember & submitBetaFeedback
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  try {
+    await saveSession({
+      access_token: "tok-p1-api",
+      refresh_token: "ref-p1-api",
+      user: { id: "uid-p1", email: "p1@sherlink.app" },
+    });
+    globalThis.fetch = async (url, init) => {
+      calls.push({
+        url: String(url),
+        method: String(init?.method || "GET"),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
+    };
+
+    const roleRes = await updateFolderMemberRole("fld-1", "mem-2", "editor");
+    assert.equal(roleRes.ok, true);
+    assert.equal(calls[0].method, "PATCH");
+    assert.match(calls[0].url, /\/api\/folders\/fld-1\/members\/mem-2$/);
+    assert.deepEqual(calls[0].body, { role: "editor" });
+
+    const delRes = await removeFolderMember("fld-1", "mem-2");
+    assert.equal(delRes.ok, true);
+    assert.equal(calls[1].method, "DELETE");
+    assert.match(calls[1].url, /\/api\/folders\/fld-1\/members\/mem-2$/);
+
+    const shortFb = await submitBetaFeedback({ topic: "ab", detail: "" });
+    assert.equal(shortFb.ok, false);
+    assert.equal(shortFb.status, 400);
+    assert.equal(calls.length, 2, "Must validate >=3 chars before fetch");
+
+    const fbRes = await submitBetaFeedback({
+      topic: "UI Bug",
+      detail: "Button clipped on small screen",
+      contactEmail: "p1@sherlink.app",
+    });
+    assert.equal(fbRes.ok, true);
+    assert.equal(calls[2].method, "POST");
+    assert.match(calls[2].url, /\/api\/feedback$/);
+    assert.equal(calls[2].body.allow_contact, true);
+    assert.match(calls[2].body.message, /UI Bug/);
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+  }
+
+  // 4. Static screen wiring assertions
+  const testDir = dirname(fileURLToPath(import.meta.url));
+  const detailSrc = readFileSync(resolve(testDir, "../../app/item/[id].tsx"), "utf8");
+  assert.match(detailSrc, /ยืนยันการสรุปด้วย AI/);
+  assert.match(detailSrc, /buildMobileMonthCalendar/);
+  assert.match(detailSrc, /handleSaveCustomReminder/);
+  assert.ok(
+    detailSrc.indexOf("คำอธิบายจากโพสต์ต้นฉบับ") < detailSrc.indexOf("โน้ตของฉัน"),
+    "Detail screen must render Description above Note",
+  );
+
+  const folderSrc = readFileSync(resolve(testDir, "../../app/folder/[id].tsx"), "utf8");
+  assert.match(folderSrc, /updateFolderMemberRole/);
+  assert.match(folderSrc, /removeFolderMember/);
+  assert.match(folderSrc, /นำออกจากโฟลเดอร์/);
+  assert.match(folderSrc, /addToFolderId=/);
+
+  const indexSrc = readFileSync(resolve(testDir, "../../app/(tabs)/index.tsx"), "utf8");
+  assert.match(indexSrc, /QUICK_SAVE_TAGS/);
+  assert.match(indexSrc, /saveReminderPreset/);
+  assert.match(indexSrc, /addToFolderId/);
+
+  const profileSrc = readFileSync(resolve(testDir, "../../app/(tabs)/profile.tsx"), "utf8");
+  assert.match(profileSrc, /ออกจากระบบใช่ไหม\?/);
+  assert.match(profileSrc, /sendPasswordResetEmail/);
+  assert.match(profileSrc, /submitBetaFeedback/);
+  assert.match(profileSrc, /exportFolderId/);
+});
+
+test("27. Round 6 fixes: reminder cache sync on save/local-sync/delete, social description cleanup, and UI guards", async () => {
+  const { resolveOriginalDescription } = await import("../itemHelpers.ts");
+  const { deleteReminder, saveReminder, syncRemindersFromServer } = await import("../api.ts");
+  const {
+    __setStorageBackendsForTests,
+    clearSession,
+    loadCachedWorkspace,
+    saveCachedWorkspace,
+    saveSession,
+  } = await import("../storage.ts");
+
+  // 1) resolveOriginalDescription strips IG stats noise while preserving YouTube description
+  const igDesc = resolveOriginalDescription({
+    url: "https://www.instagram.com/p/C8test/",
+    platform: "Instagram",
+    title: "Hidden Gem",
+    description: '842 likes, 12 comments - foodie_bkk on November 10, 2026: "Matcha latte review in Silom".',
+  });
+  assert.doesNotMatch(igDesc, /842 likes, 12 comments/);
+  assert.match(igDesc, /Matcha latte review in Silom/);
+
+  const ytDesc = resolveOriginalDescription({
+    url: "https://www.youtube.com/watch?v=abc123def45",
+    platform: "YouTube",
+    title: "Guide",
+    description: "Full chapters 00:00 Intro 02:15 Recipe",
+  });
+  assert.equal(ytDesc, "Full chapters 00:00 Intro 02:15 Recipe");
+
+  // 2) saveReminder / syncRemindersFromServer (non-truncated + truncated) / deleteReminder update cached reminders
+  const mem = new Map();
+  const memBackend = {
+    getItem: async (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: async (k, v) => { mem.set(k, String(v)); },
+    removeItem: async (k) => { mem.delete(k); },
+  };
+  __setStorageBackendsForTests({ standard: memBackend, secure: memBackend });
+  const origFetch = globalThis.fetch;
+  const makeJwt = (sub) => {
+    const body = btoa(JSON.stringify({ sub })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return `eyJhbGciOiJIUzI1NiJ9.${body}.sig`;
+  };
+  let localSyncPayload = null;
+
+  try {
+    await clearSession();
+    await saveSession({
+      access_token: makeJwt("mob-r6-u1"),
+      refresh_token: "",
+      user: { id: "mob-r6-u1", email: "r6@sherlink.app" },
+    });
+    await saveCachedWorkspace({
+      user_id: "mob-r6-u1",
+      items: [{ id: "it-1", url: "https://example.com/1", title: "One" }],
+      folders: [],
+      reminders: [{ id: "rem-old", item_id: "it-old", remind_at: new Date(Date.now() + 9000_000).toISOString() }],
+    });
+
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("/api/reminders/local-sync")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify(localSyncPayload) };
+      }
+      if (u.includes("/api/reminders/it-1") && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body || "{}"));
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ id: "rem-1", item_id: "it-1", remind_at: body.remind_at, is_enabled: true }),
+        };
+      }
+      if (u.includes("/api/reminders/it-1") && init?.method === "DELETE") {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ deleted: true }) };
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    };
+
+    const futureIso1 = new Date(Date.now() + 3600_000).toISOString();
+    const saveRes = await saveReminder("it-1", { schedule_type: "once", remind_at: futureIso1 });
+    assert.equal(saveRes.ok, true);
+    let cached = await loadCachedWorkspace();
+    assert.ok(cached.reminders.some((r) => r.item_id === "it-1"), "saveReminder must upsert into cached reminders");
+
+    // Non-truncated local-sync replaces list & deduplicates earliest occurrence per item_id
+    const tEarly = new Date(Date.now() + 7200_000).toISOString();
+    const tLate = new Date(Date.now() + 14400_000).toISOString();
+    localSyncPayload = {
+      ios_remote_push_active: false,
+      max_slots: 64,
+      total_active_rules: 1,
+      notifications: [
+        { reminder_id: "rem-sync-1", item_id: "it-sync-1", occurrence_at: tLate, schedule_type: "every_n_days", repeat_every_days: 3, title: "Sync Item" },
+        { reminder_id: "rem-sync-1", item_id: "it-sync-1", occurrence_at: tEarly, schedule_type: "every_n_days", repeat_every_days: 3, title: "Sync Item" },
+      ],
+      overdue: [],
+      truncated: false,
+    };
+    const syncFull = await syncRemindersFromServer();
+    assert.equal(syncFull.reminders.length, 1);
+    assert.equal(syncFull.reminders[0].remind_at, tEarly);
+    cached = await loadCachedWorkspace();
+    assert.equal(cached.reminders.length, 1);
+    assert.equal(cached.reminders[0].item_id, "it-sync-1");
+
+    // Truncated local-sync merges instead of wiping existing cached items not in batch
+    const tExtra = new Date(Date.now() + 10800_000).toISOString();
+    localSyncPayload = {
+      ios_remote_push_active: false,
+      max_slots: 64,
+      total_active_rules: 2,
+      notifications: [
+        { reminder_id: "rem-1", item_id: "it-1", occurrence_at: tExtra, schedule_type: "once", title: "Extra" },
+      ],
+      overdue: [],
+      truncated: true,
+    };
+    await syncRemindersFromServer();
+    cached = await loadCachedWorkspace();
+    assert.ok(cached.reminders.some((r) => r.item_id === "it-sync-1"), "truncated local-sync must preserve unrelated reminders");
+    assert.ok(cached.reminders.some((r) => r.item_id === "it-1"), "truncated local-sync must merge incoming reminders");
+
+    const delRes = await deleteReminder("it-1");
+    assert.equal(delRes.ok, true);
+    cached = await loadCachedWorkspace();
+    assert.equal(cached.reminders.some((r) => r.item_id === "it-1"), false, "deleteReminder must remove item from cache");
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+    __setStorageBackendsForTests(null);
+  }
+
+  // 3) Static source assertions for Round 6 mobile UI fixes
+  const testDir = dirname(fileURLToPath(import.meta.url));
+  const detailSrc = readFileSync(resolve(testDir, "../../app/item/[id].tsx"), "utf8");
+  assert.match(detailSrc, /function handleShiftReminderMonth/);
+  assert.match(detailSrc, /actionSeqRef\.current \+= 1[\s\S]{0,80}setVideoLoading\(false\)/);
+  assert.match(detailSrc, /activeIdRef\.current !== targetId/);
+
+  const indexSrc = readFileSync(resolve(testDir, "../../app/(tabs)/index.tsx"), "utf8");
+  assert.match(indexSrc, /function closeQuickSaveModal\(\)[\s\S]{0,80}saveSeqRef\.current \+= 1/);
+  assert.match(indexSrc, /บันทึกลิงก์แล้ว แต่ตั้งเตือนไม่สำเร็จ/);
+
+  const profileSrc = readFileSync(resolve(testDir, "../../app/(tabs)/profile.tsx"), "utf8");
+  assert.match(profileSrc, /disabled=\{exportFilteredItems\.length === 0\}/);
+  assert.match(profileSrc, /Platform\.OS === "ios"[\s\S]{0,180}exportTimerRef/);
+
+  const foldersTabSrc = readFileSync(resolve(testDir, "../../app/(tabs)/folders.tsx"), "utf8");
+  assert.match(foldersTabSrc, /resolveFolderCoverUrl\(coverDraft\) \|\| coverDraft/);
+});
+
+test("28. Round 7 CHRIS fixes: ios_remote_push_active preserves future reminders & runGuardedBusyAction honors seqRef staleness", async () => {
+  const { runGuardedBusyAction } = await import("../actionGuards.ts");
+  const { syncRemindersFromServer } = await import("../api.ts");
+  const {
+    __setStorageBackendsForTests,
+    clearSession,
+    loadCachedWorkspace,
+    saveCachedWorkspace,
+    saveSession,
+  } = await import("../storage.ts");
+
+  const mem = new Map();
+  const memBackend = {
+    getItem: async (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: async (k, v) => { mem.set(k, String(v)); },
+    removeItem: async (k) => { mem.delete(k); },
+  };
+  __setStorageBackendsForTests({ standard: memBackend, secure: memBackend });
+  const origFetch = globalThis.fetch;
+  const makeJwt = (sub) => {
+    const body = btoa(JSON.stringify({ sub })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return `eyJhbGciOiJIUzI1NiJ9.${body}.sig`;
+  };
+
+  try {
+    await clearSession();
+    await saveSession({
+      access_token: makeJwt("mob-r7-u1"),
+      refresh_token: "",
+      user: { id: "mob-r7-u1", email: "r7@sherlink.app" },
+    });
+    const futureIso = new Date(Date.now() + 86400_000).toISOString();
+    await saveCachedWorkspace({
+      user_id: "mob-r7-u1",
+      items: [{ id: "it-ios-1", url: "https://example.com/ios", title: "iOS Remote" }],
+      folders: [],
+      reminders: [{ id: "rem-ios-1", item_id: "it-ios-1", remind_at: futureIso, is_enabled: true }],
+    });
+
+    const fetchedUrls = [];
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      fetchedUrls.push(u);
+      if (u.includes("/api/reminders/local-sync")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            ios_remote_push_active: true,
+            max_slots: 64,
+            total_active_rules: 1,
+            notifications: [],
+            overdue: [],
+            truncated: false,
+          }),
+        };
+      }
+      if (u.endsWith("/api/reminders")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            reminders: [{ id: "rem-ios-1", item_id: "it-ios-1", remind_at: futureIso, is_enabled: true }],
+          }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    };
+
+    const syncRemote = await syncRemindersFromServer();
+    assert.equal(syncRemote.iosRemoteActive, true);
+    assert.equal(syncRemote.reminders.length, 1);
+    assert.equal(syncRemote.reminders[0].item_id, "it-ios-1");
+    assert.ok(fetchedUrls.some((u) => u.endsWith("/api/reminders")), "iosRemoteActive must refresh from /api/reminders instead of wiping cache");
+    const cachedAfter = await loadCachedWorkspace();
+    assert.equal(cachedAfter.reminders.length, 1, "Future reminder must remain cached when ios_remote_push_active is true");
+
+    // runGuardedBusyAction marks isStale() true & aborts when seqRef.current changes mid-flight (even w/ same authGen)
+    const seqRef = { current: 0 };
+    let busy = false;
+    let resolveInFlight = null;
+    let mutatedAfterCancel = false;
+    const inflightTask = runGuardedBusyAction(
+      seqRef,
+      (b) => { busy = b; },
+      async (isStale) => {
+        await new Promise((r) => { resolveInFlight = r; });
+        if (isStale()) return "aborted";
+        mutatedAfterCancel = true;
+        return "committed";
+      },
+    );
+    assert.equal(busy, true);
+    seqRef.current += 1; // Simulate modal close / A->B->A item switch
+    resolveInFlight();
+    const res = await inflightTask;
+    assert.equal(res.aborted, true, "seqRef bump mid-flight must mark runGuardedBusyAction aborted");
+    assert.equal(mutatedAfterCancel, false, "Stale action must not mutate post-await state after seqRef bump");
+  } finally {
+    globalThis.fetch = origFetch;
+    await clearSession();
+    __setStorageBackendsForTests(null);
+  }
+
+  // Static screen assertions for Round 7 fixes
+  const testDir = dirname(fileURLToPath(import.meta.url));
+  const favSrc = readFileSync(resolve(testDir, "../../app/(tabs)/favorites.tsx"), "utf8");
+  assert.match(favSrc, /!syncRes\.data\.ios_remote_push_active/);
+
+  const indexSrc = readFileSync(resolve(testDir, "../../app/(tabs)/index.tsx"), "utf8");
+  assert.match(indexSrc, /function showPostModalAlert/);
+  assert.match(indexSrc, /postModalAlertTimerRef/);
+  assert.match(indexSrc, /function closeQuickSaveModal\(\)[\s\S]{0,120}previewSeqRef\.current \+= 1/);
+
+  const detailSrc = readFileSync(resolve(testDir, "../../app/item/[id].tsx"), "utf8");
+  assert.match(detailSrc, /const playSeq = actionSeqRef\.current/);
+  assert.match(detailSrc, /!mountedRef\.current \|\|[\s\S]{0,120}actionSeqRef\.current !== playSeq/);
+  assert.match(detailSrc, /WebBrowser\.openBrowserAsync[\s\S]{0,260}catch[\s\S]{0,260}actionSeqRef\.current !== playSeq[\s\S]{0,120}openExternalUrlSafe\(targetPlayUrl\)/);
+});

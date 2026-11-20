@@ -1211,7 +1211,21 @@ export function resolveDetailNavIds(state) {
 export function renderOriginalDescriptionBlock(item, uiState = {}) {
   const rawDesc = String(item?.description || "").trim();
   const { displayDesc } = formatPostDetailTitleAndDesc(item);
-  const fullDesc = rawDesc.length >= (displayDesc || "").length ? rawDesc : displayDesc;
+  const effUrl = String(item?.canonical_url || item?.canonicalUrl || item?.url || "").toLowerCase();
+  const platLower = String(item?.platform || "").toLowerCase();
+  const isSocial =
+    platLower.includes("facebook") ||
+    platLower.includes("instagram") ||
+    platLower.includes("tiktok") ||
+    effUrl.includes("facebook.com") ||
+    effUrl.includes("fb.watch") ||
+    effUrl.includes("instagram.com") ||
+    effUrl.includes("tiktok.com");
+  const fullDesc = isSocial
+    ? displayDesc || (displayDesc === "" ? "" : rawDesc)
+    : rawDesc.length >= (displayDesc || "").length
+      ? rawDesc
+      : displayDesc;
   if (!fullDesc) return "";
   const isLong = fullDesc.length > 180 || fullDesc.split(/\r?\n/).length > 4;
   const expanded = Boolean(uiState?.descExpanded);
@@ -1284,6 +1298,8 @@ export function renderLinkDetailScreen(state) {
           </p>
         </div>
 
+        ${renderOriginalDescriptionBlock(item, state.ui)}
+
         <button type="button" class="figma-detail-reminder-pill" data-open-reminder="${escHtml(item.id)}">
           ${icons.clock(17)}
           <span>${escHtml(item.reminder || "ยังไม่ได้ตั้งเตือน")}</span>
@@ -1344,8 +1360,6 @@ export function renderLinkDetailScreen(state) {
             ${item.note ? escHtml(item.note) : `<span class="placeholder">เพิ่มโน้ต…</span>`}
           </div>
         </div>
-
-        ${renderOriginalDescriptionBlock(item, state.ui)}
 
         <div class="figma-detail-ai-block" data-node-id="372:873">
           ${
@@ -1417,13 +1431,10 @@ export function renderSavedPreviewScreen(state) {
             <h2 class="figma-detail-post-title-link" style="text-decoration:none;cursor:pointer;" data-open-link="${escHtml(item.id)}">
               ${escHtml(displayTitle)}
             </h2>
-            ${
-              displayDesc
-                ? `<p class="figma-detail-post-desc">${escHtml(displayDesc)}</p>`
-                : ""
-            }
             <p class="figma-detail-post-meta">${escHtml(item.platform)} · โฟลเดอร์${escHtml(folder?.name || "ทั่วไป")}</p>
           </div>
+
+          ${renderOriginalDescriptionBlock(item, state.ui)}
 
           <div class="figma-detail-ai-card">
             <div class="figma-detail-ai-card-head">

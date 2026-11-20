@@ -60,19 +60,24 @@ export function renderFoldersGridInner(state) {
       .map((f) => {
         const isWatchLater = f.name === "ยังไม่จัดหมวด" || f.name === "รวมไว้ดูทีหลัง";
         const displayName = f.name === "ยังไม่จัดหมวด" ? "รวมไว้ดูทีหลัง" : f.name;
-        const shareText = f.sharedCount > 0 ? `แชร์กับ ${f.sharedCount} คน` : "ส่วนตัว";
+        const isSharedNonOwner = Boolean(f.role && String(f.role).toLowerCase() !== "owner");
+        const shareText = f.sharedCount > 0 ? `แชร์กับ ${f.sharedCount} คน` : isSharedNonOwner ? "โฟลเดอร์ที่แชร์" : "ส่วนตัว";
         return `
         <div class="folder-card" data-open-folder="${escHtml(f.id)}">
           <div class="folder-cover-wrap">
             ${renderMobileFolderCover(f, links, isWatchLater)}
-            <button
-              type="button"
-              class="folder-edit-circle"
-              data-open-edit-folder="${escHtml(f.id)}"
-              title="แก้ไขโฟลเดอร์"
-            >
-              ${icons.pencil(14)}
-            </button>
+            ${
+              !isSharedNonOwner
+                ? `<button
+                     type="button"
+                     class="folder-edit-circle"
+                     data-open-edit-folder="${escHtml(f.id)}"
+                     title="แก้ไขโฟลเดอร์"
+                   >
+                     ${icons.pencil(14)}
+                   </button>`
+                : ""
+            }
           </div>
           <p class="folder-name">${escHtml(displayName)}</p>
           <p class="folder-meta">${getFolderCount(f)} ลิงก์ · ${shareText}</p>
@@ -130,12 +135,32 @@ export function renderFoldersScreen(state) {
   `;
 }
 
+export function computeWebFolderShareState(folder, memberBundle = null) {
+  const effectiveRole = String(memberBundle?.caller_role || folder?.role || "")
+    .trim()
+    .toLowerCase();
+  const isOwner = !effectiveRole || effectiveRole === "owner";
+  const ownerId = memberBundle?.owner_id || folder?.ownerId || "";
+  const cached = Array.isArray(memberBundle?.members) ? memberBundle.members : [];
+  const hasExplicitOwnerRow = cached.some(
+    (m) => String(m.role || "").trim().toLowerCase() === "owner" || Boolean(ownerId && m.user_id === ownerId),
+  );
+  const computedPeers = hasExplicitOwnerRow
+    ? Math.max(0, cached.length - 1)
+    : cached.filter((m) => String(m.role || "").trim().toLowerCase() !== "owner").length;
+  const shareCount = Math.max(folder?.sharedCount || 0, computedPeers);
+  return { isOwner, shareCount, cached, hasExplicitOwnerRow };
+}
+
 export function renderFolderDetailScreen(state) {
   const folder = getFolderById(state.ui.activeFolderId) || state.data.folders[0];
   if (!folder) {
     return `<div class="app-pad"><button class="btn-outline-pill" data-nav="folders">กลับหน้าโฟลเดอร์</button></div>`;
   }
   const count = getFolderCount(folder);
+
+  const memberBundle = state.ui.folderMembers?.[folder.id] || null;
+  const { isOwner, shareCount, cached } = computeWebFolderShareState(folder, memberBundle);
 
   return `
     <div class="screen-scroll with-nav-pad">
@@ -146,15 +171,18 @@ export function renderFolderDetailScreen(state) {
             ${escHtml(folder.name)}
           </h1>
         </div>
-        <div style="display:flex;align-items:center;gap:6px;">
-          <button type="button" class="btn-outline-pill" style="height:36px;padding:0 14px;font-size:13px;" data-open-invite-sheet="${escHtml(folder.id)}">
-            เชิญเพื่อน
-          </button>
-        </div>
+        ${
+          isOwner
+            ? `<div style="display:flex;align-items:center;gap:6px;">
+                 <button type="button" class="btn-outline-pill" style="height:36px;padding:0 14px;font-size:13px;" data-open-invite-sheet="${escHtml(folder.id)}">
+                   เชิญเพื่อน
+                 </button>
+               </div>`
+            : ""
+        }
       </div>
 
       ${(() => {
-        const cached = state.ui.folderMembers?.[folder.id]?.members || [];
         const userInitial = (state.data.user?.displayName || state.data.user?.email || "U")
           .trim()
           .charAt(0)
@@ -164,14 +192,19 @@ export function renderFolderDetailScreen(state) {
           : folder.sharedUsers?.length
             ? folder.sharedUsers.slice(0, 3).map((u) => String(u).trim().charAt(0).toUpperCase())
             : [userInitial];
-        const shareCount = Math.max(folder.sharedCount || 0, Math.max(0, cached.length - 1));
         return `
       <div class="shared-bar">
         <div class="avatar-stack">
           ${initials.map((ch) => `<div class="avatar-circle">${escHtml(ch)}</div>`).join("")}
         </div>
         <span style="font-size:13px;color:var(--ink-secondary);">
-          ${shareCount > 0 ? `แชร์กับ ${shareCount} คน` : "โฟลเดอร์ส่วนตัว · กดเชิญเพื่อนเพื่อแชร์"}
+          ${
+            shareCount > 0
+              ? `แชร์กับ ${shareCount} คน`
+              : isOwner
+                ? "โฟลเดอร์ส่วนตัว · กดเชิญเพื่อนเพื่อแชร์"
+                : "โฟลเดอร์ที่แชร์"
+          }
         </span>
       </div>`;
       })()}
@@ -254,12 +287,24 @@ export function renderFolderSheets(state) {
                 >
                   ${state.ui.folderCoverUploading ? "กำลังอัปโหลด…" : "อัปโหลดรูปปก"}
                 </button>
-                <button type="button" class="btn-outline-pill" style="height:32px;padding:0 12px;font-size:12px;" data-open-pick-cover="1">
+                <button
+                  type="button"
+                  class="btn-outline-pill"
+                  style="height:32px;padding:0 12px;font-size:12px;"
+                  data-open-pick-cover="1"
+                  ${state.ui.folderCoverUploading ? "disabled" : ""}
+                >
                   เลือกรูปสำเร็จรูป
                 </button>
                 ${
                   sheet.coverDraft
-                    ? `<button type="button" class="btn-outline-pill" style="height:32px;padding:0 10px;font-size:12px;color:var(--theme-accent-text);" data-action="reset-folder-cover">
+                    ? `<button
+                         type="button"
+                         class="btn-outline-pill"
+                         style="height:32px;padding:0 10px;font-size:12px;color:var(--theme-accent-text);"
+                         data-action="reset-folder-cover"
+                         ${state.ui.folderCoverUploading ? "disabled" : ""}
+                       >
                          ใช้ภาพปกอัตโนมัติ
                        </button>`
                     : ""
@@ -290,7 +335,7 @@ export function renderFolderSheets(state) {
 
           <div class="figma-reminder-actions">
             <button type="button" class="figma-btn-outline-48" data-close-sheet="1">ยกเลิก</button>
-            <button type="button" class="figma-btn-red-48" data-save-folder-sheet="1">${isEdit ? "บันทึก" : "สร้างโฟลเดอร์"}</button>
+            <button type="button" class="figma-btn-red-48" data-save-folder-sheet="1" ${state.ui.folderCoverUploading ? "disabled" : ""}>${state.ui.folderCoverUploading ? "กำลังอัปโหลด…" : isEdit ? "บันทึก" : "สร้างโฟลเดอร์"}</button>
           </div>
           ${
             isEdit
@@ -350,7 +395,7 @@ export function renderFolderSheets(state) {
     const members = Array.isArray(memberBundle?.members) ? memberBundle.members : [];
     const activeInvites = Array.isArray(memberBundle?.active_invites) ? memberBundle.active_invites : [];
     const ownerId = memberBundle?.owner_id || folder.ownerId || "";
-    const isOwner = !memberBundle || memberBundle.caller_role === "owner";
+    const { isOwner } = computeWebFolderShareState(folder, memberBundle);
     const folderCoverThumb = safeImgUrl(folder.cover) || resolveMediaThumbUrl((state.data.links || []).find((l) => l.folderId === folder.id)) || "";
 
     const formatInvExpiry = (inv) => {
@@ -447,20 +492,29 @@ export function renderFolderSheets(state) {
             </div>
           </div>
 
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;">
-            <button
-              type="button"
-              class="figma-btn-outline-48"
-              data-action="generate-share-link"
-              ${shareState === "loading" ? "disabled" : ""}
-            >สร้างลิงก์ใหม่</button>
-            <button
-              type="button"
-              class="figma-btn-red-48"
-              data-copy-invite="${escHtml(inviteUrl)}"
-              ${shareState === "loading" ? "disabled" : ""}
-            >คัดลอกลิงก์เชิญ</button>
-          </div>
+          ${
+            isOwner
+              ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;">
+                   <button
+                     type="button"
+                     class="figma-btn-outline-48"
+                     data-action="generate-share-link"
+                     ${shareState === "loading" ? "disabled" : ""}
+                   >สร้างลิงก์ใหม่</button>
+                   <button
+                     type="button"
+                     class="figma-btn-red-48"
+                     data-copy-invite="${escHtml(inviteUrl)}"
+                     ${shareState === "loading" ? "disabled" : ""}
+                   >คัดลอกลิงก์เชิญ</button>
+                 </div>`
+              : `<button
+                   type="button"
+                   class="figma-btn-red-48 full"
+                   data-copy-invite="${escHtml(inviteUrl)}"
+                   ${shareState === "loading" ? "disabled" : ""}
+                 >คัดลอกลิงก์เชิญ</button>`
+          }
 
           <button
             type="button"

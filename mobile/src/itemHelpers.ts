@@ -1259,3 +1259,118 @@ export function formatRemindTimeAndZone(
     timezone: tz,
   };
 }
+
+export function resolveOriginalDescription(item: ThumbSourceLike | null | undefined): string {
+  const rawDesc = String(item?.description || "").trim();
+  const { displayDesc } = formatPostDetailTitleAndDesc(item);
+  const cleanedDesc = String(displayDesc || "").trim();
+  const effUrl = String(item?.canonical_url || item?.canonicalUrl || item?.url || "").toLowerCase();
+  const platLower = String(item?.platform || "").toLowerCase();
+  const isSocial =
+    platLower.includes("facebook") ||
+    platLower.includes("instagram") ||
+    platLower.includes("tiktok") ||
+    effUrl.includes("facebook.com") ||
+    effUrl.includes("fb.watch") ||
+    effUrl.includes("instagram.com") ||
+    effUrl.includes("tiktok.com");
+  if (isSocial) {
+    return cleanedDesc || (displayDesc === "" ? "" : rawDesc);
+  }
+  return rawDesc.length >= cleanedDesc.length ? rawDesc : cleanedDesc;
+}
+
+const THAI_MONTH_NAMES = [
+  "มกราคม",
+  "กุมภาพันธ์",
+  "มีนาคม",
+  "เมษายน",
+  "พฤษภาคม",
+  "มิถุนายน",
+  "กรกฎาคม",
+  "สิงหาคม",
+  "กันยายน",
+  "ตุลาคม",
+  "พฤศจิกายน",
+  "ธันวาคม",
+];
+
+export interface MobileCalendarDay {
+  day: number;
+  isPast: boolean;
+  isToday: boolean;
+}
+
+export interface MobileMonthCalendar {
+  yearMonth: string;
+  monthLabel: string;
+  leadingEmpty: number;
+  days: MobileCalendarDay[];
+}
+
+export function shiftYearMonth(yearMonth: string, delta: number): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(yearMonth || "").trim());
+  const now = new Date();
+  const baseYear = m ? Number(m[1]) : now.getFullYear();
+  const baseMonthIdx = m ? Number(m[2]) - 1 : now.getMonth();
+  const d = new Date(baseYear, baseMonthIdx + Math.trunc(delta), 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+export function buildMobileMonthCalendar(yearMonth: string, nowInput?: Date): MobileMonthCalendar {
+  const now = nowInput || new Date();
+  const m = /^(\d{4})-(\d{2})$/.exec(String(yearMonth || "").trim());
+  const year = m ? Number(m[1]) : now.getFullYear();
+  const monthNum = m ? Math.min(12, Math.max(1, Number(m[2]))) : now.getMonth() + 1;
+  const normalizedYm = `${year}-${String(monthNum).padStart(2, "0")}`;
+  const firstDay = new Date(year, monthNum - 1, 1);
+  const daysInMonth = new Date(year, monthNum, 0).getDate();
+  const leadingEmpty = firstDay.getDay();
+  const todayYear = now.getFullYear();
+  const todayMonth = now.getMonth() + 1;
+  const todayDay = now.getDate();
+
+  const days: MobileCalendarDay[] = [];
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const isBeforeMonth = year < todayYear || (year === todayYear && monthNum < todayMonth);
+    const isSameMonth = year === todayYear && monthNum === todayMonth;
+    const isPast = isBeforeMonth || (isSameMonth && day < todayDay);
+    const isToday = isSameMonth && day === todayDay;
+    days.push({ day, isPast, isToday });
+  }
+  const monthName = THAI_MONTH_NAMES[monthNum - 1] || String(monthNum);
+  return {
+    yearMonth: normalizedYm,
+    monthLabel: `${monthName} ${year + 543}`,
+    leadingEmpty,
+    days,
+  };
+}
+
+export function buildCustomReminderDate(
+  yearMonth: string,
+  day: number,
+  hour: number,
+  minute: number,
+): Date | null {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(yearMonth || "").trim());
+  if (!m) return null;
+  const year = Number(m[1]);
+  const monthNum = Number(m[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(monthNum) || monthNum < 1 || monthNum > 12) return null;
+  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+  const dt = new Date(year, monthNum - 1, day, hour, minute, 0, 0);
+  if (
+    Number.isNaN(dt.getTime()) ||
+    dt.getFullYear() !== year ||
+    dt.getMonth() !== monthNum - 1 ||
+    dt.getDate() !== day ||
+    dt.getHours() !== hour ||
+    dt.getMinutes() !== minute
+  ) {
+    return null;
+  }
+  return dt;
+}

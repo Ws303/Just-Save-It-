@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -30,6 +30,8 @@ import {
   getOfflineQueueCount,
   logoutAccount,
   registerPushDevice,
+  sendPasswordResetEmail,
+  submitBetaFeedback,
   syncRemindersFromServer,
   updateProfileDisplayName,
 } from "../../src/api";
@@ -54,6 +56,7 @@ import {
   setDebugBannerEnabled,
   subscribeDebugBanner,
   subscribeFigmaAccentTheme,
+  type MobileFolderItem,
   type MobileLinkItem,
 } from "../../src/storage";
 
@@ -68,6 +71,7 @@ export default function ProfileScreen() {
   const [name, setName] = useState("ผู้ใช้งาน");
   const [email, setEmail] = useState("");
   const [cachedItems, setCachedItems] = useState<MobileLinkItem[]>(() => initialCache?.items || []);
+  const [cachedFolders, setCachedFolders] = useState<MobileFolderItem[]>(() => initialCache?.folders || []);
   const [queueCount, setQueueCount] = useState(0);
   const [debugBannerOn, setDebugBannerOn] = useState<boolean>(getDebugBannerEnabled);
   const [pushEnabled, setPushEnabled] = useState(false);
@@ -78,11 +82,30 @@ export default function ProfileScreen() {
   const [displayModalOpen, setDisplayModalOpen] = useState(false);
   const [securityModalOpen, setSecurityModalOpen] = useState(false);
   const [helpModalOpen, setHelpModalOpen] = useState(false);
+  const [supportTopic, setSupportTopic] = useState("");
+  const [supportDetail, setSupportDetail] = useState("");
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportFolderId, setExportFolderId] = useState<string>("all");
+  const [exportUnreadOnly, setExportUnreadOnly] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deletePhrase, setDeletePhrase] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const actionSeqRef = useRef(0);
   const deleteInFlightRef = useRef(false);
+  const mountedRef = useRef(true);
+  const exportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (exportTimerRef.current) {
+        clearTimeout(exportTimerRef.current);
+        exportTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     void loadFigmaAccentTheme().then(setThemeId).catch(() => {});
@@ -103,6 +126,9 @@ export default function ProfileScreen() {
     if (cached.items.length > 0) {
       setCachedItems((prev) => (prev.length ? prev : cached.items));
     }
+    if (cached.folders.length > 0) {
+      setCachedFolders((prev) => (prev.length ? prev : cached.folders));
+    }
 
     const [ws, qCount, savedAccent, savedPush] = await Promise.all([
       fetchWorkspace(),
@@ -114,6 +140,7 @@ export default function ProfileScreen() {
     setThemeId(savedAccent);
     setQueueCount(qCount);
     setCachedItems(ws.items);
+    setCachedFolders(ws.folders);
     setPushEnabled(Boolean(savedPush));
     setPushStatus(
       savedPush
@@ -189,6 +216,7 @@ export default function ProfileScreen() {
             push_token: registered.push_token,
           }).catch(() => {});
         }
+        if (isStale()) return;
         await Promise.allSettled([
           clearRegisteredPushDevice(),
           cancelAllLocalRemindersSafe(),
@@ -236,14 +264,18 @@ export default function ProfileScreen() {
     );
   }
 
-  async function handleExportCsv() {
-    const { csv, truncated, exportedCount, totalCount } = buildBoundedCsvExport(cachedItems);
-    if (truncated) {
-      Alert.alert(
-        "ตัดทอนข้อมูลบางส่วน",
-        `ส่งออกได้ ${exportedCount} จาก ${totalCount} รายการ เพื่อไม่ให้เกินขีดจำกัดขนาดแชร์ของ Android`,
-      );
-    }
+  const exportFilteredItems = useMemo(() => {
+    return cachedItems.filter((it) => {
+      if (exportFolderId !== "all" && it.folder_id !== exportFolderId) return false;
+      if (exportUnreadOnly) {
+        const s = String(it.status || "inbox").toLowerCase();
+        if (s === "done" || s === "read" || s === "archived") return false;
+      }
+      return true;
+    });
+  }, [cachedItems, exportFolderId, exportUnreadOnly]);
+
+  async function runCsvShare(csv: string) {
     try {
       await Share.share({
         title: "sherlink-links-export.csv",
@@ -252,6 +284,97 @@ export default function ProfileScreen() {
     } catch {
       Alert.alert("ส่งออกไม่สำเร็จ", "ไม่สามารถเปิดหน้าต่างแชร์ไฟล์ CSV ได้");
     }
+  }
+
+  function handleExportCsv() {
+    if (exportFilteredItems.length === 0) {
+      Alert.alert("ไม่มีรายการที่จะส่งออก", "ลองเปลี่ยนโฟลเดอร์หรือปิดตัวกรองเฉพาะที่ยังไม่ได้ดู");
+      return;
+    }
+    const { csv, truncated, exportedCount, totalCount } = buildBoundedCsvExport(exportFilteredItems);
+    setExportModalOpen(false);
+    const presentExport = () => {
+      if (!mountedRef.current) return;
+      if (truncated) {
+        Alert.alert(
+          "ตัดทอนข้อมูลบางส่วน",
+          `ส่งออกได้ ${exportedCount} จาก ${totalCount} รายการ เพื่อไม่ให้เกินขีดจำกัดขนาดแชร์ของ Android`,
+          [
+            { text: "ยกเลิก", style: "cancel" },
+            {
+              text: "ส่งออกต่อ",
+              onPress: () => {
+                void runCsvShare(csv);
+              },
+            },
+          ],
+        );
+        return;
+      }
+      void runCsvShare(csv);
+    };
+
+    if (Platform.OS === "ios") {
+      if (exportTimerRef.current) clearTimeout(exportTimerRef.current);
+      exportTimerRef.current = setTimeout(() => {
+        exportTimerRef.current = null;
+        presentExport();
+      }, 320);
+      return;
+    }
+    presentExport();
+  }
+
+  async function handleSendPasswordReset() {
+    const cleanEmail = email.trim();
+    if (!cleanEmail) {
+      Alert.alert("ไม่พบอีเมลบัญชี", "กรุณาตรวจสอบว่าเข้าสู่ระบบด้วยอีเมลแล้ว");
+      return;
+    }
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (busy) => setBusyAction(busy ? "reset" : ""),
+      async (isStale) => {
+        const res = await sendPasswordResetEmail(cleanEmail);
+        if (isStale()) return;
+        if (!res.ok) {
+          Alert.alert("ส่งลิงก์ไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+          return;
+        }
+        Alert.alert("ส่งลิงก์แล้ว", `กรุณาตรวจสอบกล่องจดหมายของ ${cleanEmail} เพื่อตั้งหรือเปลี่ยนรหัสผ่าน`);
+      },
+    );
+  }
+
+  async function handleSubmitFeedback() {
+    const topic = supportTopic.trim();
+    const detail = supportDetail.trim();
+    if ([topic, detail].filter(Boolean).join(" ").trim().length < 3) {
+      Alert.alert("กรุณากรอกรายละเอียด", "โปรดระบุหัวข้อหรือรายละเอียดอย่างน้อย 3 ตัวอักษร");
+      return;
+    }
+    await runGuardedBusyAction(
+      actionSeqRef,
+      (busy) => setBusyAction(busy ? "feedback" : ""),
+      async (isStale) => {
+        const res = await submitBetaFeedback({
+          topic,
+          detail,
+          category: "bug",
+          pageContext: "mobile_profile",
+          contactEmail: email.trim() || null,
+        });
+        if (isStale()) return;
+        if (!res.ok) {
+          Alert.alert("ส่งรายงานไม่สำเร็จ", res.error || "กรุณาลองใหม่");
+          return;
+        }
+        setSupportTopic("");
+        setSupportDetail("");
+        setHelpModalOpen(false);
+        Alert.alert("ส่งรายงานแล้ว", "ขอบคุณสำหรับข้อเสนอแนะ ทีมงานได้รับข้อมูลเรียบร้อยแล้ว");
+      },
+    );
   }
 
   async function handleDeleteAccount() {
@@ -412,7 +535,7 @@ export default function ProfileScreen() {
               <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
             </Pressable>
 
-            <Pressable style={styles.settingsRow} onPress={() => void handleExportCsv()}>
+            <Pressable style={styles.settingsRow} onPress={() => setExportModalOpen(true)}>
               <View style={styles.rowLeft}>
                 <Ionicons name="download-outline" size={20} color={FIGMA_INK.inkSecondary} />
                 <View style={styles.rowTexts}>
@@ -426,7 +549,7 @@ export default function ProfileScreen() {
         </View>
 
         {/* Logout Pill */}
-        <Pressable style={styles.logoutBtn} onPress={() => void handleLogout()}>
+        <Pressable style={styles.logoutBtn} onPress={() => setLogoutConfirmOpen(true)}>
           <Ionicons name="log-out-outline" size={18} color="#B91C1C" />
           <Text style={styles.logoutBtnText}>ออกจากระบบ</Text>
         </Pressable>
@@ -548,7 +671,22 @@ export default function ProfileScreen() {
               </Pressable>
             </View>
 
-            <Pressable style={styles.actionTile} onPress={() => void handleFlushQueue()}>
+            <Pressable
+              style={styles.actionTile}
+              disabled={busyAction === "reset"}
+              onPress={() => void handleSendPasswordReset()}
+            >
+              <Ionicons name="key-outline" size={18} color={FIGMA_INK.inkPrimary} />
+              <Text style={styles.actionTileText}>
+                {busyAction === "reset" ? "กำลังส่งลิงก์..." : "ส่งลิงก์ตั้งหรือเปลี่ยนรหัสผ่าน"}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.actionTile}
+              disabled={busyAction === "queue"}
+              onPress={() => void handleFlushQueue()}
+            >
               <Ionicons name="sync-outline" size={18} color={FIGMA_INK.inkPrimary} />
               <Text style={styles.actionTileText}>
                 {busyAction === "queue" ? "กำลังซิงก์..." : `ซิงก์ Offline Queue ตอนนี้ (${queueCount})`}
@@ -586,28 +724,188 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* Help Center Modal (128:429) */}
+      {/* Help Center & Feedback Modal (128:429) */}
       <Modal
         visible={helpModalOpen}
         animationType="fade"
         transparent
         onRequestClose={() => setHelpModalOpen(false)}
       >
+        <KeyboardAvoidingView
+          style={styles.backdrop}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          <View style={[styles.modalCard, { maxHeight: "86%" }]}>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <View style={styles.sheetHead}>
+                <Text style={styles.modalTitle}>ศูนย์ช่วยเหลือและแจ้งปัญหา</Text>
+                <Pressable hitSlop={8} onPress={() => setHelpModalOpen(false)}>
+                  <Ionicons name="close" size={20} color="#666666" />
+                </Pressable>
+              </View>
+              <Text style={[styles.modalBody, { marginTop: 8 }]}>
+                1. แชร์ลิงก์จาก Instagram, TikTok, YouTube หรือเบราว์เซอร์เข้ามาที่ Sherlink ผ่านเมนู Share ของ Android ได้ทันที
+              </Text>
+              <Text style={[styles.modalBody, { marginTop: 6 }]}>
+                2. หากลิงก์แสดงผลไม่ครบ กดเข้าไปหน้ารายละเอียดแล้วดึงรีเฟรช หรือตรวจสอบว่าเป็นโพสต์สาธารณะ
+              </Text>
+
+              <Text style={[styles.subLabel, { marginTop: 14, marginBottom: 6 }]}>แจ้งปัญหา / ข้อเสนอแนะ</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="หัวข้อปัญหาสั้น ๆ"
+                placeholderTextColor="#9CA3AF"
+                value={supportTopic}
+                onChangeText={setSupportTopic}
+              />
+              <TextInput
+                style={[styles.input, styles.feedbackArea, { marginTop: 8 }]}
+                placeholder="เล่าว่าเกิดอะไรขึ้น และเกิดในหน้าไหน..."
+                placeholderTextColor="#9CA3AF"
+                multiline
+                value={supportDetail}
+                onChangeText={setSupportDetail}
+              />
+              <View style={[styles.modalActions, { marginTop: 12 }]}>
+                <Pressable style={styles.cancelBtn} onPress={() => setHelpModalOpen(false)}>
+                  <Text style={styles.cancelBtnText}>ปิด</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.primaryModalBtn, { backgroundColor: theme.accent }, busyAction === "feedback" && { opacity: 0.7 }]}
+                  disabled={busyAction === "feedback"}
+                  onPress={() => void handleSubmitFeedback()}
+                >
+                  <Text style={styles.primaryModalBtnText}>
+                    {busyAction === "feedback" ? "กำลังส่ง..." : "ส่งรายงาน"}
+                  </Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Filtered CSV Export Sheet (128:465) */}
+      <Modal
+        visible={exportModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setExportModalOpen(false)}
+      >
+        <View style={styles.sheetBackdrop}>
+          <View style={[styles.sheetCard, { paddingBottom: Math.max(20, insets.bottom + 12) }]}>
+            <View style={styles.sheetDragBar} />
+            <View style={styles.sheetHead}>
+              <Text style={styles.modalTitle}>ส่งออกข้อมูลที่บันทึกไว้</Text>
+              <Pressable hitSlop={8} onPress={() => setExportModalOpen(false)}>
+                <Ionicons name="close" size={20} color="#666666" />
+              </Pressable>
+            </View>
+            <Text style={styles.subLabel}>เลือกโฟลเดอร์</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View style={styles.exportChipRow}>
+                <Pressable
+                  style={[
+                    styles.exportChip,
+                    exportFolderId === "all" && { backgroundColor: theme.soft, borderColor: theme.accent },
+                  ]}
+                  onPress={() => setExportFolderId("all")}
+                >
+                  <Text
+                    style={[
+                      styles.exportChipText,
+                      exportFolderId === "all" && { color: theme.accentText, fontWeight: "700" },
+                    ]}
+                  >
+                    ทุกโฟลเดอร์
+                  </Text>
+                </Pressable>
+                {cachedFolders.map((f) => {
+                  const active = exportFolderId === f.id;
+                  return (
+                    <Pressable
+                      key={f.id}
+                      style={[
+                        styles.exportChip,
+                        active && { backgroundColor: theme.soft, borderColor: theme.accent },
+                      ]}
+                      onPress={() => setExportFolderId(f.id)}
+                    >
+                      <Text
+                        style={[
+                          styles.exportChipText,
+                          active && { color: theme.accentText, fontWeight: "700" },
+                        ]}
+                      >
+                        {f.name}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </ScrollView>
+
+            <View style={styles.exportToggleRow}>
+              <Text style={styles.rowTitle}>เฉพาะรายการที่ยังไม่ได้ดู</Text>
+              <Switch
+                value={exportUnreadOnly}
+                onValueChange={setExportUnreadOnly}
+                trackColor={{ false: "#D1D5DB", true: theme.accent }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <Text style={styles.modalBody}>
+              จำนวนที่จะส่งออก ({exportFilteredItems.length} รายการ) · ไฟล์ CSV รวมชื่อโพสต์ URL โฟลเดอร์ แท็ก โน้ต และสรุป
+            </Text>
+
+            <View style={styles.exportBtnRow}>
+              <Pressable style={[styles.cancelBtn, { flex: 1, alignItems: "center", paddingVertical: 13 }]} onPress={() => setExportModalOpen(false)}>
+                <Text style={styles.cancelBtnText}>ยกเลิก</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.fullDoneBtn,
+                  { flex: 1.4, backgroundColor: theme.accent },
+                  exportFilteredItems.length === 0 && { opacity: 0.45 },
+                ]}
+                disabled={exportFilteredItems.length === 0}
+                onPress={handleExportCsv}
+              >
+                <Text style={styles.primaryModalBtnText}>ส่งออก CSV</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Logout Confirm Dialog (124:433) */}
+      <Modal
+        visible={logoutConfirmOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setLogoutConfirmOpen(false)}
+      >
         <View style={styles.backdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>ศูนย์ช่วยเหลือและแจ้งปัญหา</Text>
+            <Text style={styles.modalTitle}>ออกจากระบบใช่ไหม?</Text>
             <Text style={styles.modalBody}>
-              1. แชร์ลิงก์จาก Instagram, TikTok, YouTube หรือเบราว์เซอร์เข้ามาที่ Sherlink ผ่านเมนู Share ของ Android ได้ทันที
+              คุณสามารถเข้าสู่ระบบใหม่ด้วย {email || "บัญชีของคุณ"} ได้ทุกเมื่อ
             </Text>
-            <Text style={styles.modalBody}>
-              2. หากลิงก์แสดงผลไม่ครบ กดเข้าไปหน้ารายละเอียดแล้วดึงรีเฟรช หรือตรวจสอบว่าเป็นโพสต์สาธารณะ
-            </Text>
-            <Pressable
-              style={[styles.fullDoneBtn, { backgroundColor: theme.accent, marginTop: 6 }]}
-              onPress={() => setHelpModalOpen(false)}
-            >
-              <Text style={styles.primaryModalBtnText}>เข้าใจแล้ว</Text>
-            </Pressable>
+            <View style={styles.modalActions}>
+              <Pressable style={styles.cancelBtn} onPress={() => setLogoutConfirmOpen(false)}>
+                <Text style={styles.cancelBtnText}>ยกเลิก</Text>
+              </Pressable>
+              <Pressable
+                style={styles.deleteConfirmBtn}
+                onPress={() => {
+                  setLogoutConfirmOpen(false);
+                  void handleLogout();
+                }}
+              >
+                <Text style={styles.primaryModalBtnText}>ออกจากระบบ</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </Modal>
@@ -944,5 +1242,39 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     color: FIGMA_INK.inkSecondary,
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+  },
+  feedbackArea: {
+    height: 88,
+    paddingTop: 10,
+    textAlignVertical: "top",
+  },
+  exportChipRow: {
+    flexDirection: "row",
+    gap: 8,
+    paddingVertical: 2,
+  },
+  exportChip: {
+    backgroundColor: FIGMA_INK.bgMuted,
+    borderWidth: 1,
+    borderColor: FIGMA_INK.borderCard,
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 999,
+  },
+  exportChipText: {
+    fontSize: 12.5,
+    fontWeight: "600",
+    color: FIGMA_INK.inkStrong,
+  },
+  exportToggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 4,
+  },
+  exportBtnRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 4,
   },
 });

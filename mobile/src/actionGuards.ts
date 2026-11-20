@@ -18,7 +18,7 @@ export async function runGuardedBusyAction<T>(
   const startGen = getGen();
   const seq = (seqRef.current += 1);
   setBusy(true);
-  const isStale = () => getGen() !== startGen;
+  const isStale = () => getGen() !== startGen || seqRef.current !== seq;
   try {
     const result = await task(isStale, startGen);
     if (isStale()) return { aborted: true };
