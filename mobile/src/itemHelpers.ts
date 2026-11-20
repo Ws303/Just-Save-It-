@@ -430,6 +430,71 @@ export function resolveMobilePlayUrl(
   return withAutoplayParam(safeEmbed);
 }
 
+export type InlinePlayerSource =
+  | { kind: "uri"; uri: string }
+  | { kind: "html"; html: string; baseUrl: string };
+
+const INLINE_PLAYER_BASE_URL = "https://just-save-it-web.onrender.com";
+
+function escapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function wrapInlineMediaHtml(bodyMarkup: string): string {
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><style>html,body{margin:0;padding:0;width:100%;height:100%;background:#000;overflow:hidden}iframe,video{width:100%;height:100%;border:0;display:block;object-fit:contain;background:#000}</style></head><body>${bodyMarkup}</body></html>`;
+}
+
+/**
+ * Resolve an embedded WebView playback source so videos play inline inside the detail screen
+ * without launching an external browser sheet.
+ */
+export function resolveInlinePlayerSource(
+  embedUrl: string | null | undefined,
+  directMp4?: string | null,
+): InlinePlayerSource | null {
+  const safeDirect = resolveAllowlistedDirectVideoUrl(directMp4);
+  if (safeDirect) {
+    const safeSrc = escapeHtmlAttr(safeDirect);
+    return {
+      kind: "html",
+      baseUrl: INLINE_PLAYER_BASE_URL,
+      html: wrapInlineMediaHtml(
+        `<video src="${safeSrc}" autoplay controls playsinline webkit-playsinline preload="auto"></video>`,
+      ),
+    };
+  }
+
+  const safeEmbed = resolveAllowlistedEmbedUrl(embedUrl);
+  if (!safeEmbed) return null;
+
+  const autoplayUrl = withAutoplayParam(safeEmbed);
+  try {
+    const host = new URL(autoplayUrl).hostname.toLowerCase();
+    if (
+      host.includes("youtube.com") ||
+      host.includes("youtube-nocookie.com") ||
+      host === "player.vimeo.com"
+    ) {
+      const safeSrc = escapeHtmlAttr(autoplayUrl);
+      return {
+        kind: "html",
+        baseUrl: INLINE_PLAYER_BASE_URL,
+        html: wrapInlineMediaHtml(
+          `<iframe src="${safeSrc}" allow="autoplay; fullscreen; picture-in-picture; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`,
+        ),
+      };
+    }
+  } catch {
+    return null;
+  }
+
+  return { kind: "uri", uri: autoplayUrl };
+}
+
 const FB_STATS_SEG_RE =
   /(?:\d|แสน|ล้าน|พัน|หมื่น).*(?:ยอดดู|รับชม|ความรู้สึก|ถูกใจ|ความคิดเห็น|คอมเมนต์|แชร์|ผู้ติดตาม|คนกำลังพูดถึง|views?|reactions?|likes?|comments?|shares?|followers?)|(?:ยอดดู|รับชม|ความรู้สึก|ถูกใจ|ความคิดเห็น|คอมเมนต์|แชร์|ผู้ติดตาม|views?|reactions?|likes?|comments?|shares?).*(?:\d|แสน|ล้าน|พัน|หมื่น)/i;
 const FB_INLINE_STATS_TH_RE =

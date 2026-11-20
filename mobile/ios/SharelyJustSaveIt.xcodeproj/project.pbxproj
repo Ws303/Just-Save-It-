@@ -11,10 +11,42 @@
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */; };
 		7B1C291B63F39D99B1B6D05F /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 60125EDEB269C43F1274B420 /* PrivacyInfo.xcprivacy */; };
+		A9B8C7D60000000000000001 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D60000000000000011 /* ShareViewController.swift */; };
+		A9B8C7D60000000000000002 /* ShareSheetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D60000000000000012 /* ShareSheetView.swift */; };
+		A9B8C7D60000000000000003 /* ShareModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D60000000000000013 /* ShareModels.swift */; };
+		A9B8C7D60000000000000004 /* ShareKeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D60000000000000014 /* ShareKeychainStore.swift */; };
+		A9B8C7D60000000000000005 /* ShareApiClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B8C7D60000000000000015 /* ShareApiClient.swift */; };
+		A9B8C7D60000000000000006 /* SherlinkShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A9B8C7D60000000000000010 /* SherlinkShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
+		C1D2E3F40000000000000001 /* SherlinkSharedAuthModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1D2E3F40000000000000011 /* SherlinkSharedAuthModule.swift */; };
+		C1D2E3F40000000000000002 /* SherlinkSharedAuthBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = C1D2E3F40000000000000012 /* SherlinkSharedAuthBridge.m */; };
 		F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F11748412D0307B40044C1D9 /* AppDelegate.swift */; };
 		F85C675A2D71FE9F6990198C /* libPods-SharelyJustSaveIt.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 6EB00AF04AE74CC067AC5BCE /* libPods-SharelyJustSaveIt.a */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A9B8C7D60000000000000020 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A9B8C7D60000000000000030;
+			remoteInfo = SherlinkShareExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A9B8C7D60000000000000021 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A9B8C7D60000000000000006 /* SherlinkShareExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		13B07F961A680F5B00A75B9A /* SharelyJustSaveIt.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SharelyJustSaveIt.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -23,9 +55,19 @@
 		1E92FC8676514809B3DADA4E /* Pods-SharelyJustSaveIt.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-SharelyJustSaveIt.debug.xcconfig"; path = "Target Support Files/Pods-SharelyJustSaveIt/Pods-SharelyJustSaveIt.debug.xcconfig"; sourceTree = "<group>"; };
 		60125EDEB269C43F1274B420 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = SharelyJustSaveIt/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		6EB00AF04AE74CC067AC5BCE /* libPods-SharelyJustSaveIt.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-SharelyJustSaveIt.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A9B8C7D60000000000000010 /* SherlinkShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SherlinkShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A9B8C7D60000000000000011 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		A9B8C7D60000000000000012 /* ShareSheetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheetView.swift; sourceTree = "<group>"; };
+		A9B8C7D60000000000000013 /* ShareModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareModels.swift; sourceTree = "<group>"; };
+		A9B8C7D60000000000000014 /* ShareKeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareKeychainStore.swift; sourceTree = "<group>"; };
+		A9B8C7D60000000000000015 /* ShareApiClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareApiClient.swift; sourceTree = "<group>"; };
+		A9B8C7D60000000000000016 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A9B8C7D60000000000000017 /* SherlinkShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SherlinkShareExtension.entitlements; sourceTree = "<group>"; };
 		AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = SplashScreen.storyboard; path = SharelyJustSaveIt/SplashScreen.storyboard; sourceTree = "<group>"; };
 		BB2F792C24A3F905000567C9 /* Expo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Expo.plist; sourceTree = "<group>"; };
 		BFB7AD66F7DEEB4530B48500 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-SharelyJustSaveIt/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
+		C1D2E3F40000000000000011 /* SherlinkSharedAuthModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SherlinkSharedAuthModule.swift; path = SharelyJustSaveIt/SherlinkSharedAuthModule.swift; sourceTree = "<group>"; };
+		C1D2E3F40000000000000012 /* SherlinkSharedAuthBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = SherlinkSharedAuthBridge.m; path = SharelyJustSaveIt/SherlinkSharedAuthBridge.m; sourceTree = "<group>"; };
 		E3A855E060C5BEB772D09226 /* Pods-SharelyJustSaveIt.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-SharelyJustSaveIt.release.xcconfig"; path = "Target Support Files/Pods-SharelyJustSaveIt/Pods-SharelyJustSaveIt.release.xcconfig"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 		F11748412D0307B40044C1D9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = SharelyJustSaveIt/AppDelegate.swift; sourceTree = "<group>"; };
@@ -41,6 +83,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A9B8C7D60000000000000022 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -48,6 +97,8 @@
 			isa = PBXGroup;
 			children = (
 				F11748412D0307B40044C1D9 /* AppDelegate.swift */,
+				C1D2E3F40000000000000011 /* SherlinkSharedAuthModule.swift */,
+				C1D2E3F40000000000000012 /* SherlinkSharedAuthBridge.m */,
 				F11748442D0722820044C1D9 /* SharelyJustSaveIt-Bridging-Header.h */,
 				BB2F792B24A3F905000567C9 /* Supporting */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
@@ -87,6 +138,7 @@
 			isa = PBXGroup;
 			children = (
 				13B07FAE1A68108700A75B9A /* SharelyJustSaveIt */,
+				A9B8C7D60000000000000023 /* SherlinkShareExtension */,
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
@@ -102,8 +154,23 @@
 			isa = PBXGroup;
 			children = (
 				13B07F961A680F5B00A75B9A /* SharelyJustSaveIt.app */,
+				A9B8C7D60000000000000010 /* SherlinkShareExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A9B8C7D60000000000000023 /* SherlinkShareExtension */ = {
+			isa = PBXGroup;
+			children = (
+				A9B8C7D60000000000000011 /* ShareViewController.swift */,
+				A9B8C7D60000000000000012 /* ShareSheetView.swift */,
+				A9B8C7D60000000000000013 /* ShareModels.swift */,
+				A9B8C7D60000000000000014 /* ShareKeychainStore.swift */,
+				A9B8C7D60000000000000015 /* ShareApiClient.swift */,
+				A9B8C7D60000000000000016 /* Info.plist */,
+				A9B8C7D60000000000000017 /* SherlinkShareExtension.entitlements */,
+			);
+			path = SherlinkShareExtension;
 			sourceTree = "<group>";
 		};
 		BB2F792B24A3F905000567C9 /* Supporting */ = {
@@ -146,15 +213,34 @@
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */,
 				F808BB344852395494A57D92 /* [CP] Embed Pods Frameworks */,
+				A9B8C7D60000000000000021 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A9B8C7D60000000000000025 /* PBXTargetDependency */,
 			);
 			name = SharelyJustSaveIt;
 			productName = SharelyJustSaveIt;
 			productReference = 13B07F961A680F5B00A75B9A /* SharelyJustSaveIt.app */;
 			productType = "com.apple.product-type.application";
+		};
+		A9B8C7D60000000000000030 /* SherlinkShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A9B8C7D60000000000000042 /* Build configuration list for PBXNativeTarget "SherlinkShareExtension" */;
+			buildPhases = (
+				A9B8C7D60000000000000026 /* Sources */,
+				A9B8C7D60000000000000022 /* Frameworks */,
+				A9B8C7D60000000000000024 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SherlinkShareExtension;
+			productName = SherlinkShareExtension;
+			productReference = A9B8C7D60000000000000010 /* SherlinkShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -166,6 +252,10 @@
 				TargetAttributes = {
 					13B07F861A680F5B00A75B9A = {
 						LastSwiftMigration = 1250;
+					};
+					A9B8C7D60000000000000030 = {
+						CreatedOnToolsVersion = 15.0;
+						ProvisioningStyle = Automatic;
 					};
 				};
 			};
@@ -183,6 +273,7 @@
 			projectRoot = "";
 			targets = (
 				13B07F861A680F5B00A75B9A /* SharelyJustSaveIt */,
+				A9B8C7D60000000000000030 /* SherlinkShareExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -196,6 +287,13 @@
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */,
 				7B1C291B63F39D99B1B6D05F /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A9B8C7D60000000000000024 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -322,11 +420,33 @@
 			buildActionMask = 2147483647;
 			files = (
 				F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */,
+				C1D2E3F40000000000000001 /* SherlinkSharedAuthModule.swift in Sources */,
+				C1D2E3F40000000000000002 /* SherlinkSharedAuthBridge.m in Sources */,
 				104CCA77BB7C51F300616544 /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A9B8C7D60000000000000026 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A9B8C7D60000000000000001 /* ShareViewController.swift in Sources */,
+				A9B8C7D60000000000000002 /* ShareSheetView.swift in Sources */,
+				A9B8C7D60000000000000003 /* ShareModels.swift in Sources */,
+				A9B8C7D60000000000000004 /* ShareKeychainStore.swift in Sources */,
+				A9B8C7D60000000000000005 /* ShareApiClient.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A9B8C7D60000000000000025 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A9B8C7D60000000000000030 /* SherlinkShareExtension */;
+			targetProxy = A9B8C7D60000000000000020 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
@@ -521,6 +641,63 @@
 			};
 			name = Release;
 		};
+		A9B8C7D60000000000000040 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = SherlinkShareExtension/SherlinkShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = B92S6YC6HP;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = SherlinkShareExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
+				PRODUCT_BUNDLE_IDENTIFIER = com.chanisa.justsaveit.ShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A9B8C7D60000000000000041 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = SherlinkShareExtension/SherlinkShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = B92S6YC6HP;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = SherlinkShareExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
+				PRODUCT_BUNDLE_IDENTIFIER = com.chanisa.justsaveit.ShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -538,6 +715,15 @@
 			buildConfigurations = (
 				83CBBA201A601CBA00E9B192 /* Debug */,
 				83CBBA211A601CBA00E9B192 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A9B8C7D60000000000000042 /* Build configuration list for PBXNativeTarget "SherlinkShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A9B8C7D60000000000000040 /* Debug */,
+				A9B8C7D60000000000000041 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

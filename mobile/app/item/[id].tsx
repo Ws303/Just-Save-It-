@@ -2,21 +2,27 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Image,
   KeyboardAvoidingView,
+  LayoutChangeEvent,
   Linking,
   Modal,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import * as WebBrowser from "expo-web-browser";
+import { WebView } from "react-native-webview";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { runGuardedBusyAction } from "../../src/actionGuards";
 import {
@@ -42,17 +48,20 @@ import {
   inferMobilePlatform,
   isGenericOrNoisyTitle,
   isPrivateOrRestrictedItem,
-  resolveMobilePlayUrl,
+  resolveInlinePlayerSource,
   resolveMobileThumbUrl,
   resolveOriginalDescription,
   shiftYearMonth,
+  type InlinePlayerSource,
 } from "../../src/itemHelpers";
 import {
   getAuthGeneration,
   getMemoryCachedWorkspace,
+  loadCachedWorkspace,
   loadFigmaAccentTheme,
   subscribeFigmaAccentTheme,
   upsertCachedLinkItem,
+  type CachedWorkspace,
   type MobileLinkItem,
 } from "../../src/storage";
 
@@ -60,6 +69,23 @@ const CHERRY_SELECTED_IMG = require("../../assets/figma/cherry-selected.png");
 const CHERRY_UNSELECTED_IMG = require("../../assets/figma/cherry-unselected.png");
 
 const QUICK_TAG_SUGGESTIONS = ["#อ่านทีหลัง", "#คาเฟ่", "#เที่ยว", "#ไอเดีย", "#อาหาร"];
+
+const PULL_EDGE_HINT_PX = 16;
+const PULL_EDGE_TRIGGER_PX = 56;
+const EDGE_SCROLL_TOLERANCE_PX = 4;
+const ANDROID_EDGE_FLICK_VELOCITY = 0.45;
+type PullEdgeState = "none" | "pull_prev" | "ready_prev" | "pull_next" | "ready_next";
+
+function resolvePullEdgeState(
+  direction: "prev" | "next" | "none",
+  distancePx: number,
+): PullEdgeState {
+  if (direction === "none" || distancePx < PULL_EDGE_HINT_PX) return "none";
+  if (direction === "prev") {
+    return distancePx >= PULL_EDGE_TRIGGER_PX ? "ready_prev" : "pull_prev";
+  }
+  return distancePx >= PULL_EDGE_TRIGGER_PX ? "ready_next" : "pull_next";
+}
 
 const _autoEnrichedItemIds = new Set<string>();
 
@@ -79,6 +105,7 @@ export default function ItemDetailScreen() {
   const { id, folderId } = useLocalSearchParams<{ id: string; folderId?: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
 
   const [themeId, setThemeId] = useState<FigmaAccentThemeId>("sharely");
   const theme = getFigmaTheme(themeId);
@@ -111,11 +138,144 @@ export default function ItemDetailScreen() {
   const [remMinuteText, setRemMinuteText] = useState("00");
   const [remRepeatDays, setRemRepeatDays] = useState<number | null>(null);
   const [videoLoading, setVideoLoading] = useState(false);
+  const [inlinePlayer, setInlinePlayer] = useState<InlinePlayerSource | null>(null);
   const [imageRatios, setImageRatios] = useState<Record<string, number>>({});
+  const [diskWs, setDiskWs] = useState<CachedWorkspace | null>(null);
+  const [pullEdgeState, setPullEdgeState] = useState<PullEdgeState>("none");
+  const [androidCanScroll, setAndroidCanScroll] = useState(true);
   const actionSeqRef = useRef(0);
   const activeIdRef = useRef<string | undefined>(id);
   const mountedRef = useRef(true);
+  const scrollRef = useRef<ScrollView>(null);
+  const isDraggingScrollRef = useRef(false);
+  const pullEdgeStateRef = useRef<PullEdgeState>("none");
+  const navLockRef = useRef(false);
+  const scrollMetricsRef = useRef({
+    scrollY: 0,
+    contentHeight: 0,
+    layoutHeight: 0,
+    maxScrollY: 0,
+  });
+  const androidCanScrollRef = useRef(true);
+  const androidPanActiveRef = useRef(false);
+  const androidDragStartEdgeRef = useRef({ atTop: false, atBottom: false });
+  const androidPullOffset = useRef(new Animated.Value(0)).current;
+  const navMetaRef = useRef<{
+    count: number;
+    idx: number;
+    prevNavId: string | null;
+    nextNavId: string | null;
+  }>({ count: 0, idx: -1, prevNavId: null, nextNavId: null });
+  const goToAdjacentItemRef = useRef<(targetId: string | null) => void>(() => {});
   activeIdRef.current = id;
+
+  const setPullStateIfChanged = (next: PullEdgeState) => {
+    if (pullEdgeStateRef.current === next) return;
+    pullEdgeStateRef.current = next;
+    setPullEdgeState(next);
+  };
+
+  const updateScrollMetrics = (
+    patch: Partial<{ scrollY: number; contentHeight: number; layoutHeight: number }>,
+  ) => {
+    const prev = scrollMetricsRef.current;
+    const scrollY = patch.scrollY ?? prev.scrollY;
+    const contentHeight = patch.contentHeight ?? prev.contentHeight;
+    const layoutHeight = patch.layoutHeight ?? prev.layoutHeight;
+    const maxScrollY = layoutHeight > 0 ? Math.max(0, contentHeight - layoutHeight) : 0;
+    scrollMetricsRef.current = { scrollY, contentHeight, layoutHeight, maxScrollY };
+
+    if (Platform.OS === "android" && layoutHeight > 0 && contentHeight > 0) {
+      const nextCanScroll = maxScrollY > 2;
+      if (androidCanScrollRef.current !== nextCanScroll) {
+        androidCanScrollRef.current = nextCanScroll;
+        setAndroidCanScroll(nextCanScroll);
+      }
+    }
+  };
+
+  const getAndroidEdgeFlags = () => {
+    const { scrollY, maxScrollY } = scrollMetricsRef.current;
+    return {
+      atTop: scrollY <= EDGE_SCROLL_TOLERANCE_PX,
+      atBottom: scrollY >= Math.max(0, maxScrollY - EDGE_SCROLL_TOLERANCE_PX),
+    };
+  };
+
+  const resetAndroidPullOffset = (animated = true) => {
+    if (!animated) {
+      androidPullOffset.stopAnimation();
+      androidPullOffset.setValue(0);
+      return;
+    }
+    Animated.spring(androidPullOffset, {
+      toValue: 0,
+      useNativeDriver: true,
+      bounciness: 6,
+      speed: 22,
+    }).start();
+  };
+
+  const shouldHandleAndroidEdgePan = (dx: number, dy: number) => {
+    if (Platform.OS !== "android" || navLockRef.current) return false;
+    const meta = navMetaRef.current;
+    if (meta.count <= 1 || meta.idx < 0) return false;
+    const absDy = Math.abs(dy);
+    const absDx = Math.abs(dx);
+    if (absDy < 6 || absDy <= absDx * 1.2) return false;
+    const { atTop, atBottom } = getAndroidEdgeFlags();
+    return (dy > 0 && atTop) || (dy < 0 && atBottom);
+  };
+
+  const androidPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponder: (_evt, gs) => shouldHandleAndroidEdgePan(gs.dx, gs.dy),
+      onMoveShouldSetPanResponderCapture: (_evt, gs) => shouldHandleAndroidEdgePan(gs.dx, gs.dy),
+      onPanResponderGrant: () => {
+        androidPanActiveRef.current = true;
+      },
+      onPanResponderMove: (_evt, gs) => {
+        const { atTop, atBottom } = getAndroidEdgeFlags();
+        if (gs.dy > 0 && atTop) {
+          const pullPx = gs.dy;
+          setPullStateIfChanged(resolvePullEdgeState("prev", pullPx));
+          androidPullOffset.setValue(Math.min(36, pullPx * 0.35));
+        } else if (gs.dy < 0 && atBottom) {
+          const pullPx = -gs.dy;
+          setPullStateIfChanged(resolvePullEdgeState("next", pullPx));
+          androidPullOffset.setValue(-Math.min(36, pullPx * 0.35));
+        } else {
+          setPullStateIfChanged("none");
+          androidPullOffset.setValue(0);
+        }
+      },
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderRelease: (_evt, gs) => {
+        androidPanActiveRef.current = false;
+        const meta = navMetaRef.current;
+        const currentState = pullEdgeStateRef.current;
+        const { atTop, atBottom } = getAndroidEdgeFlags();
+        setPullStateIfChanged("none");
+        resetAndroidPullOffset(true);
+        if (meta.count <= 1 || meta.idx < 0) return;
+        if ((currentState === "ready_prev" || (gs.dy >= PULL_EDGE_TRIGGER_PX && atTop)) && meta.prevNavId) {
+          goToAdjacentItemRef.current(meta.prevNavId);
+        } else if (
+          (currentState === "ready_next" || (gs.dy <= -PULL_EDGE_TRIGGER_PX && atBottom)) &&
+          meta.nextNavId
+        ) {
+          goToAdjacentItemRef.current(meta.nextNavId);
+        }
+      },
+      onPanResponderTerminate: () => {
+        androidPanActiveRef.current = false;
+        setPullStateIfChanged("none");
+        resetAndroidPullOffset(true);
+      },
+    }),
+  ).current;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -135,7 +295,27 @@ export default function ItemDetailScreen() {
     actionSeqRef.current += 1;
     setBusy("");
     setVideoLoading(false);
-    const match = getMemoryCachedWorkspace()?.items.find((it) => it.id === id) || null;
+    setInlinePlayer(null);
+    navLockRef.current = false;
+    isDraggingScrollRef.current = false;
+    androidPanActiveRef.current = false;
+    androidDragStartEdgeRef.current = { atTop: false, atBottom: false };
+    scrollMetricsRef.current.scrollY = 0;
+    androidCanScrollRef.current = true;
+    setAndroidCanScroll(true);
+    resetAndroidPullOffset(false);
+    pullEdgeStateRef.current = "none";
+    setPullEdgeState("none");
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+    const mem = getMemoryCachedWorkspace();
+    if (!mem?.items?.length) {
+      void loadCachedWorkspace()
+        .then((loaded) => {
+          if (mountedRef.current && loaded.items.length > 0) setDiskWs(loaded);
+        })
+        .catch(() => {});
+    }
+    const match = mem?.items.find((it) => it.id === id) || null;
     setItem(match);
     setNote(match?.note || match?.user_note || "");
     setTagsText((match?.tags || match?.tag_names || []).join(" "));
@@ -293,25 +473,13 @@ export default function ItemDetailScreen() {
       return;
     }
 
-    const targetPlayUrl = resolveMobilePlayUrl(item, derivedVideo.embedUrl, directMp4);
-    if (!targetPlayUrl) return;
-
-    try {
-      await WebBrowser.openBrowserAsync(targetPlayUrl, {
-        presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET,
-        controlsColor: theme.accent,
-      });
-    } catch {
-      if (
-        !mountedRef.current ||
-        getAuthGeneration() !== startGen ||
-        activeIdRef.current !== targetId ||
-        actionSeqRef.current !== playSeq
-      ) {
-        return;
-      }
-      openExternalUrlSafe(targetPlayUrl);
+    const playerSource = resolveInlinePlayerSource(derivedVideo.embedUrl, directMp4);
+    if (playerSource) {
+      setInlinePlayer(playerSource);
+      return;
     }
+
+    openExternalUrlSafe(item.url);
   }
 
   async function handleToggleSeen() {
@@ -655,7 +823,7 @@ export default function ItemDetailScreen() {
   const remCalendar = buildMobileMonthCalendar(remYearMonth);
   const activeCalDay = Math.min(remDay, remCalendar.days.length);
 
-  const memWs = getMemoryCachedWorkspace();
+  const memWs = getMemoryCachedWorkspace() || diskWs;
   const allCachedItems = memWs?.items || [];
   const allFolders = memWs?.folders || [];
   const resolvedFolderId = folderId || item.folder_id || "";
@@ -674,11 +842,189 @@ export default function ItemDetailScreen() {
   const prevNavId = navIdx > 0 ? navIds[navIdx - 1] : null;
   const nextNavId = navIdx >= 0 && navIdx < navIds.length - 1 ? navIds[navIdx + 1] : null;
   const goToAdjacentItem = (targetId: string | null) => {
-    if (!targetId) return;
+    if (!targetId || navLockRef.current) return;
+    navLockRef.current = true;
     router.replace(
       folderId
         ? (`/item/${encodeURIComponent(targetId)}?folderId=${encodeURIComponent(folderId)}` as never)
         : (`/item/${encodeURIComponent(targetId)}` as never),
+    );
+  };
+  navMetaRef.current = {
+    count: navIds.length,
+    idx: navIdx,
+    prevNavId,
+    nextNavId,
+  };
+  goToAdjacentItemRef.current = goToAdjacentItem;
+
+  const getOverscrollDistances = (nativeEvent: NativeScrollEvent) => {
+    const y = nativeEvent.contentOffset?.y ?? 0;
+    const contentH = nativeEvent.contentSize?.height ?? 0;
+    const layoutH = nativeEvent.layoutMeasurement?.height ?? 0;
+    if (layoutH <= 0) return { topOverscroll: 0, bottomOverscroll: 0 };
+    const maxY = Math.max(0, contentH - layoutH);
+    const topOverscroll = y < 0 ? -y : 0;
+    const bottomOverscroll = y > maxY ? y - maxY : 0;
+    return { topOverscroll, bottomOverscroll };
+  };
+
+  const handleScrollLayout = (e: LayoutChangeEvent) => {
+    updateScrollMetrics({ layoutHeight: e.nativeEvent.layout.height });
+  };
+
+  const handleScrollContentSizeChange = (_width: number, height: number) => {
+    updateScrollMetrics({ contentHeight: height });
+  };
+
+  const syncMetricsFromScrollEvent = (nativeEvent: NativeScrollEvent) => {
+    const y = nativeEvent.contentOffset?.y ?? scrollMetricsRef.current.scrollY;
+    const contentH = nativeEvent.contentSize?.height ?? scrollMetricsRef.current.contentHeight;
+    const layoutH = nativeEvent.layoutMeasurement?.height ?? scrollMetricsRef.current.layoutHeight;
+    updateScrollMetrics({ scrollY: y, contentHeight: contentH, layoutHeight: layoutH });
+    const maxY = layoutH > 0 ? Math.max(0, contentH - layoutH) : scrollMetricsRef.current.maxScrollY;
+    return { y, maxY };
+  };
+
+  const handleScrollBeginDrag = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    isDraggingScrollRef.current = true;
+    const { y, maxY } = syncMetricsFromScrollEvent(e.nativeEvent);
+    androidDragStartEdgeRef.current = {
+      atTop: y <= EDGE_SCROLL_TOLERANCE_PX,
+      atBottom: y >= Math.max(0, maxY - EDGE_SCROLL_TOLERANCE_PX),
+    };
+  };
+
+  const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    syncMetricsFromScrollEvent(e.nativeEvent);
+
+    if (Platform.OS !== "ios") return;
+    if (!isDraggingScrollRef.current || navIds.length <= 1 || navIdx < 0) return;
+    const { topOverscroll, bottomOverscroll } = getOverscrollDistances(e.nativeEvent);
+    if (topOverscroll >= PULL_EDGE_HINT_PX && topOverscroll >= bottomOverscroll) {
+      setPullStateIfChanged(resolvePullEdgeState("prev", topOverscroll));
+    } else if (bottomOverscroll >= PULL_EDGE_HINT_PX) {
+      setPullStateIfChanged(resolvePullEdgeState("next", bottomOverscroll));
+    } else {
+      setPullStateIfChanged("none");
+    }
+  };
+
+  const handleScrollEndDrag = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const wasDragging = isDraggingScrollRef.current;
+    isDraggingScrollRef.current = false;
+    const { y, maxY } = syncMetricsFromScrollEvent(e.nativeEvent);
+
+    if (!wasDragging || navIds.length <= 1 || navIdx < 0) {
+      setPullStateIfChanged("none");
+      return;
+    }
+
+    if (Platform.OS === "ios") {
+      setPullStateIfChanged("none");
+      const { topOverscroll, bottomOverscroll } = getOverscrollDistances(e.nativeEvent);
+      if (topOverscroll >= PULL_EDGE_TRIGGER_PX && topOverscroll >= bottomOverscroll && prevNavId) {
+        goToAdjacentItem(prevNavId);
+      } else if (bottomOverscroll >= PULL_EDGE_TRIGGER_PX && nextNavId) {
+        goToAdjacentItem(nextNavId);
+      }
+      return;
+    }
+
+    if (!androidPanActiveRef.current) {
+      setPullStateIfChanged("none");
+      const vy = e.nativeEvent.velocity?.y ?? 0;
+      if (
+        androidDragStartEdgeRef.current.atTop &&
+        y <= EDGE_SCROLL_TOLERANCE_PX &&
+        vy >= ANDROID_EDGE_FLICK_VELOCITY &&
+        prevNavId
+      ) {
+        goToAdjacentItem(prevNavId);
+      } else if (
+        androidDragStartEdgeRef.current.atBottom &&
+        y >= Math.max(0, maxY - EDGE_SCROLL_TOLERANCE_PX) &&
+        vy <= -ANDROID_EDGE_FLICK_VELOCITY &&
+        nextNavId
+      ) {
+        goToAdjacentItem(nextNavId);
+      }
+    }
+  };
+
+  const handleMomentumScrollEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    isDraggingScrollRef.current = false;
+    syncMetricsFromScrollEvent(e.nativeEvent);
+    if (!androidPanActiveRef.current) {
+      setPullStateIfChanged("none");
+    }
+  };
+
+  const renderEdgeNavHint = (direction: "prev" | "next") => {
+    if (navIds.length <= 1 || navIdx < 0) return null;
+    const isPrev = direction === "prev";
+    const targetId = isPrev ? prevNavId : nextNavId;
+    const isPulling = pullEdgeState === (isPrev ? "pull_prev" : "pull_next");
+    const isReady = pullEdgeState === (isPrev ? "ready_prev" : "ready_next");
+    const label = isReady
+      ? targetId
+        ? isPrev
+          ? "ปล่อยเพื่อดูโพสต์ก่อนหน้า"
+          : "ปล่อยเพื่อดูโพสต์ถัดไป"
+        : isPrev
+          ? "อยู่โพสต์แรกแล้ว"
+          : "อยู่โพสต์ล่าสุดแล้ว"
+      : isPulling
+        ? targetId
+          ? isPrev
+            ? "ดึงลงอีกนิดเพื่อดูโพสต์ก่อนหน้า"
+            : "ดึงขึ้นอีกนิดเพื่อดูโพสต์ถัดไป"
+          : isPrev
+            ? "อยู่โพสต์แรกแล้ว"
+            : "อยู่โพสต์ล่าสุดแล้ว"
+        : isPrev
+          ? "โพสต์ก่อนหน้า"
+          : "โพสต์ถัดไป";
+    const iconName = isReady && targetId
+      ? isPrev
+        ? "arrow-up"
+        : "arrow-down"
+      : isPrev
+        ? "chevron-up"
+        : "chevron-down";
+    const iconColor = !targetId
+      ? "#CBD5E1"
+      : isReady
+        ? theme.accentText
+        : "#57596A";
+
+    return (
+      <Pressable
+        style={[
+          styles.edgeHintBtn,
+          !isPrev && { marginTop: 4 },
+          !targetId && styles.edgeHintDisabled,
+          isReady &&
+            targetId && {
+              backgroundColor: theme.soft,
+              borderColor: theme.softBorder,
+              borderWidth: 1,
+            },
+        ]}
+        disabled={!targetId}
+        onPress={() => goToAdjacentItem(targetId)}
+      >
+        <Ionicons name={iconName} size={14} color={iconColor} />
+        <Text
+          style={[
+            styles.edgeHintText,
+            !targetId && styles.edgeHintTextDisabled,
+            isReady && targetId && { color: theme.accentText },
+          ]}
+        >
+          {label}
+        </Text>
+      </Pressable>
     );
   };
 
@@ -706,6 +1052,8 @@ export default function ItemDetailScreen() {
   const activeAspect =
     (activeSlideUri && imageRatios[activeSlideUri]) ||
     (derivedVideo.embedUrl && derivedVideo.isVertical ? 0.8 : 1.58);
+  const maxMediaWidth = Math.max(220, windowWidth - 32);
+  const computedMediaHeight = Math.round(Math.min(390, maxMediaWidth / activeAspect));
   const totalSlides = mediaImages.length;
   const isLastSlide = totalSlides >= 2 && activeSlideIndex === totalSlides - 1;
 
@@ -748,50 +1096,85 @@ export default function ItemDetailScreen() {
       </View>
 
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        scrollEnabled={Platform.OS === "android" ? androidCanScroll : true}
+        bounces
+        alwaysBounceVertical
+        scrollEventThrottle={16}
+        onLayout={handleScrollLayout}
+        onContentSizeChange={handleScrollContentSizeChange}
+        onScrollBeginDrag={handleScrollBeginDrag}
+        onScroll={handleScroll}
+        onScrollEndDrag={handleScrollEndDrag}
+        onMomentumScrollEnd={handleMomentumScrollEnd}
       >
-        {navIds.length > 1 && navIdx >= 0 ? (
-          <Pressable
-            style={[styles.edgeHintBtn, !prevNavId && styles.edgeHintDisabled]}
-            disabled={!prevNavId}
-            onPress={() => goToAdjacentItem(prevNavId)}
-          >
-            <Ionicons name="chevron-up" size={14} color={prevNavId ? "#57596A" : "#CBD5E1"} />
-            <Text style={[styles.edgeHintText, !prevNavId && styles.edgeHintTextDisabled]}>
-              โพสต์ก่อนหน้า
-            </Text>
-          </Pressable>
-        ) : null}
+        <Animated.View
+          style={[
+            styles.scrollInner,
+            Platform.OS === "android" && { transform: [{ translateY: androidPullOffset }] },
+          ]}
+          {...(Platform.OS === "android" ? androidPanResponder.panHandlers : {})}
+        >
+          {renderEdgeNavHint("prev")}
 
         {/* Rich Preview Box */}
         {derivedVideo.embedUrl ? (
-          <Pressable
-            style={[styles.mediaContainer, { aspectRatio: activeAspect }]}
-            onPress={() => void handlePlayVideo()}
-          >
-            {coverUri ? (
-              <Image source={{ uri: coverUri }} style={styles.mediaFill} resizeMode="cover" />
-            ) : (
-              <View style={styles.videoFallbackPoster} />
-            )}
-            <View style={styles.playBtnCircle}>
-              {videoLoading ? (
-                <ActivityIndicator color={theme.accent} />
+          inlinePlayer ? (
+            <View style={[styles.mediaContainer, { height: computedMediaHeight }]}>
+              <WebView
+                key={`${item.id}-${inlinePlayer.kind === "uri" ? inlinePlayer.uri : "html"}`}
+                source={
+                  inlinePlayer.kind === "html"
+                    ? { html: inlinePlayer.html, baseUrl: inlinePlayer.baseUrl }
+                    : { uri: inlinePlayer.uri }
+                }
+                style={styles.mediaFill}
+                allowsInlineMediaPlayback
+                mediaPlaybackRequiresUserAction={false}
+                allowsFullscreenVideo
+                javaScriptEnabled
+                domStorageEnabled
+                scrollEnabled={false}
+                bounces={false}
+                originWhitelist={["https://*"]}
+              />
+              <Pressable style={styles.zoomBtn} onPress={() => setInlinePlayer(null)} hitSlop={8}>
+                <View style={styles.inlineIconRow}>
+                  <Ionicons name="close" size={12} color="#FFFFFF" />
+                  <Text style={styles.zoomBtnText}>ปิด</Text>
+                </View>
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable
+              style={[styles.mediaContainer, { height: computedMediaHeight }]}
+              onPress={() => void handlePlayVideo()}
+            >
+              {coverUri ? (
+                <Image source={{ uri: coverUri }} style={styles.mediaFill} resizeMode="cover" />
               ) : (
-                <Ionicons name="play" size={24} color={theme.accent} style={{ marginLeft: 2 }} />
+                <View style={styles.videoFallbackPoster} />
               )}
-            </View>
-            <View style={styles.mediaBadge}>
-              <Text style={styles.mediaBadgeText}>
-                {derivedVideo.platform || platBadge} · {videoLoading ? "กำลังเตรียมคลิป..." : "แตะเพื่อเล่น"}
-              </Text>
-            </View>
-          </Pressable>
+              <View style={styles.playBtnCircle}>
+                {videoLoading ? (
+                  <ActivityIndicator color={theme.accent} />
+                ) : (
+                  <Ionicons name="play" size={24} color={theme.accent} style={{ marginLeft: 2 }} />
+                )}
+              </View>
+              <View style={styles.mediaBadge}>
+                <Text style={styles.mediaBadgeText}>
+                  {derivedVideo.platform || platBadge} · {videoLoading ? "กำลังเตรียมคลิป..." : "แตะเพื่อเล่น"}
+                </Text>
+              </View>
+            </Pressable>
+          )
         ) : totalSlides >= 2 ? (
-          <View style={[styles.mediaContainer, { aspectRatio: activeAspect }]}>
+          <View style={[styles.mediaContainer, { height: computedMediaHeight }]}>
             <Pressable style={styles.mediaFill} onPress={() => setLightboxOpen(true)}>
               <Image source={{ uri: activeSlideUri }} style={styles.mediaFill} resizeMode="cover" />
             </Pressable>
@@ -843,7 +1226,7 @@ export default function ItemDetailScreen() {
             </View>
           </View>
         ) : coverUri ? (
-          <View style={[styles.mediaContainer, { aspectRatio: activeAspect }]}>
+          <View style={[styles.mediaContainer, { height: computedMediaHeight }]}>
             <Pressable style={styles.mediaFill} onPress={() => setLightboxOpen(true)}>
               <Image source={{ uri: coverUri }} style={styles.mediaFill} resizeMode="cover" />
             </Pressable>
@@ -1019,18 +1402,8 @@ export default function ItemDetailScreen() {
           </Pressable>
         )}
 
-        {navIds.length > 1 && navIdx >= 0 ? (
-          <Pressable
-            style={[styles.edgeHintBtn, { marginTop: 4 }, !nextNavId && styles.edgeHintDisabled]}
-            disabled={!nextNavId}
-            onPress={() => goToAdjacentItem(nextNavId)}
-          >
-            <Ionicons name="chevron-down" size={14} color={nextNavId ? "#57596A" : "#CBD5E1"} />
-            <Text style={[styles.edgeHintText, !nextNavId && styles.edgeHintTextDisabled]}>
-              โพสต์ถัดไป
-            </Text>
-          </Pressable>
-        ) : null}
+          {renderEdgeNavHint("next")}
+        </Animated.View>
       </ScrollView>
 
       {/* Sticky Bottom Open URL CTA */}
@@ -1530,17 +1903,24 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
+    flexGrow: 1,
     paddingHorizontal: 16,
     paddingTop: 6,
     paddingBottom: 24,
+  },
+  scrollInner: {
+    flexGrow: 1,
     gap: 14,
   },
   edgeHintBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    alignSelf: "center",
     gap: 4,
-    paddingVertical: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 999,
   },
   edgeHintDisabled: {
     opacity: 0.45,
@@ -1555,7 +1935,9 @@ const styles = StyleSheet.create({
   },
   mediaContainer: {
     width: "100%",
+    maxWidth: "100%",
     maxHeight: 390,
+    alignSelf: "center",
     borderRadius: 15,
     backgroundColor: "#0F172A",
     position: "relative",

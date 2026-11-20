@@ -3242,3 +3242,41 @@ async def test_youtube_default_full_description_and_ig_no_generic_title_regressi
     assert ig_res.title is not None
     assert ig_res.title != "Instagram"
     assert "Secret coffee recipe from JSON!" in ig_res.title
+
+
+@pytest.mark.asyncio
+async def test_cover_preserve_original_keeps_full_resolution_bytes(hermetic_isolation, monkeypatch):
+    """When COVER_PRESERVE_ORIGINAL=true, process_and_upload_cover uploads original bytes without downscaling."""
+    monkeypatch.setenv("COVER_PRESERVE_ORIGINAL", "true")
+    raw_jpeg = make_gradient_noise_jpeg_bytes(1600, 1200)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "cdn.example.com" and request.url.path == "/hd-1600.jpg":
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "image/jpeg", "Content-Length": str(len(raw_jpeg))},
+                content=raw_jpeg,
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    hermetic_isolation.set_handler(handler)
+    url_hash = compute_url_hash("https://example.com/hd-fb-album")
+    captured: List[Dict[str, Any]] = []
+
+    def mock_uploader(path: str, data: bytes, content_type: str) -> str:
+        captured.append({"path": path, "data": data, "content_type": content_type})
+        return f"https://cdn.supabase.test/storage/v1/object/public/{path}"
+
+    final_url, stored = await process_and_upload_cover(
+        "https://cdn.example.com/hd-1600.jpg",
+        url_hash=url_hash,
+        storage_uploader=mock_uploader,
+    )
+    assert stored is True
+    assert final_url == f"https://cdn.supabase.test/storage/v1/object/public/thumbnails/{url_hash}.webp"
+    assert len(captured) == 1
+    assert captured[0]["content_type"] == "image/jpeg"
+    assert captured[0]["data"] == raw_jpeg
+    with Image.open(BytesIO(captured[0]["data"])) as img:
+        assert img.size == (1600, 1200)

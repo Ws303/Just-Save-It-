@@ -3084,5 +3084,23 @@ test("28. Round 7 CHRIS fixes: ios_remote_push_active preserves future reminders
   const detailSrc = readFileSync(resolve(testDir, "../../app/item/[id].tsx"), "utf8");
   assert.match(detailSrc, /const playSeq = actionSeqRef\.current/);
   assert.match(detailSrc, /!mountedRef\.current \|\|[\s\S]{0,120}actionSeqRef\.current !== playSeq/);
-  assert.match(detailSrc, /WebBrowser\.openBrowserAsync[\s\S]{0,260}catch[\s\S]{0,260}actionSeqRef\.current !== playSeq[\s\S]{0,120}openExternalUrlSafe\(targetPlayUrl\)/);
+  assert.match(detailSrc, /resolveInlinePlayerSource\(derivedVideo\.embedUrl, directMp4\)/);
+  assert.match(detailSrc, /<WebView[\s\S]{0,400}allowsInlineMediaPlayback/);
+
+  const { resolveInlinePlayerSource } = await import("../itemHelpers.ts");
+  const ytPlayer = resolveInlinePlayerSource("https://www.youtube.com/embed/oGllKRE1oFA");
+  assert.equal(ytPlayer?.kind, "html");
+  assert.ok(ytPlayer?.html.includes("https://www.youtube.com/embed/oGllKRE1oFA?autoplay=1&amp;playsinline=1"));
+  const igDirectPlayer = resolveInlinePlayerSource(
+    "https://www.instagram.com/reel/DYowlO2v1ww/embed",
+    "https://scontent.cdninstagram.com/v/t66.30100-16/1000_n.mp4",
+  );
+  assert.equal(igDirectPlayer?.kind, "html");
+  assert.ok(igDirectPlayer?.html.includes("<video src=\"https://scontent.cdninstagram.com/v/t66.30100-16/1000_n.mp4\""));
+  const ttPlayer = resolveInlinePlayerSource("https://www.tiktok.com/embed/v2/7703529186639547656");
+  assert.equal(ttPlayer?.kind, "uri");
+  assert.equal(
+    ttPlayer?.uri,
+    "https://www.tiktok.com/player/v1/7703529186639547656?autoplay=1&music_info=0&description=0&rel=0",
+  );
 });

@@ -8,6 +8,8 @@
     <string>$(DEVELOPMENT_LANGUAGE)</string>
     <key>CFBundleDisplayName</key>
     <string>Sherlink</string>
+    <key>SherlinkTeamId</key>
+    <string>$(DEVELOPMENT_TEAM)</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>อนุญาตให้ Sherlink เลือกรูปภาพจากเครื่องเพื่อตั้งเป็นปกโฟลเดอร์</string>
     <key>CFBundleExecutable</key>

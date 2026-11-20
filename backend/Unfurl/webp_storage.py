@@ -121,13 +121,74 @@ async def download_image_safely(
     return raw_bytes, content_type
 
 
+def _is_truthy_env(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+        return parsed if parsed > 0 else default
+    except ValueError:
+        return default
+
+
+_PRESERVE_FORMAT_MIME: Dict[str, str] = {
+    "JPEG": "image/jpeg",
+    "JPG": "image/jpeg",
+    "PNG": "image/png",
+    "WEBP": "image/webp",
+    "GIF": "image/gif",
+}
+
+
+def prepare_original_cover_bytes(
+    raw_bytes: bytes,
+    content_type_hint: str = "",
+) -> Tuple[bytes, str]:
+    """Validate raster image bytes and keep original resolution/bytes without downscaling."""
+    if not raw_bytes:
+        raise ValueError("Empty image payload.")
+    if len(raw_bytes) > MAX_RAW_IMAGE_BYTES:
+        raise ValueError(f"Raw image exceeds {MAX_RAW_IMAGE_BYTES} byte limit.")
+    if _NON_RASTER_PREFIX_RE.match(raw_bytes[:256]):
+        raise ValueError("Unsupported non-raster image payload.")
+
+    with Image.open(BytesIO(raw_bytes)) as img:
+        raw_w, raw_h = img.size
+        if raw_w <= 0 or raw_h <= 0:
+            raise ValueError("Invalid image dimensions.")
+        if (raw_w * raw_h) > MAX_IMAGE_PIXELS:
+            raise ValueError(f"Image pixel count {raw_w * raw_h} exceeds {MAX_IMAGE_PIXELS} safety cap.")
+        fmt = (img.format or "").strip().upper()
+
+    mime = _PRESERVE_FORMAT_MIME.get(fmt)
+    if mime:
+        return raw_bytes, mime
+
+    # Convert less-common raster formats (e.g. BMP/TIFF) to high-quality WebP without downscaling.
+    with Image.open(BytesIO(raw_bytes)) as img:
+        img = ImageOps.exif_transpose(img)
+        if img.mode in ("P", "LA"):
+            img = img.convert("RGBA")
+        elif img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+        out = BytesIO()
+        img.save(out, format="WEBP", quality=95, method=4)
+        return out.getvalue(), "image/webp"
+
+
 def upload_webp_to_supabase_storage(
     db: Any,
     storage_path: str,
     webp_bytes: bytes,
     bucket: Optional[str] = None,
+    content_type: str = "image/webp",
 ) -> Optional[str]:
-    """Upload compressed WebP bytes to Supabase Storage and return public URL if available."""
+    """Upload cover bytes to Supabase Storage and return public URL if available."""
     if db is None or not hasattr(db, "storage"):
         return None
 
@@ -138,7 +199,7 @@ def upload_webp_to_supabase_storage(
         storage_bucket.upload(
             storage_path,
             webp_bytes,
-            {"content-type": "image/webp", "upsert": "true"},
+            {"content-type": content_type, "upsert": "true"},
         )
     except TypeError:
         storage_bucket.upload(storage_path, webp_bytes)
@@ -175,16 +236,27 @@ async def process_and_upload_cover(
         return None, False
 
     try:
-        raw_bytes, _ = await download_image_safely(external_image_url)
-        webp_bytes = compress_image_to_webp(raw_bytes)
+        raw_bytes, raw_ct = await download_image_safely(external_image_url)
+        if _is_truthy_env("COVER_PRESERVE_ORIGINAL"):
+            upload_bytes, upload_ct = prepare_original_cover_bytes(raw_bytes, raw_ct)
+        else:
+            max_w = _positive_int_env("COVER_MAX_WIDTH_PX", MAX_COVER_WIDTH_PX)
+            max_b = _positive_int_env("COVER_MAX_WEBP_BYTES", MAX_WEBP_BYTES)
+            upload_bytes = compress_image_to_webp(raw_bytes, max_width=max_w, max_bytes=max_b)
+            upload_ct = "image/webp"
         storage_path = build_cover_storage_path(url_hash)
 
         if storage_uploader is not None:
-            uploaded_url = storage_uploader(storage_path, webp_bytes, "image/webp")
+            uploaded_url = storage_uploader(storage_path, upload_bytes, upload_ct)
             if uploaded_url:
                 return uploaded_url, True
         else:
-            uploaded_url = upload_webp_to_supabase_storage(db, storage_path, webp_bytes)
+            uploaded_url = upload_webp_to_supabase_storage(
+                db,
+                storage_path,
+                upload_bytes,
+                content_type=upload_ct,
+            )
             if uploaded_url:
                 return uploaded_url, True
     except Exception as exc:
